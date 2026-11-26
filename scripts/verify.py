@@ -189,11 +189,32 @@ def main():
     generation_environment = swift_environment | {
         "BLUEPRINT_VERIFY_SWIFTC": str(swiftc),
         "BLUEPRINT_VERIFY_SDK_PATH": sdk,
+        "BLUEPRINT_TEST_PUBLICATION_TOOL": "0",
     }
     run("generation", [
         "bash", "scripts/generate.sh", "--input", source, "--module", "ConsumerDomain",
         "--protocol", "UserRepository", "--output", generated], env=generation_environment)
     tool = ROOT / ".build/prototype-tooling/generate"
+    publication_fixture = ROOT / "Fixtures/OfflineGenerationConsumer"
+    run("generation-recovery-fault-tool", [
+        "bash", "scripts/generate.sh", "inspect", "--config", publication_fixture / "blueprint-mocking.json",
+        "--output", ROOT / ".build/verification/publication-inspect", "--input-set-id", "94",
+        "--source", "OfflineDomain", publication_fixture / "Sources/OfflineDomain/Lookup.swift",
+    ], env=generation_environment | {"BLUEPRINT_TEST_PUBLICATION_TOOL": "1"})
+    publication_fault_tool = tool.with_name("generate-publication-fault")
+    run("generation-recovery", [
+        sys.executable, "scripts/verify_generation_recovery.py", "--tool", tool, "--fault-tool", publication_fault_tool,
+        "--swiftc", swiftc, "--sdk", sdk, "--evidence-dir", EVIDENCE,
+    ], env=swift_environment, timeout=180,
+        patterns=[r"PASS: DX013 configured output generation preserves and recovers complete pairs",
+                  r"EVIDENCE: generation-recovery-report\.json SHA-256 [0-9a-f]{64}"])
+    run("swiftpm-publication-recovery", [
+        sys.executable, "Fixtures/PluginConsumer/verify_associated_binding.py",
+        "--publication-recovery", "--swift", swift, "--host-tool", publication_fault_tool,
+        "--evidence-dir", EVIDENCE, "--jobs", "4",
+    ], env=swift_environment, timeout=300,
+        patterns=[r"PASS: DX013 SwiftPM rejected interrupted publication and ran the recovered pair",
+                  r"EVIDENCE: swiftpm-publication-recovery-report\.json SHA-256 [0-9a-f]{64}"])
     with tempfile.TemporaryDirectory(prefix="Parser Parity Self Comparison ", dir=EVIDENCE) as directory:
         report = Path(directory) / "parser-parity-report.json"
         report.write_text('{"status":"passed","stale":true}\n')

@@ -172,6 +172,14 @@ Both runs capture the actual loader paths of the selected Xcode toolchain's host
 
 The host tool targets macOS 15.0 and the consumer targets macOS 13.0. Both run on arm64 macOS 27.0.1 with Apple Swift 6.4 and SDK 27.0. This uses configured CLI generation and the bundled Xcode parser. Packaged SwiftSyntax 600.0.1 parity, native plugin qualification, additional hosts, remaining artifact classes and signed release provenance retain their own gates.
 
+## Recovery of the fixed SwiftPM generation paths
+
+For DX-013, configured generation serializes cooperative writers with a lock on the plugin work-directory inode. It validates both destinations before changing either. Before replacing files, it stages a recovery journal containing the prior pair and the complete desired pair. The index temporarily contains an explicit Swift compiler error. The writer replaces the shard, checks its bytes, publishes the final index, verifies both files and removes the journal. A clean request with identical bytes skips publication.
+
+A later valid generation inspects any retained journal. It recognizes complete previous or desired bytes, or restores the previous files before proceeding with the requested publication. `verify-generated` takes a read lock and reports `BPM004` for a retained journal without changing it. The two Swift paths are replaced individually and the dirty index blocks a consumer of the interrupted pair.
+
+The macOS fixture obstructs the index destination and confirms rejection without replacing the shard. A separately compiled generator exits immediately after replacing the shard, leaving the dirty index and recovery journal. The standalone verifier refuses the pair, native Swift rejects the index, and generation restores the old bytes before publishing the independently observed new bytes. The production plugin still declares exactly two generated Swift outputs. With the native SwiftPM build backend and a prepared host artifact bundle, the same scratch directory builds the original typed String consumer, rejects an interrupted Int update before the probe runs, and then reruns the unchanged request and executes the typed Int consumer. The following unchanged build leaves both outputs alone. Exhaustive interruption checkpoints, competing writers, system-interruption durability, immutable directory selection, and other build backends and hosts remain open.
+
 ## Same-module protocol inheritance
 
 GEN-002 now resolves transitive public Sendable protocols from an explicit same-module source index. The standalone `--source` arguments and the SwiftPM configuration entry share the resolver. The graph visits a diamond’s common declaration once. The generated endpoint identity stays rooted in the selected protocol, while inherited call reports point to the declaring file and line.

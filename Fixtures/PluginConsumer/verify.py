@@ -83,7 +83,7 @@ def marker_line(source):
     return lines[0]
 
 
-def run_probe(command, fixture, evidence, step, *, origin=None, stamp=None, failure=None):
+def run_probe(command, fixture, evidence, step, *, origin=None, stamp=None, failure=None, env=None):
     log = evidence / f"swiftpm-plugin-{step}.log"
     source_before = swift_files(fixture / "Sources")
     configuration = fixture / CONFIGURATION
@@ -91,7 +91,7 @@ def run_probe(command, fixture, evidence, step, *, origin=None, stamp=None, fail
     manifest = fixture / "Package.swift"
     manifest_before = manifest.read_bytes()
     with log.open("wb") as capture:
-        result = subprocess.run(command, cwd=fixture, stdout=capture,
+        result = subprocess.run(command, cwd=fixture, env=env, stdout=capture,
                                 stderr=subprocess.STDOUT, timeout=600, check=False)
     log_bytes = log.read_bytes()
     output = log_bytes.decode("utf-8", errors="replace")

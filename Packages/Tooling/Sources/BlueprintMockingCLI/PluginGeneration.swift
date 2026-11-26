@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 private struct BuildConfiguration: Codable {
     struct Selection: Codable {
@@ -101,9 +106,131 @@ private func fingerprint(_ contents: String) -> String {
     return String(hash, radix: 16)
 }
 
-private func writeIfChanged(_ data: Data, to url: URL) throws {
-    if (try? Data(contentsOf: url)) != data {
+private let shardName = "BlueprintMocks.generated.swift"
+private let indexName = "BlueprintMockingIndex.generated.swift"
+private let interruptedPublication = GenerationError(
+    description: "error: BPM004: Interrupted generated output publication. Rerun generation to recover."
+)
+private let dirtyIndex = Data("""
+    #error("Blueprint Mocking: interrupted output publication. Rerun generation to recover.")
+
+    """.utf8)
+
+private struct BuildOutputPair: Codable, Equatable {
+    let shard: Data?
+    let index: Data?
+}
+
+private struct PublicationJournal: Codable {
+    let schema: Int
+    let previous: BuildOutputPair
+    let next: BuildOutputPair
+}
+
+private func withOutputLock<T>(_ directory: URL, exclusive: Bool, body: () throws -> T) throws -> T {
+    #if canImport(Darwin) || canImport(Glibc)
+    // Lock the work directory inode so successful publication leaves exactly the two declared outputs.
+    let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+    guard descriptor >= 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer { _ = close(descriptor) }
+    let operation = exclusive ? LOCK_EX : LOCK_SH
+    var result = flock(descriptor, operation)
+    while result != 0 && errno == EINTR {
+        result = flock(descriptor, operation)
+    }
+    guard result == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    return try body()
+    #else
+    throw GenerationError(description: "error: BPM004: Output directory locking is unavailable on this host.")
+    #endif
+}
+
+private func regularData(at url: URL) throws -> Data? {
+    do {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            throw GenerationError(description: "error: BPM004: Generated path is not a regular file: \(url.lastPathComponent)")
+        }
+        return try Data(contentsOf: url)
+    } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+        return nil
+    }
+}
+
+private func replaceGeneratedFile(at url: URL, with data: Data?) throws {
+    let current = try regularData(at: url)
+    guard data != current else { return }
+    if let data {
         try data.write(to: url, options: .atomic)
+    } else {
+        try FileManager.default.removeItem(at: url)
+    }
+}
+
+private struct BuildOutputPublication {
+    let shard: URL
+    let index: URL
+    let journal: URL
+
+    init(directory: URL) {
+        shard = directory.appendingPathComponent(shardName)
+        index = directory.appendingPathComponent(indexName)
+        journal = directory.appendingPathComponent(".blueprint-mocking-transaction.json")
+    }
+
+    private func currentPair() throws -> BuildOutputPair {
+        try BuildOutputPair(shard: regularData(at: shard), index: regularData(at: index))
+    }
+
+    func requireClean() throws {
+        if try regularData(at: journal) != nil {
+            throw interruptedPublication
+        }
+    }
+
+    private func recover() throws {
+        guard let bytes = try regularData(at: journal) else { return }
+        guard let record = try? JSONDecoder().decode(PublicationJournal.self, from: bytes),
+              record.schema == 1, record.next.shard != nil, record.next.index != nil else {
+            throw GenerationError(description: "error: BPM004: Invalid generated output recovery journal.")
+        }
+
+        let current = try currentPair()
+        if current != record.previous && current != record.next {
+            try replaceGeneratedFile(at: index, with: dirtyIndex)
+            try replaceGeneratedFile(at: shard, with: record.previous.shard)
+            try replaceGeneratedFile(at: index, with: record.previous.index)
+            guard try currentPair() == record.previous else { throw interruptedPublication }
+        }
+        try FileManager.default.removeItem(at: journal)
+    }
+
+    func publish(shard newShard: Data, index newIndex: Data) throws {
+        try recover()
+        // Read and validate both destinations before staging or replacing either one.
+        let previous = try currentPair()
+        let next = BuildOutputPair(shard: newShard, index: newIndex)
+        guard previous != next else { return }
+        let record = PublicationJournal(schema: 1, previous: previous, next: next)
+        try JSONEncoder().encode(record).write(to: journal, options: .atomic)
+
+        // The index blocks compilation during the fixed-path transition until published last.
+        try replaceGeneratedFile(at: index, with: dirtyIndex)
+        try replaceGeneratedFile(at: shard, with: newShard)
+        #if BLUEPRINT_TEST_PUBLICATION && (canImport(Darwin) || canImport(Glibc))
+        if ProcessInfo.processInfo.environment["BLUEPRINT_TEST_ABORT_AFTER_SHARD"] == "1" {
+            FileHandle.standardError.write(Data("DX013 fixture: interrupted after shard publication\n".utf8))
+            _exit(93)
+        }
+        #endif
+        guard try regularData(at: shard) == newShard else { throw interruptedPublication }
+        try replaceGeneratedFile(at: index, with: newIndex)
+        guard try currentPair() == next else { throw interruptedPublication }
+        try FileManager.default.removeItem(at: journal)
     }
 }
 
@@ -143,8 +270,8 @@ private struct BuildGenerationPlan {
         let index = header + "// SwiftPM input set: \(request.inputSetID)\n"
             + "enum BlueprintMockingGeneratedIndex { typealias Shard = \(marker) }\n"
         outputs = [
-            (request.output.appendingPathComponent("BlueprintMocks.generated.swift"), shard),
-            (request.output.appendingPathComponent("BlueprintMockingIndex.generated.swift"), index),
+            (request.output.appendingPathComponent(shardName), shard),
+            (request.output.appendingPathComponent(indexName), index),
         ]
         for (url, _) in outputs {
             guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
@@ -240,28 +367,33 @@ struct GeneratedOutputMismatch: Error, CustomStringConvertible {
 
 func verifyBuildOutputs(arguments: ArraySlice<String>) throws {
     let request = try BuildGenerationRequest(arguments: arguments, command: "verify-generated")
-    let plan = try BuildGenerationPlan(request: request)
-    var mismatched: [URL] = []
-    for (url, text) in plan.outputs {
-        do {
-            if try Data(contentsOf: url) != Data(text.utf8) {
-                mismatched.append(url)
-            }
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            mismatched.append(url)
-        }
+    guard FileManager.default.fileExists(atPath: request.output.path) else {
+        let plan = try BuildGenerationPlan(request: request)
+        throw GeneratedOutputMismatch(files: plan.outputs.map(\.url))
     }
-    guard mismatched.isEmpty else { throw GeneratedOutputMismatch(files: mismatched) }
-    print("Blueprint Mocking: verified \(plan.outputs.count) generated file(s)")
+    try withOutputLock(request.output, exclusive: false) {
+        try BuildOutputPublication(directory: request.output).requireClean()
+        let plan = try BuildGenerationPlan(request: request)
+        let mismatched = try plan.outputs.compactMap { url, text in
+            try regularData(at: url) == Data(text.utf8) ? nil : url
+        }
+        guard mismatched.isEmpty else { throw GeneratedOutputMismatch(files: mismatched) }
+        print("Blueprint Mocking: verified \(plan.outputs.count) generated file(s)")
+    }
 }
 
 func generateBuildOutputs(arguments: ArraySlice<String>) throws {
     let request = try BuildGenerationRequest(arguments: arguments, command: "generate")
-    let plan = try BuildGenerationPlan(request: request)
-    // Complete validation before writing. Publish the index last so a mixed pair fails to compile.
-    try FileManager.default.createDirectory(at: request.output, withIntermediateDirectories: true)
-    for (url, text) in plan.outputs {
-        try writeIfChanged(Data(text.utf8), to: url)
+    if !FileManager.default.fileExists(atPath: request.output.path) {
+        // A rejected first request must not create its output directory.
+        _ = try BuildGenerationPlan(request: request)
+        try FileManager.default.createDirectory(at: request.output, withIntermediateDirectories: true)
     }
-    print("Blueprint Mocking: generated \(plan.selections.count) protocol mock(s)")
+    try withOutputLock(request.output, exclusive: true) {
+        let plan = try BuildGenerationPlan(request: request)
+        try BuildOutputPublication(directory: request.output).publish(
+            shard: Data(plan.outputs[0].text.utf8), index: Data(plan.outputs[1].text.utf8)
+        )
+        print("Blueprint Mocking: generated \(plan.selections.count) protocol mock(s)")
+    }
 }
