@@ -601,7 +601,8 @@ def main():
     run("xctest-consumer", [sys.executable, "Fixtures/XCTestConsumer/verify.py"],
         env=swift_environment, timeout=600,
         patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines",
-                  r"PASS: XCTest late type task retained its owning reporter"])
+                  r"PASS: XCTest late type task retained its owning reporter",
+                  r"PASS: XCTest routes buffered orphan failures to the suite"])
     run("quiescent-configuration-retirement", [
         modules / "consumer-demo", "--quiescent-configuration"], timeout=20,
         patterns=[r"PASS: RUN035 retired configuration reentered both locks and published the next revision"])

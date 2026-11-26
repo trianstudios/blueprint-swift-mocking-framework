@@ -112,6 +112,8 @@ After your tasks have finished, call `try session.finishIfQuiescent()` to close 
 
 Share an `OrphanFailureBuffer` with `MockSession(orphanFailures: buffer)` to collect rejected calls from closed sessions. In an active Swift Testing run, import `BlueprintMockingTesting` and call `await FailureReporter.flushSwiftTestingOrphans(buffer)`. The flush reports the batch at run level and includes original session and source information. Join known producers before the final flush. Custom harnesses can claim a batch with `buffer.drain()` and use its dropped count when determining the run result.
 
+On macOS XCTest, import `BlueprintMockingXCTest` and call `try FailureReporter.flushXCTestOrphans(buffer, in: suiteRun)` on the runner’s path for an active suite. Pass the suite run explicitly, for example from an `XCTestObservation` hook. The flush records issues at suite level. An inactive suite throws before it claims the buffer.
+
 Use `try session.discardEvents(through: checkpoint)` to discard a current epoch's session metadata prefix. A checkpoint that misses a discarded event reports unavailable history. A gap in global ordinals alone is valid because another epoch can receive events. Endpoint argument histories are separate.
 
 Use `try session.verifyNoInteractions(in: .session)` to check for admissions through the current snapshot, or pass `.mock(mockID)` to check one mock. Use `since:` to start after a checkpoint and `ignoring:` to exclude explicit mock-and-endpoint pairs. A retained admission disproves absence. A pruned prefix can leave the result unavailable.

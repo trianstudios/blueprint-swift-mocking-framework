@@ -96,4 +96,12 @@ A test runner or custom harness can share an `OrphanFailureBuffer` through expli
 
 The buffer caps both pending records and retained bytes per issue. A drain atomically takes the drop count with its records, and Swift Testing fails the run even when a batch contains only drops. A generated post-close getter with no legal fallback emits a synchronous, runner-neutral diagnostic before it traps. A process-level durable transport remains outstanding.
 
-The native Swift Testing fixture uses the product buffer for inherited, detached and Foundation-thread callbacks after native A-end while B stays active. The host verifier checks exactly one run-level issue and a failed process. This evidence uses Apple Swift 6.4 and Swift Testing 2084. Pending delivery while a foreign call still has an open owner, framework-managed finish, and native XCTest and other runner profiles remain open.
+The native Swift Testing fixture uses the product buffer for inherited, detached and Foundation-thread callbacks after native A-end while B stays active. The host verifier checks exactly one run-level issue and a failed process. This evidence uses Apple Swift 6.4 and Swift Testing 2084. Pending delivery while a foreign call still has an open owner and framework-managed finish remain open.
+
+## XCTest suite-level orphan delivery
+
+On macOS, `FailureReporter.flushXCTestOrphans(_:in:)` claims the neutral buffer and records its issues on an explicitly selected active `XCTestSuiteRun`. Native issues retain their original file and line. The detailed description carries owner metadata and the original column. An inactive suite rejects the flush before claiming any records. Drops produce an additional failing suite issue.
+
+The native SwiftPM fixture waits for A’s `testCaseDidFinish` observation, releases A’s callback from B, and verifies both case runs finish with zero failures. The suite records the orphan and SwiftPM exits 1. A deliberate control replays the same captured issue through the ambient adapter while B is active. The control records a B case failure and no suite-owned issue. A separate enabled fixture verifies overflow and a repeated flush.
+
+The checked profile is Apple Swift 6.4 on arm64 macOS 27.0.1. Exercising an active suite on other native XCTest profiles and a portable transport after the runner exits remains outstanding.
