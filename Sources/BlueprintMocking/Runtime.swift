@@ -537,39 +537,64 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
     }
 }
 
-public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    private let journal: ConfiguredJournal<Input, PublishedAsyncThrowingConfiguration<Input, Output, Failure>>
+/// Shared typed dispatch for raw and projection-only histories.
+struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, History: Sendable>: Sendable {
+    private let journal: ConfiguredJournal<History, PublishedAsyncThrowingConfiguration<Input, Output, Failure>>
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
-    public init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
-                failureReporter: FailureReporter,
-                scope: MockScope = MockSession().makeMock(),
-                failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
+
+    init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
+         failureReporter: FailureReporter, scope: MockScope,
+         failureMapping: (@Sendable (MockIssue) -> Failure)?) {
         self.failureMapping = failureMapping
-        self.journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
-                                         configuration: configuration.publish())
+        journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
+                                    configuration: configuration.publish())
     }
 
-    /// Atomically replaces the plan for subsequent admissions. Existing invocations keep their admitted plan.
-    @discardableResult
-    public func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {
+    func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {
         journal.replaceConfiguration(configuration.publish())
     }
 
-    public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
-        guard let (admission, configuration) = journal.admit(input) else {
+    func snapshot() -> JournalSnapshot<History> { journal.snapshot() }
+
+    func consumeProjected<Argument: Sendable, Result: Sendable>(
+        _ selection: SessionConsumptionSelection, matchingArgument matcher: Matcher<Argument>,
+        phase: CallPhase, in scope: SessionConsumptionScope
+    ) throws(ProjectedConsumptionError) -> ProjectedSessionConsumption<Argument, Result>
+        where History == ProjectedFields<Argument, Result> {
+        try journal.consumeProjected(selection, matchingArgument: matcher, phase: phase, in: scope)
+    }
+
+    func verification(matching matcher: Matcher<History>, phase: CallPhase) -> Verification<History> {
+        journal.verification(matching: matcher, phase: phase)
+    }
+
+    func invoke(
+        _ input: Input, recording initialHistory: History, source: SourceLocation,
+        argumentProjection: @Sendable (Input) -> History? = { _ in nil },
+        completionProjection: @Sendable (History, Output?) -> History? = { _, _ in nil }
+    ) async throws(Failure) -> Output {
+        guard let (admission, configuration) = journal.admit(initialHistory) else {
             let issue = journal.reportFinishedCall(source: source)
             if let failureMapping { throw failureMapping(issue) }
             fatalError(issue.message)
         }
         defer { withExtendedLifetime(configuration) {} }
+
+        // User projections, rule matching, answer execution, and error mapping all run
+        // after admission, outside journal and sequence locks.
+        let projected = argumentProjection(input)
+        if let projected { journal.update(admission, replacing: projected) }
+        let history = projected ?? initialHistory
+
         let winningRule = configuration.rules.reversed().first { $0.matcher.matches(input) }
         if let answer = winningRule?.answer.reserve() {
             switch await answer(input) {
-            case .success(let result):
-                journal.complete(admission, phase: .returned)
-                return result
+            case .success(let output):
+                // An optional Output may legitimately be nil. The outer .some still identifies a return.
+                journal.complete(admission, phase: .returned, replacing: completionProjection(history, .some(output)))
+                return output
             case .failure(let error):
-                journal.complete(admission, phase: .threw)
+                journal.complete(admission, phase: .threw, replacing: completionProjection(history, nil))
                 throw error
             }
         }
@@ -577,14 +602,39 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
         if let failureMapping {
             let issue = journal.reportUnansweredCall(admission, source: source, reason: reason)
             let error = failureMapping(issue)
-            journal.complete(admission, phase: .threw)
+            journal.complete(admission, phase: .threw, replacing: completionProjection(history, nil))
             throw error
         }
-        let issue = journal.reportUnansweredCall(admission, phase: .terminated, source: source, reason: reason)
+        journal.complete(admission, phase: .terminated, replacing: completionProjection(history, nil))
+        let issue = journal.reportUnansweredCall(admission, source: source, reason: reason)
         fatalError(issue.message)
     }
-    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
-        journal.verification(matching: matcher, phase: phase)
+}
+
+public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    private let dispatch: AsyncThrowingDispatch<Input, Output, Failure, Input>
+
+    public init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
+                failureReporter: FailureReporter,
+                scope: MockScope = MockSession().makeMock(),
+                failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
+        dispatch = AsyncThrowingDispatch(id: id, configuration: configuration, failureReporter: failureReporter,
+                                         scope: scope, failureMapping: failureMapping)
     }
-    public var invocations: [Invocation<Input>] { journal.snapshot().calls }
+
+    /// Atomically replaces the plan for subsequent admissions. Existing invocations keep their admitted plan.
+    @discardableResult
+    public func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {
+        dispatch.replaceConfiguration(configuration)
+    }
+
+    public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
+        try await dispatch.invoke(input, recording: input, source: source)
+    }
+
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
+        dispatch.verification(matching: matcher, phase: phase)
+    }
+
+    public var invocations: [Invocation<Input>] { dispatch.snapshot().calls }
 }
