@@ -8,6 +8,10 @@ import ConsumerDoubles
         let reporter = FailureReporter { issue in
             FileHandle.standardError.write(Data("MOCK ISSUE: \(issue.message)\n".utf8))
         }
+        if CommandLine.arguments.contains("--missing-never") {
+            let mock = EffectEdgesMock(failureReporter: reporter) { _ in }
+            mock.stop(id: "unstubbed")
+        }
         let mock = UserRepositoryMock(failureReporter: reporter) { stubs in
             stubs.fetchUser(id: .equal("42")).willReturn("Ada")
             stubs.greeting(for: .any).willAnswer { "Hello, " + $0 }

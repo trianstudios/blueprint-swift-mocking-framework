@@ -16,11 +16,13 @@ enum Isolation {
 enum FailureEffect {
     case ordinary
     case typed(String)
+    case never
 
     var type: String {
         switch self {
         case .ordinary: "any Error"
         case .typed(let type): type
+        case .never: "Never"
         }
     }
 
@@ -28,6 +30,7 @@ enum FailureEffect {
         switch self {
         case .ordinary: " throws"
         case .typed(let type): " throws(\(type))"
+        case .never: " throws(Never)"
         }
     }
 
@@ -40,8 +43,13 @@ struct Effect {
     let isAsync: Bool
     let failure: FailureEffect?
 
+    var runtimeFailure: FailureEffect? {
+        if case .never? = failure { return nil }
+        return failure
+    }
+
     var family: String {
-        switch (isAsync, failure != nil) {
+        switch (isAsync, runtimeFailure != nil) {
         case (false, false): "Sync"
         case (false, true): "SyncThrowing"
         case (true, false): "Async"
@@ -54,7 +62,7 @@ struct Effect {
     }
 
     var callPrefix: String {
-        (failure != nil ? "try " : "") + (isAsync ? "await " : "")
+        (runtimeFailure != nil ? "try " : "") + (isAsync ? "await " : "")
     }
 }
 struct Member {
@@ -69,7 +77,7 @@ struct Member {
     var family: String { isolation.prefix + effect.family }
     var arguments: String {
         let types = "\(inputType), \(outputType)"
-        return effect.failure.map { "\(types), \($0.type)" } ?? types
+        return effect.runtimeFailure.map { "\(types), \($0.type)" } ?? types
     }
     var signature: String {
         let parameter = label == "_" ? "_ input" : label + " input"
@@ -128,6 +136,16 @@ func generate(input: String, module: String, selected: String) throws -> String 
         }
         return identifier.name.text
     }
+    func supportedResult(_ type: TypeSyntax?) -> String? {
+        if isolation == .sendable {
+            guard let type else { return "Void" }
+            if type.trimmedDescription == "Void" || type.as(TupleTypeSyntax.self)?.elements.isEmpty == true {
+                return "Void"
+            }
+            if type.trimmedDescription == "Never" { return "Never" }
+        }
+        return type.flatMap(supportedType)
+    }
     var members: [Member] = []
     var descriptors = Set<String>()
     for item in proto.memberBlock.members {
@@ -143,9 +161,8 @@ func generate(input: String, module: String, selected: String) throws -> String 
               parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
               parameter.ellipsis == nil, parameter.defaultValue == nil,
               (simple(parameter.firstName.text) || parameter.firstName.text == "_"),
-              let resultType = fn.signature.returnClause?.type,
-              let outputType = supportedType(resultType) else {
-            let shape = isolation == .sendable ? "String" : "a simple named value or reference type"
+              let outputType = supportedResult(fn.signature.returnClause?.type) else {
+            let shape = isolation == .sendable ? "String input and String, Void or Never result" : "a simple named value or reference type"
             try reject(fn, "Supported requirements take one parameter and return a value of the supported type shape (\(shape)); generics, ownership modifiers, attributes and reserved mock names are unsupported")
         }
         let specifiers = fn.signature.effectSpecifiers
@@ -161,10 +178,10 @@ func generate(input: String, module: String, selected: String) throws -> String 
             if let failureType = clause.type {
                 guard let type = failureType.as(IdentifierTypeSyntax.self),
                       type.genericArgumentClause == nil, simple(type.name.text),
-                      !["Self", "Never", "Stubs", "Verification"].contains(type.name.text) else {
-                    try reject(fn, "Use a named error type; typed Never and complex error types are not implemented")
+                      !["Self", "Stubs", "Verification"].contains(type.name.text) else {
+                    try reject(fn, "Use a named error type; complex error types are not implemented")
                 }
-                failure = .typed(type.name.text)
+                failure = type.name.text == "Never" ? .never : .typed(type.name.text)
             } else {
                 failure = .ordinary
             }
@@ -221,7 +238,7 @@ func generate(input: String, module: String, selected: String) throws -> String 
     output += "    public init(failureReporter: FailureReporter,\n"
     let failureIsolation = isolation == .sendable ? "@Sendable" : "@MainActor"
     for (i,m) in members.enumerated() {
-        guard let failure = m.effect.failure else { continue }
+        guard let failure = m.effect.runtimeFailure else { continue }
         output += "                failureMapping\(i): (\(failureIsolation) (MockIssue) -> \(failure.type))? = nil,\n"
     }
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void) {\n"
@@ -231,11 +248,13 @@ func generate(input: String, module: String, selected: String) throws -> String 
     output += "        configure(Stubs(" + members.indices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
     for (i,m) in members.enumerated() {
         var mapping = ""
-        if let failure = m.effect.failure {
+        if let failure = m.effect.runtimeFailure {
             mapping = ", failureMapping: failureMapping\(i)"
             if failure.isOrdinary {
                 mapping += " ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) }"
             }
+        } else if m.outputType == "Void" {
+            mapping = ", fallback: { _ in () }"
         }
         output += "        self.__endpoint\(i) = \(m.family)Endpoint(id: EndpointID(\(String(reflecting: m.identity))),\n            configuration: setup\(i).finish(), failureReporter: failureReporter\(mapping))\n"
     }

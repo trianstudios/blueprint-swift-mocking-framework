@@ -114,6 +114,30 @@ final class Journal<Input: Sendable>: Sendable {
         state.withLock { $0.issues.append(issue) }
         reporter.report(issue) // Consumer code must run after releasing synchronization.
     }
+
+    func reportMissingCall(_ id: UInt64, phase: CallPhase? = nil, source: SourceLocation) -> MockIssue {
+        if let phase { complete(id, phase: phase) }
+        let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
+                              message: "No matching stub for \(endpoint.rawValue)",
+                              source: source, watermark: id)
+        report(issue)
+        return issue
+    }
+
+    func resolveMissingNonthrowingCall<Output: Sendable>(
+        _ id: UInt64,
+        source: SourceLocation,
+        fallback: (@Sendable (MockIssue) -> Output)?
+    ) -> Output {
+        guard let fallback else {
+            let issue = reportMissingCall(id, phase: .terminated, source: source)
+            fatalError(issue.message)
+        }
+        let issue = reportMissingCall(id, source: source)
+        let result = fallback(issue)
+        complete(id, phase: .returned)
+        return result
+    }
 }
 
 public struct Verification<Input: Sendable>: Sendable {
@@ -189,10 +213,15 @@ public struct SyncStub<Input: Sendable, Output: Sendable> {
 public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     private let configuration: SyncConfiguration<Input, Output>
     private let journal: Journal<Input>
+    private let fallback: (@Sendable (MockIssue) -> Output)?
+
+    /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
     public init(id: EndpointID, configuration: SyncConfiguration<Input, Output>,
-                failureReporter: FailureReporter) {
+                failureReporter: FailureReporter,
+                fallback: (@Sendable (MockIssue) -> Output)? = nil) {
         self.configuration = configuration
         self.journal = Journal(endpoint: id, reporter: failureReporter)
+        self.fallback = fallback
     }
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) -> Output {
         let id = journal.begin(input)
@@ -202,12 +231,7 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
             journal.complete(id, phase: .returned)
             return result
         }
-        journal.complete(id, phase: .terminated)
-        let issue = MockIssue(kind: .unexpectedCall, endpoint: journal.endpoint,
-                              message: "No matching stub for \(journal.endpoint.rawValue)",
-                              source: source, watermark: id)
-        journal.report(issue)
-        fatalError(issue.message)
+        return journal.resolveMissingNonthrowingCall(id, source: source, fallback: fallback)
     }
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
         Verification(journal: journal, matcher: matcher, phase: phase)
@@ -278,16 +302,11 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
                 throw error
             }
         }
-        let issue = MockIssue(kind: .unexpectedCall, endpoint: journal.endpoint,
-                              message: "No matching stub for \(journal.endpoint.rawValue)",
-                              source: source, watermark: id)
         if let failureMapping {
-            journal.complete(id, phase: .threw)
-            journal.report(issue) // A caught mapped error must still report a test failure.
+            let issue = journal.reportMissingCall(id, phase: .threw, source: source)
             throw failureMapping(issue)
         }
-        journal.complete(id, phase: .terminated)
-        journal.report(issue)
+        let issue = journal.reportMissingCall(id, phase: .terminated, source: source)
         fatalError(issue.message)
     }
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {

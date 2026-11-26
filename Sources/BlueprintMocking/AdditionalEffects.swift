@@ -25,17 +25,6 @@ private final class EffectRulesBuilder<Input: Sendable, Answer: Sendable> {
     }
 }
 
-private extension Journal {
-    func reportMissingCall(_ id: UInt64, phase: CallPhase, source: SourceLocation) -> MockIssue {
-        complete(id, phase: phase)
-        let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
-                              message: "No matching stub for \(endpoint.rawValue)",
-                              source: source, watermark: id)
-        report(issue)
-        return issue
-    }
-}
-
 // Store Result so the private rule representation supports the original OS floors.
 private typealias SyncThrowingAnswer<Input, Output, Failure: Error> =
     @Sendable (Input) -> Result<Output, Failure>
@@ -172,11 +161,15 @@ public struct AsyncStub<Input: Sendable, Output: Sendable> {
 public final class AsyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     private let configuration: AsyncConfiguration<Input, Output>
     private let journal: Journal<Input>
+    private let fallback: (@Sendable (MockIssue) -> Output)?
 
+    /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
     public init(id: EndpointID, configuration: AsyncConfiguration<Input, Output>,
-                failureReporter: FailureReporter) {
+                failureReporter: FailureReporter,
+                fallback: (@Sendable (MockIssue) -> Output)? = nil) {
         self.configuration = configuration
         self.journal = Journal(endpoint: id, reporter: failureReporter)
+        self.fallback = fallback
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async -> Output {
@@ -186,8 +179,7 @@ public final class AsyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
             journal.complete(id, phase: .returned)
             return result
         }
-        let issue = journal.reportMissingCall(id, phase: .terminated, source: source)
-        fatalError(issue.message)
+        return journal.resolveMissingNonthrowingCall(id, source: source, fallback: fallback)
     }
 
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {

@@ -88,6 +88,10 @@ def main():
     effect_source = source.with_name("EffectDirectory.swift")
     effect_generated = generated.with_name("EffectDirectoryMock.swift")
     run("effects-generation", generate(tool, effect_source, effect_generated, "EffectDirectory"))
+
+    edge_source = source.with_name("EffectEdges.swift")
+    edge_generated = generated.with_name("EffectEdgesMock.swift")
+    run("effect-edges-generation", generate(tool, edge_source, edge_generated, "EffectEdges"))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -138,6 +142,8 @@ def main():
         "ThrowForSync": r"has no member 'willThrow'",
         "ThrowForAsync": r"has no member 'willThrow'",
         "ThrowingAnswerForAsync": r"to non-throwing function type",
+        "ThrowForNever": r"has no member 'willThrow'",
+        "ValueForNever": r"cannot convert value of type 'String'.*'Never'",
         "AsyncAnswerForSyncThrowing": r"to parameter expecting synchronous function type",
     }
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
@@ -168,7 +174,7 @@ def main():
     run("xctest-consumer", [sys.executable, "Fixtures/XCTestConsumer/verify.py"],
         env=swift_environment, timeout=600,
         patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines"])
-    for label, flag in [("typed", "--missing"), ("sync", "--missing-sync")]:
+    for label, flag in [("typed", "--missing"), ("sync", "--missing-sync"), ("never", "--missing-never")]:
         fatal_log = run(label + "-missing-terminates", [modules / "consumer-demo", flag],
                         fails=True, patterns=[r"MOCK ISSUE: No matching stub", r"Fatal error: No matching stub"])
         assert fatal_log.index("MOCK ISSUE:") < fatal_log.index("Fatal error:")
@@ -199,6 +205,7 @@ def main():
         "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
         "mainActorGeneratedSHA256": hashlib.sha256(actor_baseline).hexdigest(),
         "effectsGeneratedSHA256": hashlib.sha256(effect_generated.read_bytes()).hexdigest(),
+        "effectEdgesGeneratedSHA256": hashlib.sha256(edge_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
