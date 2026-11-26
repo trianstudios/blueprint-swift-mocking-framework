@@ -62,14 +62,14 @@ public struct CallCount: Sendable {
         precondition(value >= 0, "Call counts must be nonnegative")
         return Self(bound: .maximum(value))
     }
-    fileprivate func accepts(_ actual: Int) -> Bool {
+    func accepts(_ actual: Int) -> Bool {
         switch bound {
         case .exact(let n): actual == n
         case .minimum(let n): actual >= n
         case .maximum(let n): actual <= n
         }
     }
-    fileprivate var description: String {
+    var description: String {
         switch bound {
         case .exact(let n): "exactly \(n)"
         case .minimum(let n): "at least \(n)"

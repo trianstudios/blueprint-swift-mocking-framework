@@ -49,10 +49,18 @@ def main():
         "--protocol", "UserRepository", "--output", generated])
     tool = ROOT / ".build/prototype-tooling/generate"
     baseline = generated.read_bytes()
+    actor_source = source.with_name("MainActorDirectory.swift")
+    actor_generated = generated.with_name("MainActorDirectoryMock.swift")
+    run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
+    actor_baseline = actor_generated.read_bytes()
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
     assert baseline == (temp / "Repeated.swift").read_bytes()
+    actor_repeated = temp / "RepeatedMainActor.swift"
+    run("main-actor-generation-repeat",
+        generate(tool, actor_source, actor_repeated, "MainActorDirectory"))
+    assert actor_baseline == actor_repeated.read_bytes()
     relocated = temp / "relocated"
     relocated.mkdir(exist_ok=True)
     relocated_source = relocated / source.name
@@ -60,11 +68,17 @@ def main():
         "func greeting(for name: String)", "func   greeting( for name : String )"))
     run("generation-whitespace", generate(tool, relocated_source, temp / "Whitespace.swift"))
     assert baseline == (temp / "Whitespace.swift").read_bytes()
+    expected_rejections = {
+        "DescriptorCollision": r"Overloads that differ only by effects or result type",
+    }
     for rejection in sorted((ROOT / "Fixtures/GeneratorRejections").glob("*.swift")):
         output = temp / "Rejected.swift"
         output.write_text("sentinel: preserve the previous generation\n")
+        rejection_patterns = [r"BPM001", r":\d+:\d+: error:"]
+        if rejection.stem in expected_rejections:
+            rejection_patterns.append(expected_rejections[rejection.stem])
         run("reject-" + rejection.stem, generate(tool, rejection, output, rejection.stem),
-            fails=True, patterns=[r"BPM001", r":\d+:\d+: error:"])
+            fails=True, patterns=rejection_patterns)
         assert output.read_text() == "sentinel: preserve the previous generation\n"
     run("runtime-tests", ["swift", "test"], patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
     run("consumer-tests", ["swift", "test", "--package-path", "Fixtures/ProtocolConsumer"],
@@ -75,6 +89,11 @@ def main():
         "swift", "build", "--package-path", "Fixtures/ProtocolConsumer", "--show-bin-path"]).strip())
     sdk = subprocess.check_output(["xcrun", "--show-sdk-path"], text=True).strip()
     patterns = {
+        "MainActorAssertionAccess": r"main actor-isolated.*'wasCalled",
+        "MainActorAsyncTransport": r"sending 'entry' risks causing data races",
+        "MainActorStubbingAccess": r"main actor-isolated.*'display",
+        "MainActorVerificationAccess": r"main actor-isolated.*'display",
+        "MainActorWitnessAccess": r"main actor-isolated.*'display",
         "WrongResult": r"cannot convert value of type 'Int'",
         "WrongError": r"cannot convert value of type 'Other'",
         "GeneratedWrongError": r"cannot convert value of type 'UnrelatedError'",
@@ -84,10 +103,24 @@ def main():
         "ThrowForSync": r"has no member 'willThrow'",
     }
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
-        run("compile-reject-" + fixture.stem, [
+        compiler_stage = ["-typecheck"]
+        diagnostic_patterns = [patterns[fixture.stem]]
+        if fixture.stem == "MainActorAsyncTransport":
+            # Swift checks unsafe region transfers during SIL generation.
+            compiler_stage = ["-emit-sil", "-o", os.devnull]
+            diagnostic_patterns.append(r"non-Sendable 'DirectoryEntry'-typed result.*main actor-isolated")
+        compiler_command = [
             "xcrun", "swiftc", "-swift-version", "6", "-target",
-            platform.machine() + "-apple-macos15.0", "-sdk", sdk, "-typecheck",
-            "-I", modules, fixture], fails=True, patterns=[patterns[fixture.stem]])
+            platform.machine() + "-apple-macos15.0", "-sdk", sdk, *compiler_stage,
+            "-I", modules,
+        ]
+        check_name = "compile-reject-" + fixture.stem
+        run(check_name, [*compiler_command, fixture], fails=True, patterns=diagnostic_patterns)
+        if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess",
+                            "MainActorVerificationAccess"}:
+            run(check_name + "-DefaultIsolation",
+                [*compiler_command, "-default-isolation", "MainActor", fixture],
+                fails=True, patterns=diagnostic_patterns)
     intentional_env = os.environ.copy()
     intentional_env["BLUEPRINT_EXPECT_FAILURE"] = "1"
     run("reporter-intentional-failure", [
@@ -119,7 +152,8 @@ def main():
         "architecture": platform.machine(), "deploymentTarget": "macOS 15.0",
         "defaultIsolation": "compiler default (nonisolated); no upcoming feature flags",
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
-        "generatedSHA256": hashlib.sha256(generated.read_bytes()).hexdigest(),
+        "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
+        "mainActorGeneratedSHA256": hashlib.sha256(actor_baseline).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")

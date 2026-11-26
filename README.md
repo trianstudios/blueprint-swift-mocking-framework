@@ -1,6 +1,6 @@
 # Blueprint Mocking
 
-Blueprint Mocking generates typed Swift test doubles. The public prototype implements the first protocol workflow. The [acceptance roadmap](Docs/Acceptance-Status.csv) tracks the 125 contracts from architecture edition 1.0.
+Blueprint Mocking generates typed Swift test doubles. The public prototype supports generated Sendable and MainActor protocol mocks. The [acceptance roadmap](Docs/Acceptance-Status.csv) tracks the 125 contracts from architecture edition 1.0.
 
 The first implemented slice generates a checked Sendable protocol mock, configures typed answers, injects it into a real service, and verifies calls. Configuration and verification use descriptors; neither executes a production requirement. Runtime, generation, and runner reporting have separate source boundaries.
 
@@ -42,7 +42,7 @@ mock.verify.fetchUser(id: .equal("42")).wasCalled(.once)
 
 Select the `BluepringMockingFramework` SwiftPM library product in your test target and import its `BlueprintMocking` module. Add the `BlueprintMockingTesting` product and import its module to use the optional `.swiftTesting` reporter. The consumer’s production target depends only on the domain interface.
 
-The implemented generator profile accepts a top-level public protocol inheriting only Sendable, with one String argument and String result per requirement. It supports synchronous nonthrowing methods and async throws(NamedError), including overloads distinguished by argument labels. Other members, effects, actor annotations, and generic signatures receive a location diagnostic before output changes. SwiftParser/SwiftSyntax come from the installed Xcode toolchain through a separate prototype host script. This is a real parser and witness generator, with consumer compilation as its conformance check; semantic module resolution and the distributable tooling package remain unimplemented.
+The generator accepts top-level public protocols in two profiles. A protocol inheriting only Sendable can declare methods that take and return a String. A protocol annotated with `@MainActor` and no inheritance can use simple named input and result types, including non-Sendable values owned by MainActor. Both profiles support synchronous nonthrowing and async typed-throwing methods with one argument. Overloads may differ by argument label or supported input type. Compiler validation of the generated conformance is part of verification. SwiftParser and SwiftSyntax come from the installed Xcode toolchain.
 
 The runtime supports exact/any/custom typed matchers, last-registration-wins rules, immutable setup plans, return/answer stubs, typed async errors, admission/returned/threw count queries, and exact/minimum/maximum counts. Each endpoint has its own typed storage and append-only journal. No Any result casting, process-global registry, detached answer task, or unchecked Sendable conformance is used. User matchers, answers, and reporters execute outside journal synchronization.
 
@@ -50,7 +50,7 @@ Unexpected value calls report before termination. Async typed-throwing endpoints
 
 The tested profile is **Apple Swift 6.4, Swift 6 language mode, arm64 macOS 27 execution, macOS 27 SDK**, compiling with deployment target macOS 15. The prototype uses Synchronization.Mutex and therefore selects macOS 15 in its manifests. The architecture's macOS 13/iOS 16 and other platform floors still require the audited fallback backend and native certification. Swift 6.0/6.2, older OS execution, other default-isolation modes, Linux, Windows, and mobile platforms were not verified.
 
-The MainActor example injects this Sendable mock into a MainActor service. It does not establish actor-specific mock support. Histories retain Sendable inputs directly; the example's String arguments are value snapshots. General projection, redaction, retention budgets, session coordination, reset/reconfiguration, sequences, generic/ownership-sensitive declarations, class/Objective-C adapters, XCTest, plugins, migration and release certification remain roadmap work.
+The MainActor mock keeps setup, matchers, answers, invocation history, and verification on MainActor. A matcher can observe actor-local state, and an answer may return an actor-local reference. History retains those references and evaluates matchers against their state at verification time. The sample includes a consumer workflow and checks that illegal cross-actor access fails compilation. Custom global actors, Actor-constrained protocols, projections, advanced history and sessions, additional declaration families, XCTest, plugins, migration and release certification remain roadmap work.
 
 See the [implementation evidence](Docs/Implementation-Evidence.md) for the verified scope and the next slice. The [contribution guide](CONTRIBUTING.md) explains the TDD workflow and how to submit a milestone.
 
