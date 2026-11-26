@@ -576,30 +576,44 @@ public struct AsyncThrowingSequenceStep<Input: Sendable, Output: Sendable, Failu
     }
 }
 
-public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    fileprivate let rules: [Rule<Input, PlannedAnswer<AsyncAnswer<Input, Output, Failure>>>]
+fileprivate struct AsyncRuleBehavior<Input: Sendable, Plan: Sendable>: Sendable {
+    let plan: Plan
+    let capture: WinningRuleCapture<Input>?
+}
 
-    fileprivate func publish() -> PublishedAsyncThrowingConfiguration<Input, Output, Failure> {
-        PublishedAsyncThrowingConfiguration(
-            rules: rules.map { Rule(matcher: $0.matcher, answer: $0.answer.publish()) }
-        )
+fileprivate typealias PlannedAsyncThrowingRule<Input: Sendable, Output: Sendable, Failure: Error> =
+    Rule<Input, AsyncRuleBehavior<Input, PlannedAnswer<AsyncAnswer<Input, Output, Failure>>>>
+
+public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    fileprivate let rules: [PlannedAsyncThrowingRule<Input, Output, Failure>]
+
+    fileprivate func publish(for sessionID: SessionID) -> PublishedAsyncThrowingConfiguration<Input, Output, Failure> {
+        precondition(rules.allSatisfy { $0.answer.capture.map { $0.sessionID == sessionID } ?? true },
+                     "Argument captor belongs to a different mock session")
+        return PublishedAsyncThrowingConfiguration(rules: rules.map { rule in
+            Rule(matcher: rule.matcher, answer: AsyncRuleBehavior(
+                plan: rule.answer.plan.publish(), capture: rule.answer.capture))
+        })
     }
 }
 
 private struct PublishedAsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    let rules: [Rule<Input, PublishedAnswer<AsyncAnswer<Input, Output, Failure>>>]
+    let rules: [Rule<Input, AsyncRuleBehavior<Input, PublishedAnswer<AsyncAnswer<Input, Output, Failure>>>>]
 }
 
 public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Failure: Error> {
-    private var rules: [Rule<Input, PlannedAnswer<AsyncAnswer<Input, Output, Failure>>>] = []
+    private var rules: [PlannedAsyncThrowingRule<Input, Output, Failure>] = []
     private var finished = false
     public init() {}
     public func matching(_ matcher: Matcher<Input>) -> AsyncThrowingStub<Input, Output, Failure> {
-        AsyncThrowingStub(owner: self, matcher: matcher)
+        AsyncThrowingStub(owner: self, matcher: matcher, capture: nil)
     }
-    fileprivate func add(_ matcher: Matcher<Input>, _ answer: PlannedAnswer<AsyncAnswer<Input, Output, Failure>>) {
+    fileprivate func add(
+        _ matcher: Matcher<Input>, _ answer: PlannedAnswer<AsyncAnswer<Input, Output, Failure>>,
+        capture: WinningRuleCapture<Input>?
+    ) {
         precondition(!finished, "Setup is already published; live reconfiguration is not implemented")
-        rules.append(Rule(matcher: matcher, answer: answer))
+        rules.append(Rule(matcher: matcher, answer: AsyncRuleBehavior(plan: answer, capture: capture)))
     }
     public func finish() -> AsyncThrowingConfiguration<Input, Output, Failure> {
         precondition(!finished, "Setup is already published")
@@ -610,14 +624,29 @@ public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Fail
 public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Error> {
     fileprivate let owner: AsyncThrowingStubbing<Input, Output, Failure>
     fileprivate let matcher: Matcher<Input>
+    fileprivate let capture: WinningRuleCapture<Input>?
+
+    /// Projects the argument once after this rule reserves an answer and before it executes.
+    /// A second call replaces the policy on the returned descriptor. The captor and
+    /// endpoint must use the same session at initialization and configuration replacement.
+    public func capturing<Value: Sendable>(
+        into captor: ArgumentCaptor<Value>, projecting projection: @escaping @Sendable (Input) -> Value
+    ) -> Self {
+        AsyncThrowingStub(owner: owner, matcher: matcher,
+                          capture: WinningRuleCapture(captor: captor, projecting: projection))
+    }
+
     public func willReturn(_ output: Output) {
-        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.returning(output).answer))
+        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.returning(output).answer),
+                  capture: capture)
     }
     public func willThrow(_ error: Failure) {
-        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.throwing(error).answer))
+        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.throwing(error).answer),
+                  capture: capture)
     }
     public func willAnswer(_ answer: @escaping @Sendable (Input) async throws(Failure) -> Output) {
-        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.answering(answer).answer))
+        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.answering(answer).answer),
+                  capture: capture)
     }
 
     /// Reserves one step for each matching call. An exhausted finite sequence
@@ -627,7 +656,7 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
         _ remaining: AsyncThrowingSequenceStep<Input, Output, Failure>...,
         policy: StubSequencePolicy = .finite
     ) {
-        owner.add(matcher, .sequence([first.answer] + remaining.map(\.answer), policy))
+        owner.add(matcher, .sequence([first.answer] + remaining.map(\.answer), policy), capture: capture)
     }
 }
 
@@ -635,18 +664,20 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
 struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, History: Sendable>: Sendable {
     private let journal: ConfiguredJournal<History, PublishedAsyncThrowingConfiguration<Input, Output, Failure>>
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
+    private let sessionID: SessionID
 
     init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
          failureReporter: FailureReporter, scope: MockScope,
          failureMapping: (@Sendable (MockIssue) -> Failure)?, tracksProjectionTimeline: ProjectionTimelineFields = []) {
+        self.sessionID = scope.session.id
         self.failureMapping = failureMapping
         journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
-                                    configuration: configuration.publish(),
+                                    configuration: configuration.publish(for: sessionID),
                                     tracksProjectionTimeline: tracksProjectionTimeline)
     }
 
     func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {
-        journal.replaceConfiguration(configuration.publish())
+        journal.replaceConfiguration(configuration.publish(for: sessionID))
     }
 
     func snapshot() -> JournalSnapshot<History> { journal.snapshot() }
@@ -694,7 +725,8 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         let history = projected ?? initialHistory
 
         let winningRule = configuration.rules.reversed().first { $0.matcher.matches(input) }
-        if let answer = winningRule?.answer.reserve() {
+        if let winningRule, let answer = winningRule.answer.plan.reserve() {
+            winningRule.answer.capture?.publish(input, admission.event)
             switch await answer(input) {
             case .success(let output):
                 // An optional Output may legitimately be nil. The outer .some still identifies a return.

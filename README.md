@@ -45,7 +45,7 @@ To install a tested development revision from GitHub, use a URL dependency and t
 
 Run `python3 scripts/verify_remote_install.py <commit>` to verify RuntimeOnly, Swift Testing, and XCTest from the public URL. It exports the fixtures at that commit and records their resolved pins in an ignored `.build/remote-install/` report. After an approved release tag is available, add `--version <exact-semver>` to verify the tag resolves to the supplied commit.
 
-For generated and direct Sendable synchronous stubs, create an `ArgumentCaptor` with the same `MockSession` as the mock and attach it using `.capturing(into:projecting:)` before configuring the answer. The selected rule projects once before its answer starts. Captures are returned in admission order. A reset clears the live captor and any previously read capture array keeps its values.
+For generated and direct Sendable synchronous or async-throwing stubs, create an `ArgumentCaptor` with the same `MockSession` as the mock and attach it using `.capturing(into:projecting:)` before configuring the answer. A synchronous winner projects once before its answer. An async-throwing winner projects after it reserves an answer, so exhausted sequences publish no capture. Captures are returned in admission order. A reset clears the live captor and any previously read capture array keeps its values.
 
 A test uses the production interface without adding mocking imports to its module:
 
