@@ -166,6 +166,21 @@ def main():
     run("parameterized-parent-generation", generate(
         tool, parameterized_parent_source, parameterized_parent_generated, "IntDirectory",
         sources=dependency_associated_parents))
+    iterator_source = source.with_name("IntSequence.swift")
+    iterator_parent = source.with_name("CursorSequence.swift")
+    iterator_alias_source = source.with_name("IntCursor.swift")
+    iterator_generated = generated.with_name("IntSequenceMock.swift")
+    iterator_sources = (("ConsumerDomain", iterator_parent), ("ConsumerDomain", iterator_alias_source))
+    iterator_binding = ("Iterator=ConsumerDomain.IntCursor",)
+    iterator_mismatch_source = ROOT / "Fixtures/InheritanceRejections/StringCursorSequence.swift"
+    iterator_mismatch_patterns = [
+        r"CursorSequence\.swift:3:\d+: error: BPM001: Dependent same-type constraint "
+        r"'Iterator\.Element == Element' requires matching types\. ConsumerDomain\.IntCursor\.Element "
+        r"is Swift\.Int at .*IntCursor\.swift:2:\d+ and Element is Swift\.String",
+    ]
+    run("iterator-binding-generation", generate(
+        tool, iterator_source, iterator_generated, "IntSequence",
+        sources=iterator_sources, associated_bindings=iterator_binding))
     actor_source = source.with_name("MainActorDirectory.swift")
     actor_generated = generated.with_name("MainActorDirectoryMock.swift")
     run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
@@ -375,6 +390,42 @@ def main():
     ).read_bytes()
     run("parameterized-parent-config-verify-generated", [tool, "verify-generated", *parameterized_config_args],
         patterns=[r"Blueprint Mocking: verified 2 generated file"])
+    iterator_config = temp / "iterator-binding-blueprint-mocking.json"
+    iterator_selection = {
+        "module": "ConsumerDomain", "type": "IntSequence", "kind": "protocol",
+        "associatedTypeBindings": [{"name": "Iterator", "type": "ConsumerDomain.IntCursor"}],
+    }
+    iterator_config.write_text(json.dumps({"schemaVersion": 1, "selections": [iterator_selection]}))
+    iterator_batch = temp / "iterator-binding-batch"
+    iterator_config_args = [
+        "--config", iterator_config, "--output", iterator_batch, "--input-set-id", "6",
+        "--source", "ConsumerDomain", iterator_source,
+        "--source", "ConsumerDomain", iterator_mismatch_source,
+        *(argument for module, path in iterator_sources for argument in ("--source", module, path)),
+    ]
+    iterator_inspection = json.loads(run("iterator-binding-config-inspection", [
+        tool, "inspect", *iterator_config_args, "--format", "json",
+    ]))
+    assert iterator_inspection["configuration"]["selections"] == [iterator_selection | {
+        "associatedTypeBindings": [
+            {"name": "Element", "type": "Swift.Int"},
+            {"name": "Iterator", "type": "ConsumerDomain.IntCursor"},
+        ],
+    }]
+    run("iterator-binding-config-generation", [tool, "generate", *iterator_config_args],
+        patterns=[r"Blueprint Mocking: generated 1 protocol mock"])
+    assert iterator_generated.read_bytes() in (iterator_batch / "BlueprintMocks.generated.swift").read_bytes()
+    run("iterator-binding-config-verify-generated", [tool, "verify-generated", *iterator_config_args],
+        patterns=[r"Blueprint Mocking: verified 2 generated file"])
+    iterator_outputs = [
+        iterator_batch / "BlueprintMocks.generated.swift", iterator_batch / "BlueprintMockingIndex.generated.swift",
+    ]
+    original_iterator_outputs = [(file.read_bytes(), file.stat().st_mtime_ns) for file in iterator_outputs]
+    incompatible_iterator_selection = iterator_selection | {"type": "StringCursorSequence"}
+    iterator_config.write_text(json.dumps({"schemaVersion": 1, "selections": [incompatible_iterator_selection]}))
+    run("reject-iterator-binding-config-mismatch", [tool, "generate", *iterator_config_args],
+        fails=True, patterns=iterator_mismatch_patterns)
+    assert [(file.read_bytes(), file.stat().st_mtime_ns) for file in iterator_outputs] == original_iterator_outputs
     assert baseline == (temp / "Repeated.swift").read_bytes()
     actor_repeated = temp / "RepeatedMainActor.swift"
     run("main-actor-generation-repeat",
@@ -744,6 +795,42 @@ def main():
             tool, selected, output, selected.stem, sources=dependency_associated_parents, associated_bindings=bindings),
             fails=True, patterns=patterns)
         assert output.read_bytes() == sentinel
+    inferred_iterator = inheritance_rejections / "InferredIntCursor.swift"
+    iterator_alias_extension = inheritance_rejections / "IteratorAliasExtensionShadow.swift"
+    iterator_negatives = [
+        ("mismatch", "ConsumerDomain", iterator_mismatch_source, iterator_sources,
+         iterator_binding, iterator_mismatch_patterns),
+        ("unqualified-alias", "ConsumerDomain", iterator_source, iterator_sources, ("Iterator=IntCursor",),
+         [r"BPM001: Dependent iterator binding 'Iterator' requires a module-qualified struct in ConsumerDomain"]),
+        ("missing-source", "ConsumerDomain", iterator_source, iterator_sources[:1], iterator_binding,
+         [r"BPM001: Cannot resolve 'ConsumerDomain\.IntCursor\.Element' from supplied source"]),
+        ("missing-witness", "ConsumerDomain", iterator_source,
+         (*iterator_sources[:1], ("ConsumerDomain", inferred_iterator)), ("Iterator=ConsumerDomain.InferredIntCursor",), [
+             r"CursorSequence\.swift:3:\d+: error: BPM001: Cannot resolve "
+             r"'ConsumerDomain\.InferredIntCursor\.Element' from supplied source",
+             r"Declare exactly one unconditional public typealias Element",
+         ]),
+        ("extension-alias-shadow", "ConsumerDomain", iterator_source,
+         (*iterator_sources, ("ConsumerDomain", iterator_alias_extension)), iterator_binding, [
+             r"CursorSequence\.swift:3:\d+: error: BPM001: Cannot resolve "
+             r"'ConsumerDomain\.IntCursor\.Element' from supplied source\. "
+             r"A supplied extension could change Element or Swift lookup\.",
+             r"IteratorAliasExtensionShadow\.swift:8:\d+",
+         ]),
+        ("generated-module-shadow", "Stubs", iterator_source,
+         tuple(("Stubs", path) for _, path in iterator_sources), ("Iterator=Stubs.IntCursor",), [
+             r"CursorSequence\.swift:3:\d+: error: BPM001: Dependent iterator binding cannot use "
+             r"module 'Stubs' because that name is used by the generated mock\.",
+         ]),
+    ]
+    for label, module, selected, inputs, bindings, patterns in iterator_negatives:
+        output = temp / "RejectedIteratorBinding.swift"
+        sentinel = b"sentinel: preserve prior iterator binding generation\n"
+        output.write_bytes(sentinel)
+        run("reject-iterator-binding-" + label, generate(
+            tool, selected, output, selected.stem, module=module, sources=inputs, associated_bindings=bindings),
+            fails=True, patterns=patterns)
+        assert output.read_bytes() == sentinel
     mapper_fixture = ROOT / "Fixtures/FailureMappingConsumer"
     mapper_tests = "Tests/FailureMappingProbeTests/FailureMappingTests.swift"
     baseline_probe = (mapper_fixture / "Variants/A/Probe.swift").read_text()
@@ -776,7 +863,8 @@ def main():
                   r"GEN008_concretePrimaryAssociatedTypeBindingSurvivesConsumerCalls\(\) passed",
                   r"GEN008_inheritedAssociatedRequirementKeepsItsDeclarationSource\(\) passed",
                   r"GEN008_qualifiedParentBindsAssociatedTypeAcrossTargets\(\) passed",
-                  r"GEN008_parameterizedParentInfersConcreteWitnessAcrossTargets\(\) passed"])
+                  r"GEN008_parameterizedParentInfersConcreteWitnessAcrossTargets\(\) passed",
+                  r"GEN008_iteratorEqualitySurvivesInheritedPrimaryNormalization\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [

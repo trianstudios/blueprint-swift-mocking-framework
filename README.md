@@ -144,9 +144,11 @@ bash scripts/generate.sh \
   --bind-associated-type Element=String
 ```
 
-This profile supports ordinary instance methods on `Sendable` protocols, with `Swift.Bool`, `Swift.Int`, or `Swift.String` bindings and optional `Sendable` constraints. Bind each associated type once. Overloads need distinct argument labels. Dependent constraints, defaults and associated types from compiler-provided interfaces remain open.
+This profile supports ordinary instance methods on `Sendable` protocols, with `Swift.Bool`, `Swift.Int`, or `Swift.String` bindings and optional `Sendable` constraints. Bind each associated type once. Overloads need distinct argument labels. General dependent constraints, defaults and associated types from compiler-provided interfaces remain open.
 
 A supplied parent with one primary associated type can fix the witness in the inheritance clause. For example, `ParentDomain.BoundParent<Swift.Int>` sets `Element` to `Swift.Int`. The inheritance clause accepts `Swift.Bool`, `Swift.Int` or `Swift.String` in this profile. An explicit CLI or configuration binding may repeat the same type and must agree with the source constraint.
+
+For a dependent iterator, declare `associatedtype Iterator: Swift.IteratorProtocol & Swift.Sendable where Iterator.Element == Element`. Bind `Iterator` to a module-qualified struct from the selected source module, such as `--bind-associated-type Iterator=ConsumerDomain.IntCursor`. Supply its source file. The public nongeneric struct must directly declare both conformances and a public scalar `Element` type alias. The generator checks that alias against the resolved `Element` before writing the mock. The [iterator fixture](Fixtures/ProtocolConsumer/Sources/ConsumerDomain/IntSequence.swift) gets its scalar binding from a parameterized parent.
 
 For supported Sendable methods, add `--project 'fetch(id:)'` and any other `--project` selectors to generate a separate `<Protocol>ProjectedMock`. Synchronous nonthrowing and async-throwing methods can opt in. A selector uses the declaration's argument labels, including `_:` for unlabeled arguments. If overloads share the same labels, use the canonical endpoint ID listed in the diagnostic.
 

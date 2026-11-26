@@ -19,6 +19,11 @@ struct IndexedProtocol {
     var name: String { declaration.name.text }
 }
 
+struct IteratorElementWitness {
+    let type: String
+    let origin: ProtocolSourceOrigin
+}
+
 struct InheritedPrimaryTypeBinding {
     let name: String
     let type: String
@@ -161,13 +166,16 @@ final class ProtocolSourceIndex {
     /// Rejects qualifier shadows that can be found in the supplied source and the declaring file's imports.
     func requireUnshadowedQualifier(_ name: String, at node: some SyntaxProtocol) throws {
         let file = file(containing: node)
-        let site = file.origin(of: node)
-        try requireUnshadowed(name, in: file.module, at: site)
+        if let conflict = try qualifierShadow(name, in: file) {
+            throw Self.error(at: file.origin(of: node), conflict)
+        }
+    }
 
+    private func qualifierShadow(_ name: String, in file: SourceFile) throws -> String? {
+        if let local = localShadow(name, in: file.module) { return local }
         if let selective = file.imports.selectiveByName[name] {
             let locations = selective.map(\.description).joined(separator: ", ")
-            throw Self.error(at: site, "Module qualifier '\(name)' is shadowed by a selective import. "
-                             + "Candidates: \(locations)")
+            return "Module qualifier '\(name)' is shadowed by a selective import. Candidates: \(locations)"
         }
 
         let suppliedImports = file.imports.ordinary.sorted().filter { module in
@@ -179,10 +187,69 @@ final class ProtocolSourceIndex {
             let exported = Self.shadows(named: name, in: imported).filter(\.canBeImported)
             competitors.append(contentsOf: exported)
         }
-        if !competitors.isEmpty {
-            throw Self.error(at: site, "Module qualifier '\(name)' is shadowed by an imported declaration. "
-                             + "Candidates: " + Self.candidateLocations(competitors))
+        guard !competitors.isEmpty else { return nil }
+        return "Module qualifier '\(name)' is shadowed by an imported declaration. Candidates: "
+            + Self.candidateLocations(competitors)
+    }
+
+    func iteratorElementWitness(
+        named name: String, in module: String, at constraint: some SyntaxProtocol
+    ) throws -> IteratorElementWitness {
+        let site = origin(of: constraint)
+        let qualified = "\(module).\(name)"
+        func unresolved(_ remedy: String) throws -> Never {
+            throw Self.error(at: site, "Cannot resolve '\(qualified).Element' from supplied source. \(remedy)")
         }
+
+        let declarations = try load(module)
+        let candidates = Self.shadows(named: name, in: declarations)
+        guard candidates.count == 1, let candidate = candidates.first, !candidate.isConditional,
+              let concrete = candidate.declaration.as(StructDeclSyntax.self), concrete.name.text == name,
+              concrete.attributes.isEmpty, concrete.modifiers.map(\.name.text) == ["public"],
+              concrete.genericParameterClause == nil, concrete.genericWhereClause == nil else {
+            let found = candidates.isEmpty ? "" : " Candidates: " + Self.candidateLocations(candidates)
+            try unresolved("Supply one unconditional public, nongeneric struct '\(qualified)'." + found)
+        }
+
+        let conformances = concrete.inheritanceClause?.inheritedTypes.compactMap {
+            Self.explicitSwiftMember($0.type)
+        } ?? []
+        guard conformances.contains("IteratorProtocol"), conformances.contains("Sendable") else {
+            try unresolved("Declare Swift.IteratorProtocol and Swift.Sendable directly on the struct at \(candidate.origin).")
+        }
+
+        let members = Self.iteratorWitnessMembers(in: concrete.memberBlock.members)
+        if let shadow = members.first(where: { $0.name == "Swift" }) {
+            try unresolved("Use an unshadowed Swift qualifier. Nested declaration at \(origin(of: shadow.declaration)).")
+        }
+        let elements = members.filter { $0.name == "Element" }
+        guard elements.count == 1, let member = elements.first, !member.isConditional,
+              let alias = member.declaration.as(TypeAliasDeclSyntax.self), alias.name.text == "Element",
+              alias.attributes.isEmpty, alias.modifiers.map(\.name.text) == ["public"],
+              alias.genericParameterClause == nil, alias.genericWhereClause == nil,
+              let scalar = Self.explicitSwiftMember(alias.initializer.value),
+              ["Bool", "Int", "String"].contains(scalar) else {
+            let locations = elements.map { origin(of: $0.declaration).description }.joined(separator: ", ")
+            let found = locations.isEmpty ? "" : " Candidates: \(locations)."
+            try unresolved("Declare exactly one unconditional public typealias Element = "
+                           + "Swift.Bool, Swift.Int or Swift.String directly in the struct." + found)
+        }
+        if let conflict = iteratorExtensionConflict(named: name, in: module) {
+            try unresolved("A supplied extension could change Element or Swift lookup. Conflicting declaration at \(conflict).")
+        }
+
+        let witnessFile = file(containing: concrete)
+        if let shadow = try qualifierShadow("Swift", in: witnessFile) {
+            try unresolved("Use an unshadowed Swift qualifier. " + shadow)
+        }
+        if let shadow = localShadow(module, in: module) {
+            try unresolved("Use an unshadowed '\(module)' module qualifier. " + shadow)
+        }
+        if let shadow = try qualifierShadow(module, in: file(containing: constraint)) {
+            try unresolved("Use an unshadowed '\(module)' module qualifier. " + shadow)
+        }
+
+        return IteratorElementWitness(type: "Swift.\(scalar)", origin: origin(of: alias))
     }
 
     func resolveSendable(from root: IndexedProtocol) throws -> ResolvedProtocolInheritance {
@@ -319,11 +386,17 @@ final class ProtocolSourceIndex {
     private func requireUnshadowed(
         _ name: String, in module: String, at origin: ProtocolSourceOrigin, remedy: String = ""
     ) throws {
-        guard let declarations = modules[module] else { return }
+        if let shadow = localShadow(name, in: module) {
+            throw Self.error(at: origin, shadow + remedy)
+        }
+    }
+
+    private func localShadow(_ name: String, in module: String) -> String? {
+        guard let declarations = modules[module] else { return nil }
         let candidates = Self.shadows(named: name, in: declarations)
-        guard !candidates.isEmpty else { return }
-        throw Self.error(at: origin, "Inherited reference '\(name)' is shadowed by a local declaration. Candidates: "
-                         + Self.candidateLocations(candidates) + remedy)
+        guard !candidates.isEmpty else { return nil }
+        return "Inherited reference '\(name)' is shadowed by a local declaration. Candidates: "
+            + Self.candidateLocations(candidates)
     }
 
     private static func shadows(named name: String, in declarations: ModuleDeclarations) -> [Candidate] {
@@ -350,6 +423,70 @@ final class ProtocolSourceIndex {
                 record(declaration, conditional)
             }
         }
+    }
+
+    private typealias IteratorWitnessMember = (name: String, declaration: DeclSyntax, isConditional: Bool)
+
+    private static func iteratorWitnessMembers(
+        in members: MemberBlockItemListSyntax, conditional: Bool = false
+    ) -> [IteratorWitnessMember] {
+        var matches: [IteratorWitnessMember] = []
+        for member in members {
+            if let configuration = member.decl.as(IfConfigDeclSyntax.self) {
+                for clause in configuration.clauses {
+                    if case .decls(let branch)? = clause.elements {
+                        matches.append(contentsOf: iteratorWitnessMembers(in: branch, conditional: true))
+                    }
+                }
+            } else if let spelling = typeName(of: member.decl) {
+                let name = unquotedIdentifier(spelling)
+                if name == "Element" || name == "Swift" {
+                    matches.append((name, member.decl, conditional))
+                }
+            }
+        }
+        return matches
+    }
+
+    private func iteratorExtensionConflict(named name: String, in module: String) -> ProtocolSourceOrigin? {
+        let files = filesByRoot.values.filter { $0.module == module }.sorted { $0.path < $1.path }
+        for file in files {
+            var conflict: ProtocolSourceOrigin?
+            Self.visitTopLevel(in: file.tree.statements) { declaration, _ in
+                guard conflict == nil, let extensionDecl = declaration.as(ExtensionDeclSyntax.self),
+                      let member = Self.iteratorWitnessMembers(in: extensionDecl.memberBlock.members).first else {
+                    return
+                }
+                // An extension with an unresolved target could reach the iterator through a typealias.
+                let target = Self.localExtensionTarget(extensionDecl.extendedType, in: module)
+                if let target, target != name, let declarations = modules[module] {
+                    let candidates = Self.shadows(named: target, in: declarations)
+                    if candidates.count == 1, let candidate = candidates.first,
+                       !candidate.isConditional, !candidate.declaration.is(TypeAliasDeclSyntax.self) {
+                        return
+                    }
+                }
+                conflict = file.origin(of: member.declaration)
+            }
+            if let conflict { return conflict }
+        }
+        return nil
+    }
+
+    private static func localExtensionTarget(_ type: TypeSyntax, in module: String) -> String? {
+        if let identifier = type.as(IdentifierTypeSyntax.self), identifier.genericArgumentClause == nil {
+            return unquotedIdentifier(identifier.name.text)
+        }
+        guard let member = type.as(MemberTypeSyntax.self), member.genericArgumentClause == nil,
+              let qualifier = member.baseType.as(IdentifierTypeSyntax.self), qualifier.genericArgumentClause == nil,
+              unquotedIdentifier(qualifier.name.text) == module else { return nil }
+        return unquotedIdentifier(member.name.text)
+    }
+
+    private static func explicitSwiftMember(_ type: TypeSyntax) -> String? {
+        guard let member = type.as(MemberTypeSyntax.self), member.genericArgumentClause == nil,
+              simpleName(member.baseType) == "Swift" else { return nil }
+        return member.name.text
     }
 
     private static func typeName(of declaration: DeclSyntax) -> String? {

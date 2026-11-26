@@ -14,9 +14,31 @@ extension AssociatedTypeBinding {
     }
 }
 
+private struct IteratorElementConstraint {
+    let requirement: SameTypeRequirementSyntax
+    let scope: SyntaxIdentifier
+    let elementName: String
+
+    init?(_ associated: AssociatedTypeDeclSyntax, scope: SyntaxIdentifier) {
+        guard let requirements = associated.genericWhereClause?.requirements, requirements.count == 1,
+              let requirement = requirements.first,
+              let equality = Syntax(requirement.requirement).as(SameTypeRequirementSyntax.self),
+              let member = Syntax(equality.leftType).as(MemberTypeSyntax.self),
+              member.name.text == "Element", member.genericArgumentClause == nil,
+              let base = member.baseType.as(IdentifierTypeSyntax.self),
+              base.name.text == associated.name.text, base.genericArgumentClause == nil,
+              let element = Syntax(equality.rightType).as(IdentifierTypeSyntax.self),
+              element.genericArgumentClause == nil else { return nil }
+        self.requirement = equality
+        self.scope = scope
+        elementName = element.name.text
+    }
+}
+
 struct ConcreteAssociatedTypeBindings {
     let types: [String: String]
     private let visibleNames: [SyntaxIdentifier: Set<String>]
+    private static let supportedScalars: Set<String> = ["Swift.Bool", "Swift.Int", "Swift.String"]
 
     init(
         options: [AssociatedTypeBinding],
@@ -50,6 +72,7 @@ struct ConcreteAssociatedTypeBindings {
 
         var associatedByName: [String: AssociatedTypeDeclSyntax] = [:]
         var ownNames: [SyntaxIdentifier: Set<String>] = [:]
+        var iteratorConstraints: [String: IteratorElementConstraint] = [:]
         let helperNames: Set<String> = [
             "Self", "Swift", "Sendable", "Void", "Never", "Error", "BlueprintMocking",
             "BlueprintRuntimeSchemaV1", "MockSession", "FailureReporter", "MockIssue", "EndpointID",
@@ -65,13 +88,26 @@ struct ConcreteAssociatedTypeBindings {
             guard Self.isSimple(name), !reservedNames.contains(name) else {
                 try reject(associated, "Associated type '\(name)' conflicts with a generated witness name or is unsupported")
             }
-            let constraints = associated.inheritanceClause?.inheritedTypes.map { $0.type.trimmedDescription } ?? []
+            let constraints = associated.inheritanceClause?.inheritedTypes.flatMap { entry in
+                if let composition = entry.type.as(CompositionTypeSyntax.self) {
+                    return composition.elements.map { $0.type.trimmedDescription }
+                }
+                return [entry.type.trimmedDescription]
+            } ?? []
+            let iterator = constraints.sorted() == ["Swift.IteratorProtocol", "Swift.Sendable"]
+            let simple = associated.genericWhereClause == nil
+                && (constraints.isEmpty || constraints == ["Sendable"] || constraints == ["Swift.Sendable"])
             guard associated.attributes.isEmpty, associated.modifiers.isEmpty, associated.initializer == nil,
-                  associated.genericWhereClause == nil,
-                  constraints.isEmpty || constraints == ["Sendable"] || constraints == ["Swift.Sendable"] else {
-                try reject(associated, "Concrete associated-type bindings support only an optional Sendable constraint, without defaults or where clauses")
+                  iterator || simple else {
+                try reject(associated, "Concrete associated-type bindings support only an optional Sendable constraint, without defaults or where clauses, or a supplied iterator with a supported element equality")
             }
-            if let constraint = constraints.first {
+            if iterator {
+                guard let requirement = IteratorElementConstraint(associated, scope: id) else {
+                    try reject(associated, "A dependent iterator requires one equality of its Element with a visible associated type")
+                }
+                iteratorConstraints[name] = requirement
+                try index.requireUnshadowedQualifier("Swift", at: associated)
+            } else if let constraint = constraints.first {
                 try index.requireUnshadowedQualifier(constraint == "Sendable" ? "Sendable" : "Swift", at: associated)
             }
             if let previous = associatedByName[name] {
@@ -99,6 +135,18 @@ struct ConcreteAssociatedTypeBindings {
             }
         }
         visibleNames = visible
+        if !iteratorConstraints.isEmpty, let shadow = associatedByName[root.origin.module] {
+            try reject(shadow, "The associated type name shadows the module used for the concrete iterator binding")
+        }
+        let iteratorRequirements = iteratorConstraints.sorted { $0.key < $1.key }
+        if let constraint = iteratorRequirements.first?.value, reservedNames.contains(root.origin.module) {
+            try reject(constraint.requirement, "Dependent iterator binding cannot use module '\(root.origin.module)' because that name is used by the generated mock.")
+        }
+        for (_, constraint) in iteratorRequirements {
+            guard visible[constraint.scope]?.contains(constraint.elementName) == true else {
+                try reject(constraint.requirement, "Iterator element equality must reference an associated type visible in the declaring protocol")
+            }
+        }
 
         var inheritedByName: [String: InheritedPrimaryTypeBinding] = [:]
         for binding in inheritance.primaryTypeBindings {
@@ -119,11 +167,15 @@ struct ConcreteAssociatedTypeBindings {
             guard Self.isSimple(name), let associated = associatedByName[name] else {
                 try reject(root.declaration, "Unknown associated type '\(name)'")
             }
-            let scalar = spelling.hasPrefix("Swift.") ? String(spelling.dropFirst("Swift.".count)) : spelling
-            guard ["Bool", "Int", "String"].contains(scalar) else {
-                try reject(associated, "Unsupported concrete associated type binding for '\(name)'. Use Swift.Bool, Swift.Int or Swift.String")
+            let canonical: String
+            if iteratorConstraints[name] != nil {
+                canonical = spelling
+            } else {
+                canonical = spelling.hasPrefix("Swift.") ? spelling : "Swift.\(spelling)"
+                guard Self.supportedScalars.contains(canonical) else {
+                    try reject(associated, "Unsupported concrete associated type binding for '\(name)'. Use Swift.Bool, Swift.Int or Swift.String")
+                }
             }
-            let canonical = "Swift.\(scalar)"
             if let previous = concrete[name] {
                 let reason = previous == canonical ? "Duplicate" : "Conflicting"
                 try reject(associated, "\(reason) explicit bindings for associated type '\(name)'")
@@ -139,6 +191,24 @@ struct ConcreteAssociatedTypeBindings {
         }
         for (name, associated) in associatedByName.sorted(by: { $0.key < $1.key }) where concrete[name] == nil {
             try reject(associated, "Missing explicit binding for associated type '\(name)'")
+        }
+        for (iteratorName, constraint) in iteratorRequirements {
+            let module = root.origin.module
+            let typeName = concrete[iteratorName] ?? ""
+            let parts = typeName.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0] == module, Self.isSimple(String(parts[1])) else {
+                try reject(constraint.requirement, "Dependent iterator binding '\(iteratorName)' requires a module-qualified struct in \(module)")
+            }
+            guard let expected = concrete[constraint.elementName], Self.supportedScalars.contains(expected) else {
+                try reject(constraint.requirement, "Iterator element equality requires a concrete Swift scalar binding for '\(constraint.elementName)'")
+            }
+            let evidence = try index.iteratorElementWitness(named: String(parts[1]), in: module, at: constraint.requirement)
+            guard evidence.type == expected else {
+                let equality = "\(iteratorName).Element == \(constraint.elementName)"
+                try reject(constraint.requirement,
+                           "Dependent same-type constraint '\(equality)' requires matching types. "
+                           + "\(typeName).Element is \(evidence.type) at \(evidence.origin) and \(constraint.elementName) is \(expected)")
+            }
         }
         types = concrete
     }

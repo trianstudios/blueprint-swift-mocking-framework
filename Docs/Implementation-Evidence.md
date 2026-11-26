@@ -205,4 +205,13 @@ GEN-008 now lowers a supplied parent specialization with one primary associated 
 
 The SwiftPM consumer builds `IntDirectory: ParentDomain.BoundParent<Swift.Int>` and calls through both `any IntDirectory` and `any ParentDomain.BoundParent<Int>`. The mock derives `Element` without a flag, a matching explicit binding gives identical bytes, and configured generation and inspection report the same concrete type. Inherited call reports retain `ParentDomain/BoundParent.swift:5:1`. Contradictory explicit bindings, conflicting inheritance paths and unsupported nested arguments produce diagnostics and preserve existing output.
 
-GEN008-B still needs the dependent `Iterator.Element == Element` normalization fixture. Generic witnesses, multiple primary arguments, protocol-level where clauses, and compiler-provided module interfaces remain open.
+Generic witnesses, multiple primary arguments, protocol-level where clauses, and compiler-provided module interfaces remain open.
+
+
+## Dependent iterator equality after inherited primary normalization
+
+The concrete GEN008-B fixture declares `Iterator.Element == Element` on a `Sendable` iterator associated type. `IntSequence: CursorSequence<Swift.Int>` resolves the primary `Element` binding. The explicit `Iterator=ConsumerDomain.IntCursor` binding is checked against a supplied non-generic public struct with direct `Swift.IteratorProtocol` and `Swift.Sendable` conformances and an unconditional public scalar `Element` type alias. The equality is checked before either generated output is written.
+
+The independent SwiftPM consumer calls through `any IntSequence` and a generic `CursorSequence` function, invokes `next()` on the returned iterator, and verifies inherited call provenance. Configured inspection and standalone generation agree on the concrete bindings. A `String` specialization paired with the `Int` iterator fails at the equality and names the concrete alias location. The configured rejection preserves the generated shard and index. Missing source, inferred aliases and unqualified bindings are rejected. The verifier also rejects an extension through a type alias that shadows Swift inside the iterator and a source module name that the generated mock would shadow.
+
+GEN-008 remains partial for generic witness generation, equivalence across arbitrary dependent members, multiple primary arguments, compiler-inferred and extension-provided witnesses, compiler-provided module interfaces, and packaged parser qualification.
