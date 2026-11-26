@@ -35,7 +35,34 @@ def generate(tool, source, output, selected="UserRepository"):
     return [tool, "--input", source, "--module", "ConsumerDomain",
             "--protocol", selected, "--output", output]
 
+def xcrun(*arguments):
+    return subprocess.check_output(["xcrun", *arguments], text=True).strip()
+
 def main():
+    swift = Path(xcrun("--find", "swift"))
+    swiftc = Path(xcrun("--find", "swiftc"))
+    if any(not executable.is_absolute() or not os.access(executable, os.X_OK)
+           for executable in (swift, swiftc)):
+        raise RuntimeError("xcrun must select executable Swift and swiftc files")
+    if swift.parent.resolve() != swiftc.parent.resolve():
+        raise RuntimeError("xcrun selected Swift and swiftc from different toolchains")
+    sdk = xcrun("--sdk", "macosx", "--show-sdk-path")
+    sdk_version = xcrun("--sdk", "macosx", "--show-sdk-version")
+    if not Path(sdk).is_dir():
+        raise RuntimeError("xcrun must select an installed macOS SDK")
+    deployment_target = (ROOT / "scripts/macos-deployment-target").read_text().strip()
+    swift_environment = os.environ | {"SWIFT_EXEC": str(swiftc), "SDKROOT": sdk}
+    swift_version = subprocess.check_output(
+        [str(swift), "--version"], text=True, stderr=subprocess.STDOUT, env=swift_environment
+    ).strip()
+    compiler_version = subprocess.check_output(
+        [str(swiftc), "--version"], text=True, stderr=subprocess.STDOUT, env=swift_environment
+    ).strip()
+
+    def run_swift(name, arguments, *, extra_environment=None, **expectations):
+        return run(name, [swift, *arguments],
+                   env=swift_environment | (extra_environment or {}), **expectations)
+
     matrix = ROOT / "Docs/Acceptance-Status.csv"
     with matrix.open(encoding="utf-8") as roadmap:
         rows = list(csv.DictReader(roadmap))
@@ -44,9 +71,13 @@ def main():
         raise ValueError("The acceptance roadmap must retain the original 125 unique contracts")
     source = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDomain/UserRepository.swift"
     generated = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/UserRepositoryMock.swift"
+    generation_environment = swift_environment | {
+        "BLUEPRINT_VERIFY_SWIFTC": str(swiftc),
+        "BLUEPRINT_VERIFY_SDK_PATH": sdk,
+    }
     run("generation", [
         "bash", "scripts/generate.sh", "--input", source, "--module", "ConsumerDomain",
-        "--protocol", "UserRepository", "--output", generated])
+        "--protocol", "UserRepository", "--output", generated], env=generation_environment)
     tool = ROOT / ".build/prototype-tooling/generate"
     baseline = generated.read_bytes()
     actor_source = source.with_name("MainActorDirectory.swift")
@@ -80,14 +111,13 @@ def main():
         run("reject-" + rejection.stem, generate(tool, rejection, output, rejection.stem),
             fails=True, patterns=rejection_patterns)
         assert output.read_text() == "sentinel: preserve the previous generation\n"
-    run("runtime-tests", ["swift", "test"], patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
-    run("consumer-tests", ["swift", "test", "--package-path", "Fixtures/ProtocolConsumer"],
+    run_swift("runtime-tests", ["test"], patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
+    run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
-    run("consumer-demo", ["swift", "run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
+    run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
-    modules = Path(run("consumer-bin-path", [
-        "swift", "build", "--package-path", "Fixtures/ProtocolConsumer", "--show-bin-path"]).strip())
-    sdk = subprocess.check_output(["xcrun", "--show-sdk-path"], text=True).strip()
+    modules = Path(run_swift("consumer-bin-path", [
+        "build", "--package-path", "Fixtures/ProtocolConsumer", "--show-bin-path"]).strip())
     patterns = {
         "MainActorAssertionAccess": r"main actor-isolated.*'wasCalled",
         "MainActorAsyncTransport": r"sending 'entry' risks causing data races",
@@ -110,46 +140,49 @@ def main():
             compiler_stage = ["-emit-sil", "-o", os.devnull]
             diagnostic_patterns.append(r"non-Sendable 'DirectoryEntry'-typed result.*main actor-isolated")
         compiler_command = [
-            "xcrun", "swiftc", "-swift-version", "6", "-target",
-            platform.machine() + "-apple-macos15.0", "-sdk", sdk, *compiler_stage,
+            swiftc, "-swift-version", "6", "-target",
+            f"{platform.machine()}-apple-macos{deployment_target}", "-sdk", sdk, *compiler_stage,
             "-I", modules,
         ]
         check_name = "compile-reject-" + fixture.stem
-        run(check_name, [*compiler_command, fixture], fails=True, patterns=diagnostic_patterns)
+        run(check_name, [*compiler_command, fixture], env=swift_environment,
+            fails=True, patterns=diagnostic_patterns)
         if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess",
                             "MainActorVerificationAccess"}:
             run(check_name + "-DefaultIsolation",
                 [*compiler_command, "-default-isolation", "MainActor", fixture],
-                fails=True, patterns=diagnostic_patterns)
-    intentional_env = os.environ.copy()
-    intentional_env["BLUEPRINT_EXPECT_FAILURE"] = "1"
-    run("reporter-intentional-failure", [
-        "swift", "test", "--package-path", "Fixtures/ProtocolConsumer",
-        "--filter", "DX022_intentionalReporterFailure"], fails=True, env=intentional_env,
+                env=swift_environment, fails=True, patterns=diagnostic_patterns)
+    run_swift("reporter-intentional-failure", [
+        "test", "--package-path", "Fixtures/ProtocolConsumer",
+        "--filter", "DX022_intentionalReporterFailure"], fails=True,
+        extra_environment={"BLUEPRINT_EXPECT_FAILURE": "1"},
         patterns=[r"ConsumerTests.swift:\d+", r"Expected exactly 1 calls; observed 0"])
     for label, flag in [("typed", "--missing"), ("sync", "--missing-sync")]:
         fatal_log = run(label + "-missing-terminates", [modules / "consumer-demo", flag],
                         fails=True, patterns=[r"MOCK ISSUE: No matching stub", r"Fatal error: No matching stub"])
         assert fatal_log.index("MOCK ISSUE:") < fatal_log.index("Fatal error:")
-    run("runtime-only-consumer", [
-        "swift", "run", "--package-path", "Fixtures/RuntimeOnly", "RuntimeOnly"],
+    run_swift("runtime-only-consumer", [
+        "run", "--package-path", "Fixtures/RuntimeOnly", "RuntimeOnly"],
         patterns=[r"PASS: runtime-only consumer"])
-    runtime_bin = Path(run("runtime-only-bin-path", [
-        "swift", "build", "--package-path", "Fixtures/RuntimeOnly", "--show-bin-path"]).strip())
+    runtime_bin = Path(run_swift("runtime-only-bin-path", [
+        "build", "--package-path", "Fixtures/RuntimeOnly", "--show-bin-path"]).strip())
     linkage = run("runtime-only-linkage", ["otool", "-L", runtime_bin / "RuntimeOnly"])
     assert not any(name in linkage for name in ["SwiftSyntax", "SwiftParser", "Testing.framework", "XCTest"])
-    dependencies = json.loads(run("runtime-dependencies", ["swift", "package", "show-dependencies", "--format", "json"]))
+    dependencies = json.loads(run_swift("runtime-dependencies", ["package", "show-dependencies", "--format", "json"]))
     assert dependencies.get("dependencies") == []
     runtime_sources = list((ROOT / "Sources/BlueprintMocking").glob("*.swift"))
     assert all("import Testing" not in p.read_text() and "import XCTest" not in p.read_text()
                and "import SwiftSyntax" not in p.read_text() for p in runtime_sources)
     profile = {
         "status": "prototype evidence, not release certification",
-        "swift": subprocess.check_output(["swift", "--version"], text=True, stderr=subprocess.STDOUT).strip(),
+        "swift": swift_version,
+        "swiftPath": str(swift),
+        "swiftCompilerVersion": compiler_version,
+        "swiftCompilerPath": str(swiftc),
         "languageMode": "6", "sdkPath": sdk,
-        "sdkVersion": subprocess.check_output(["xcrun", "--show-sdk-version"], text=True).strip(),
+        "sdkVersion": sdk_version,
         "executionOS": subprocess.check_output(["sw_vers"], text=True).strip(),
-        "architecture": platform.machine(), "deploymentTarget": "macOS 15.0",
+        "architecture": platform.machine(), "deploymentTarget": f"macOS {deployment_target}",
         "defaultIsolation": "compiler default (nonisolated); no upcoming feature flags",
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
         "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
