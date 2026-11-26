@@ -135,12 +135,28 @@ private func withOutputLock<T>(_ directory: URL, exclusive: Bool, body: () throw
         throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
     defer { _ = close(descriptor) }
-    let operation = exclusive ? LOCK_EX : LOCK_SH
-    var result = flock(descriptor, operation)
-    while result != 0 && errno == EINTR {
-        result = flock(descriptor, operation)
+    func lock(_ operation: Int32) -> Int32 {
+        var result = flock(descriptor, operation)
+        while result != 0 && errno == EINTR {
+            result = flock(descriptor, operation)
+        }
+        return result
     }
-    guard result == 0 else {
+
+    let operation = exclusive ? LOCK_EX : LOCK_SH
+    #if BLUEPRINT_TEST_PUBLICATION
+    if exclusive && ProcessInfo.processInfo.environment["BLUEPRINT_TEST_OBSERVE_OUTPUT_LOCK"] == "1" {
+        if lock(operation | LOCK_NB) == 0 {
+            FileHandle.standardError.write(Data("DX013 fixture: output lock acquired without contention\n".utf8))
+            return try body()
+        }
+        guard errno == EWOULDBLOCK else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        FileHandle.standardError.write(Data("DX013 fixture: output lock contended\n".utf8))
+    }
+    #endif
+    guard lock(operation) == 0 else {
         throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
     }
     return try body()
@@ -171,12 +187,19 @@ private func replaceGeneratedFile(at url: URL, with data: Data?) throws {
     }
 }
 
-// Only the separately built verification tool can terminate at these boundaries.
+// Only the separately built verification tool can pause or terminate at these boundaries.
 private func publicationCheckpoint(_ checkpoint: String) {
     #if BLUEPRINT_TEST_PUBLICATION && (canImport(Darwin) || canImport(Glibc))
-    if ProcessInfo.processInfo.environment["BLUEPRINT_TEST_PUBLICATION_CHECKPOINT"] == checkpoint {
+    let environment = ProcessInfo.processInfo.environment
+    if environment["BLUEPRINT_TEST_PUBLICATION_CHECKPOINT"] == checkpoint {
         FileHandle.standardError.write(Data("DX013 fixture: interrupted at \(checkpoint)\n".utf8))
         _exit(93)
+    }
+    if environment["BLUEPRINT_TEST_PUBLICATION_PAUSE_AT"] == checkpoint {
+        FileHandle.standardError.write(Data("DX013 fixture: paused at \(checkpoint)\n".utf8))
+        guard FileHandle.standardInput.readData(ofLength: 1) == Data([0x0a]) else {
+            _exit(94)
+        }
     }
     #endif
 }

@@ -208,6 +208,12 @@ def main():
     ], env=swift_environment, timeout=180,
         patterns=[r"PASS: DX013 configured output generation preserves and recovers complete pairs",
                   r"EVIDENCE: generation-recovery-report\.json SHA-256 [0-9a-f]{64}"])
+    run("generation-contention", [
+        sys.executable, "scripts/verify_generation_contention.py", "--tool", tool,
+        "--fault-tool", publication_fault_tool, "--evidence-dir", EVIDENCE,
+    ], env=swift_environment, timeout=120,
+        patterns=[r"PASS: DX013 configured writers serialized and inspection preserved interrupted output",
+                  r"EVIDENCE: generation-contention-report\.json SHA-256 [0-9a-f]{64}"])
     for checkpoint, suffix in (("after-shard", ""), ("after-index", "-after-index")):
         lane = "swiftpm-publication-recovery" + suffix
         run(lane, [
