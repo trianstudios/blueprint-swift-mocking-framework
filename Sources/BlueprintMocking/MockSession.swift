@@ -140,6 +140,10 @@ public final class MockSession: Sendable {
         private var histories: [SessionEpoch: EpochHistory]
         private var active: [SessionInvocationID: SessionEvent] = [:]
         private var journals: [WeakSessionJournal] = []
+        private var nextQuiescenceWaiter: UInt64 = 0
+        private var quiescenceWaiters: [UInt64: SessionQuiescenceContinuation] = [:]
+
+        var quiescenceWaiterCount: Int { quiescenceWaiters.count }
 
         fileprivate init(sessionID: SessionID) {
             let initialEpoch = SessionEpoch(sessionID: sessionID, rawValue: 0)
@@ -181,7 +185,24 @@ public final class MockSession: Sendable {
             return event
         }
 
-        mutating func complete(_ invocationID: SessionInvocationID, phase: CallPhase) {
+        mutating func registerQuiescenceWaiter(
+            _ continuation: SessionQuiescenceContinuation
+        ) -> SessionQuiescenceRegistration {
+            if active.isEmpty {
+                return .idle(snapshot(epoch: epoch)!)
+            }
+            nextQuiescenceWaiter += 1
+            quiescenceWaiters[nextQuiescenceWaiter] = continuation
+            return .waiting(nextQuiescenceWaiter)
+        }
+
+        mutating func removeQuiescenceWaiter(_ id: UInt64) -> SessionQuiescenceContinuation? {
+            quiescenceWaiters.removeValue(forKey: id)
+        }
+
+        mutating func complete(
+            _ invocationID: SessionInvocationID, phase: CallPhase
+        ) -> SessionQuiescenceDelivery? {
             precondition(phase != .admitted, "Completion requires a terminal phase")
             guard let admission = active.removeValue(forKey: invocationID) else {
                 preconditionFailure("No active invocation matches this completion")
@@ -194,6 +215,12 @@ public final class MockSession: Sendable {
             )
             histories[admission.epoch]!.activeInvocationCount -= 1
             histories[admission.epoch]!.events.append(event)
+
+            guard active.isEmpty, !quiescenceWaiters.isEmpty else { return nil }
+            let delivery = SessionQuiescenceDelivery(snapshot: snapshot(epoch: epoch)!,
+                                                     waiters: Array(quiescenceWaiters.values))
+            quiescenceWaiters.removeAll()
+            return delivery
         }
 
         fileprivate mutating func resetHistory(_ mode: SessionResetMode)

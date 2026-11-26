@@ -175,17 +175,20 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func complete(_ admission: JournalAdmission, phase: CallPhase) {
-        scope.session.withLock { session in
-            session.complete(admission.event.invocationID, phase: phase)
-            guard admission.event.epoch == session.epoch else { return }
-            state.withLock { history in
-                guard let first = history.calls.first else {
-                    preconditionFailure("Current-epoch admission is missing from its endpoint")
+        let delivery = scope.session.withLock { session in
+            let ready = session.complete(admission.event.invocationID, phase: phase)
+            if admission.event.epoch == session.epoch {
+                state.withLock { history in
+                    guard let first = history.calls.first else {
+                        preconditionFailure("Current-epoch admission is missing from its endpoint")
+                    }
+                    let index = Int(admission.id - first.id)
+                    history.calls[index].phase = phase
                 }
-                let index = Int(admission.id - first.id)
-                history.calls[index].phase = phase
             }
+            return ready
         }
+        delivery?.publish()
     }
 
     func snapshot(validating expectedEpoch: SessionEpoch? = nil) -> JournalSnapshot<Input> {
