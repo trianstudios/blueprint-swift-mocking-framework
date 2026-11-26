@@ -85,9 +85,19 @@ public final class SpyDirectoryMock: SpyDirectory {
         Verification(__endpoint0: __endpoint0, __endpoint1: __endpoint1, __endpoint2: __endpoint2, __endpoint3: __endpoint3, __endpoint4: __endpoint4, __endpoint5: __endpoint5)
     }
 
+    public convenience init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
+                forwardingTo: (any SpyDirectory)? = nil,
+                failureMappings: FailureMappings = .init(),
+                _ configure: (Stubs) -> Void) {
+        self.init(failureReporter: failureReporter, session: session, forwardingTo: forwardingTo,
+                  maximumAsyncThrowingForwardingDepth: nil, failureMappings: failureMappings, configure)
+    }
+
     public init(failureReporter: FailureReporter,
                 session: MockSession = MockSession(),
                 forwardingTo: (any SpyDirectory)? = nil,
+                maximumAsyncThrowingForwardingDepth: Int?,
                 failureMappings: FailureMappings = .init(),
                 _ configure: (Stubs) -> Void) {
         let scope = session.makeMock()
@@ -108,7 +118,7 @@ public final class SpyDirectoryMock: SpyDirectory {
             })
         self.__endpoint2 = AsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.SpyDirectory|fetch(id:String) async throws(SpyDirectoryFailure)->String|Sendable"),
             configuration: setup2.finish(), failureReporter: failureReporter, scope: scope, forwarding: forwardingTo.map { target in
-                AsyncThrowingForwarding<String, String, SpyDirectoryFailure> { @Sendable input async throws(SpyDirectoryFailure) in try await target.fetch(id: input) }
+                AsyncThrowingForwarding<String, String, SpyDirectoryFailure>(maximumDepth: maximumAsyncThrowingForwardingDepth) { @Sendable input async throws(SpyDirectoryFailure) in try await target.fetch(id: input) }
             }, failureMapping: failureMappings.__mapping2)
         self.__endpoint3 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.SpyDirectory|property:displayPrefix.get->String|Sendable"),
             configuration: setup3.finish(), failureReporter: failureReporter, scope: scope, forwarding: forwardingTo.map { target in

@@ -159,6 +159,7 @@ def main():
         ("actor-writable-spy", "ActorWritableSpyDirectory"),
         ("inout-spy", "InoutSpyDirectory"),
         ("callback-spy", "CallbackSpyDirectory"),
+        ("depth-spy", "DepthSpyDirectory"),
     ]
     for check, protocol in additional_spies:
         run(check + "-generation", generate(

@@ -197,9 +197,10 @@ private protocol VerificationJournal<Input>: Sendable {
     func report(_ issue: MockIssue)
 }
 
-fileprivate enum UnansweredCallReason {
+fileprivate enum UnansweredCallReason: Sendable {
     case noMatchingStub
     case exhaustedSequence
+    case forwardingDepthExceeded(Int)
 }
 
 typealias Journal<Input: Sendable> = ConfiguredJournal<Input, Void>
@@ -408,6 +409,9 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         case .exhaustedSequence:
             kind = .sequenceExhausted
             message = "Stub answer sequence exhausted for \(endpoint.diagnosticName)"
+        case .forwardingDepthExceeded(let limit):
+            kind = .unexpectedCall
+            message = "Forwarding depth limit \(limit) exceeded for \(endpoint.diagnosticName)"
         }
         let issue = MockIssue(kind: kind, endpoint: endpoint, message: message,
                               source: source, watermark: admission.id)
@@ -631,14 +635,36 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
 private typealias AsyncAnswer<Input, Output, Failure: Error> =
     @Sendable (Input) async -> Result<Output, Failure>
 
+fileprivate enum AsyncDispatchOutcome<Output: Sendable, Failure: Error>: Sendable {
+    case answered(Result<Output, Failure>, origin: CallOrigin?)
+    case unanswered(UnansweredCallReason)
+}
+
 /// A real implementation for a checked Sendable async throwing endpoint.
 public struct AsyncThrowingForwarding<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    fileprivate let answer: AsyncAnswer<Input, Output, Failure>
+    private let answer: AsyncAnswer<Input, Output, Failure>
+    private let maximumDepth: Int?
 
     public init(_ body: @escaping @Sendable (Input) async throws(Failure) -> Output) {
+        self.init(maximumDepth: nil, body)
+    }
+
+    /// Limits active forwarding hops on this task's connected path. The depth must be positive if supplied.
+    public init(maximumDepth: Int?, _ body: @escaping @Sendable (Input) async throws(Failure) -> Output) {
+        precondition(maximumDepth.map { $0 > 0 } ?? true, "Maximum forwarding depth must be positive")
+        self.maximumDepth = maximumDepth
         self.answer = { input in
             do throws(Failure) { return .success(try await body(input)) }
             catch { return .failure(error) }
+        }
+    }
+
+    fileprivate func forward(_ input: Input) async -> AsyncDispatchOutcome<Output, Failure> {
+        switch await AsyncForwardingDepth.run(maximumDepth: maximumDepth, { await answer(input) }) {
+        case .completed(let result):
+            return .answered(result, origin: .forwarded)
+        case .exceeded(let limit):
+            return .unanswered(.forwardingDepthExceeded(limit))
         }
     }
 }
@@ -816,39 +842,41 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         let history = projected ?? initialHistory
 
         let winningRule = configuration.rules.reversed().first { $0.matcher.matches(input) }
-        let answer: AsyncAnswer<Input, Output, Failure>?
+        let outcome: AsyncDispatchOutcome<Output, Failure>
         if let winningRule {
-            answer = winningRule.answer.plan.reserve()
-            if answer != nil { winningRule.answer.capture?.publish(input, admission.event) }
+            if let answer = winningRule.answer.plan.reserve() {
+                winningRule.answer.capture?.publish(input, admission.event)
+                outcome = .answered(await answer(input), origin: nil)
+            } else {
+                outcome = .unanswered(.exhaustedSequence)
+            }
+        } else if let forwarding {
+            outcome = await forwarding.forward(input)
         } else {
-            answer = forwarding?.answer
+            outcome = .unanswered(.noMatchingStub)
         }
-        if let answer {
-            let origin: CallOrigin? = winningRule == nil ? .forwarded : nil
-            switch await answer(input) {
-            case .success(let output):
-                // An optional Output may legitimately be nil. The outer .some still identifies a return.
-                journal.complete(
-                    admission, phase: .returned, origin: origin, replacing: completionProjection(history, .some(output))
-                )
-                return output
-            case .failure(let error):
-                journal.complete(
-                    admission, phase: .threw, origin: origin, replacing: completionProjection(history, nil)
-                )
+
+        switch outcome {
+        case .answered(.success(let output), let origin):
+            // An optional Output may legitimately be nil. The outer .some still identifies a return.
+            journal.complete(
+                admission, phase: .returned, origin: origin, replacing: completionProjection(history, .some(output))
+            )
+            return output
+        case .answered(.failure(let error), let origin):
+            journal.complete(admission, phase: .threw, origin: origin, replacing: completionProjection(history, nil))
+            throw error
+        case .unanswered(let reason):
+            if let failureMapping {
+                let issue = journal.reportUnansweredCall(admission, source: source, reason: reason)
+                let error = failureMapping(issue)
+                journal.complete(admission, phase: .threw, replacing: completionProjection(history, nil))
                 throw error
             }
-        }
-        let reason: UnansweredCallReason = winningRule == nil ? .noMatchingStub : .exhaustedSequence
-        if let failureMapping {
+            journal.complete(admission, phase: .terminated, replacing: completionProjection(history, nil))
             let issue = journal.reportUnansweredCall(admission, source: source, reason: reason)
-            let error = failureMapping(issue)
-            journal.complete(admission, phase: .threw, replacing: completionProjection(history, nil))
-            throw error
+            fatalError(issue.message)
         }
-        journal.complete(admission, phase: .terminated, replacing: completionProjection(history, nil))
-        let issue = journal.reportUnansweredCall(admission, source: source, reason: reason)
-        fatalError(issue.message)
     }
 }
 

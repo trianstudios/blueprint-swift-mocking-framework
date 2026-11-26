@@ -855,9 +855,27 @@ func generate(
     }
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
         instanceIndices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
+    let supportsForwardingDepth = spy && members.contains { $0.family == "AsyncThrowing" }
+    if supportsForwardingDepth {
+        output += """
+            public convenience init(failureReporter: FailureReporter,
+                        session: MockSession = MockSession(),
+                        forwardingTo: (any \(selected))? = nil,
+                        failureMappings: FailureMappings = .init(),
+                        _ configure: (Stubs) -> Void) {
+                self.init(failureReporter: failureReporter, session: session, forwardingTo: forwardingTo,
+                          maximumAsyncThrowingForwardingDepth: nil, failureMappings: failureMappings, configure)
+            }
+
+
+        """
+    }
     output += "    public init(failureReporter: FailureReporter,\n"
     if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
     if spy { output += "                forwardingTo: (any \(selected))? = nil,\n" }
+    if supportsForwardingDepth {
+        output += "                maximumAsyncThrowingForwardingDepth: Int?,\n"
+    }
     if !failureIndices.isEmpty {
         output += "                failureMappings: FailureMappings = .init(),\n"
     }
@@ -919,7 +937,13 @@ func generate(
         let isolationAttribute = isolation == .sendable ? "@Sendable" : "@MainActor"
         let effects = (member.effect.isAsync ? " async" : "") +
             (member.effect.runtimeFailure.map { " throws(\($0.type))" } ?? "")
-        let wrapper = member.effect.runtimeFailure == nil ? "" : "\(member.family)Forwarding<\(member.genericArguments)> "
+        let wrapper: String
+        if member.effect.runtimeFailure == nil {
+            wrapper = ""
+        } else {
+            let depth = member.family == "AsyncThrowing" ? "(maximumDepth: maximumAsyncThrowingForwardingDepth)" : ""
+            wrapper = "\(member.family)Forwarding<\(member.genericArguments)>\(depth) "
+        }
         return ", forwarding: forwardingTo.map { target in\n                \(wrapper){ \(isolationAttribute) \(input)\(effects) in \(member.effect.callPrefix)\(call) }\n            }"
     }
 
