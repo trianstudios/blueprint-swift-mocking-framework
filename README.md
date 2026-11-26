@@ -70,6 +70,8 @@ bash scripts/generate.sh inspect \
 
 The report includes the resolved selections and declaration locations, supplied sources, planned output files and supported analysis. Paths under the configuration directory appear relative to it. The command runs generation validation and leaves the project sources and generation output directory untouched.
 
+Use `verify-generated` with the configuration, output directory, input-set ID and source arguments to check the existing shard and index. Exit 0 confirms both files match the plan. Exit 3 reports each missing or changed path with `BPM003`. The check preserves existing files and leaves missing paths absent.
+
 ### Local tooling source export
 
 The authoring repository can produce a standalone `blueprint-swift-mocking-tools` source archive. Use the full SHA of a commit that includes the tooling export manifest.

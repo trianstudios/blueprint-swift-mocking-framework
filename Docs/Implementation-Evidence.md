@@ -158,3 +158,8 @@ The verification profile uses the installed Xcode parser and the existing SwiftP
 DX-003 adds `inspect` for the explicit source inputs and schema-1 configuration used by the SwiftPM generation entry. Generation and inspection resolve the same plan, including declaration validation and fixed output names. Inspection prints sorted schema-1 JSON with normalized inputs, selected declarations, planned ownership and the supplied-source feature gates. It preserves the selected sources and any existing generation outputs.
 
 The CLI fixture compares the JSON before generation and after both files exist, with reordered sources and unchanged sources and outputs. Invalid configuration and unresolved inheritance fail with the same diagnostic families as generation. Full compiler context, includes, configured roots and native plugin profile qualification remain open.
+
+
+## Generated-file drift verification
+
+DX-011 adds the read-only `verify-generated` command for the SwiftPM-style generation request. It compares the planned shard and index byte for byte against the files in the supplied output directory. The check returns exit 3 and identifies every missing or edited file. The CLI fixture proves exact files pass, detects changed and missing files, and compares before and after project fingerprints. Manifest-owned cleanup and full output collision handling remain open.

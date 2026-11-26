@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise read-only SwiftPM declaration inspection through the warmed CLI."""
+"""Exercise read-only SwiftPM inspection and generated-output verification."""
 
 import argparse
 import hashlib
@@ -81,7 +81,7 @@ def require_unchanged(directory, before, label):
     after = snapshot(directory)
     different = sorted(path for path in before.keys() | after.keys() if before.get(path) != after.get(path))
     if different:
-        raise ValueError(f"{label}: inspection altered staged paths {different}")
+        raise ValueError(f"{label}: read-only command altered staged paths {different}")
 
 
 def expected_plan(configuration, output, sources):
@@ -121,6 +121,22 @@ def expected_plan(configuration, output, sources):
     }
 
 
+def verify_generated(tool, evidence, staged, request, checks, label, *, drift=()):
+    before = snapshot(staged)
+    result = invoke(tool, evidence, label, request, checks, verb="verify-generated")
+    require_unchanged(staged, before, label)
+    if not drift:
+        success = b"Blueprint Mocking: verified 2 generated file(s)\n"
+        if result.returncode != 0 or result.stderr or result.stdout != success:
+            raise ValueError(f"{label}: exact outputs must verify successfully")
+    else:
+        diagnostic = result.stderr.decode("utf-8", errors="replace").splitlines()
+        expected = ["error: BPM003: Generated files differ:", *map(str, drift)]
+        if result.returncode != 3 or result.stdout or [line.strip() for line in diagnostic] != expected:
+            raise ValueError(f"{label}: wrong drift diagnostic or exit status {result.returncode}: {diagnostic}")
+    print(f"PASS: DX011 {label} preserves authored/generated state", flush=True)
+
+
 def verify(tool, repository, evidence):
     checks = {}
     with tempfile.TemporaryDirectory(prefix="Read Only Inspection ", dir=evidence) as temporary:
@@ -136,6 +152,9 @@ def verify(tool, repository, evidence):
             raise ValueError("Fresh inspection did not produce the expected read-only plan")
         print("PASS: DX003 fresh inspection plan and output absence", flush=True)
 
+        shard, index = (output / name for name in OUTPUT_NAMES)
+        verify_generated(tool, evidence, staged, request, checks, "verify-missing-directory", drift=(shard, index))
+
         generated = invoke(tool, evidence, "prepare-generated", request, checks, verb="generate")
         if generated.returncode != 0 or {path.name for path in output.iterdir()} != set(OUTPUT_NAMES):
             raise ValueError("Normal generation did not prepare the two owned outputs")
@@ -147,6 +166,7 @@ def verify(tool, repository, evidence):
         if warm.returncode != 0 or warm.stderr or warm.stdout != fresh.stdout:
             raise ValueError("Inspection changed with reordered path spellings or prepared generated outputs")
         print("PASS: DX003 warm inspection is byte-identical and preserves generated files", flush=True)
+        verify_generated(tool, evidence, staged, request, checks, "verify-exact")
 
         incomplete = [path for name, path in sources.items() if name != BASE_PROTOCOL]
         cases = [(
@@ -172,10 +192,21 @@ def verify(tool, repository, evidence):
                 raise ValueError(f"{label}: expected a focused diagnostic and empty stdout")
             print(f"PASS: DX003 {label} preserves authored/generated state", flush=True)
 
+        original_shard = shard.read_bytes()
+        edited_shard = original_shard + b"// Hand edit to an owned mock.\n"
+        shard.write_bytes(edited_shard)
+        verify_generated(tool, evidence, staged, request, checks, "verify-edited-shard", drift=(shard,))
+        shard.write_bytes(original_shard)
+        index.unlink()
+        verify_generated(tool, evidence, staged, request, checks, "verify-missing-index", drift=(index,))
+        shard.write_bytes(edited_shard)
+        verify_generated(tool, evidence, staged, request, checks, "verify-combined-drift", drift=(shard, index))
+
     report = evidence / "inspection-report.json"
     report.write_text(json.dumps({"checks": checks}, indent=2) + "\n", encoding="utf-8")
     print(f"EVIDENCE: {report.name} SHA-256 {sha256(report.read_bytes())}")
     print("PASS: DX003 read-only inspection", flush=True)
+    print("PASS: DX011 verify-generated drift checks", flush=True)
 
 
 def main():

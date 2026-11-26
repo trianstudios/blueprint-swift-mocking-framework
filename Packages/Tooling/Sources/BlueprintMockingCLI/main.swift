@@ -1184,6 +1184,10 @@ private func run(_ arguments: [String]) throws {
         try inspectBuildOutputs(arguments: arguments.dropFirst())
         return
     }
+    if arguments.first == "verify-generated" {
+        try verifyBuildOutputs(arguments: arguments.dropFirst())
+        return
+    }
     if arguments.first == "generate" && arguments.dropFirst().first == "--config" {
         try generateBuildOutputs(arguments: arguments.dropFirst())
         return
@@ -1234,6 +1238,9 @@ private func run(_ arguments: [String]) throws {
 
 do {
     try run(Array(CommandLine.arguments.dropFirst()))
+} catch let mismatch as GeneratedOutputMismatch {
+    FileHandle.standardError.write(Data("\(mismatch)\n".utf8))
+    exit(3)
 } catch {
     FileHandle.standardError.write(Data("\(error)\n".utf8))
     exit(1)

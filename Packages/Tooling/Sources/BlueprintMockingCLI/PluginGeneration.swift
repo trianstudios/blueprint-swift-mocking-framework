@@ -209,6 +209,31 @@ func inspectBuildOutputs(arguments: ArraySlice<String>) throws {
     FileHandle.standardOutput.write(report)
 }
 
+struct GeneratedOutputMismatch: Error, CustomStringConvertible {
+    let files: [URL]
+
+    var description: String {
+        (["error: BPM003: Generated files differ:"] + files.map { "  \($0.path)" }).joined(separator: "\n")
+    }
+}
+
+func verifyBuildOutputs(arguments: ArraySlice<String>) throws {
+    let request = try BuildGenerationRequest(arguments: arguments, command: "verify-generated")
+    let plan = try BuildGenerationPlan(request: request)
+    var mismatched: [URL] = []
+    for (url, text) in plan.outputs {
+        do {
+            if try Data(contentsOf: url) != Data(text.utf8) {
+                mismatched.append(url)
+            }
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            mismatched.append(url)
+        }
+    }
+    guard mismatched.isEmpty else { throw GeneratedOutputMismatch(files: mismatched) }
+    print("Blueprint Mocking: verified \(plan.outputs.count) generated file(s)")
+}
+
 func generateBuildOutputs(arguments: ArraySlice<String>) throws {
     let request = try BuildGenerationRequest(arguments: arguments, command: "generate")
     let plan = try BuildGenerationPlan(request: request)

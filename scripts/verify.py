@@ -126,7 +126,7 @@ def main():
     tool = ROOT / ".build/prototype-tooling/generate"
     run("declaration-inspection", [sys.executable, ROOT / "scripts/verify_inspection.py",
                                   "--tool", tool, "--evidence-dir", EVIDENCE],
-        patterns=[r"PASS: DX003 read-only inspection"])
+        patterns=[r"PASS: DX003 read-only inspection", r"PASS: DX011 verify-generated drift checks"])
     baseline = generated.read_bytes()
     inherited_source = source.with_name("InheritedDirectory.swift")
     inherited_generated = generated.with_name("InheritedDirectoryMock.swift")
