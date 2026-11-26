@@ -54,6 +54,8 @@ For RUN-006, `xcrun swift test --filter 'RUN006'` exercises equality versus iden
 
 For SYS-008, `python3 -m unittest discover -s scripts/tests -p 'test_check_release.py'` checks that otherwise valid evidence cannot certify a completed row with a missing source reference, check name, or required profile result. The unit bundle uses synthetic profile metadata. Certification requires a reviewed plan covering the applicable release-validation hosts and actual evidence tied to the exact Git revision.
 
+The [candidate release profile plan](Release-Profile-Plan.md) lists the reproduced profiles, native executions still required, and evidence fields for review.
+
 ## Public SwiftPM installation
 
 `python3 scripts/verify_remote_install.py <commit>` runs committed fixtures in fresh scratch using the public GitHub URL and a fresh SwiftPM cache shared within that run. It builds and runs the runtime-only product and runs actual Swift Testing and XCTest test targets. Each lockfile must record the repository identity and exact commit. All three fixtures passed at `8937eb9`, `568502a`, and `44ba673` on the tested macOS toolchain. The runtime package's product name is `BluepringMockingFramework` and its module is `BlueprintMocking`.
