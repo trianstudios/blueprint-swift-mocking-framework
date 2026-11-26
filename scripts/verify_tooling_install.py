@@ -11,7 +11,7 @@ import sys
 import tempfile
 from urllib.parse import unquote, urlparse
 
-from export_tooling import unpack_verified_archive
+from export_tooling import PROVENANCE, unpack_verified_archive, verify_archive
 from verify_remote_install import PACKAGE_ID, REMOTE_URL, rewrite_manifest, swift_toolchain, validate_revision
 
 
@@ -162,12 +162,20 @@ def resolve_lane(command, package, evidence, lane, environment, *, mirror=None):
     }
 
 
-def verify_installed_products(swift, tooling_node, state, evidence, environment, export_revision):
+def verify_installed_products(swift, tooling_node, state, evidence, environment, export_revision, files):
     checkout = Path(tooling_node["path"]).resolve(strict=True)
     if not checkout.is_relative_to((state / "build/checkouts").resolve()):
         raise ValueError("The tooling package did not resolve into an independent checkout")
     if git_text(checkout, ["rev-parse", "HEAD"], environment) != export_revision:
         raise ValueError("The installed tooling checkout differs from its exact SCM pin")
+    for name, expected_digest in files.items():
+        path = checkout / name
+        if (not path.resolve(strict=True).is_relative_to(checkout) or path.is_symlink() or not path.is_file()
+                or hashlib.sha256(path.read_bytes()).hexdigest() != expected_digest):
+            raise ValueError(f"Installed tooling checkout differs from verified archive file {name}")
+    inventory_name = "tooling-install-extracted-files.json"
+    inventory = (json.dumps(files, indent=2, sort_keys=True) + "\n").encode()
+    (evidence / inventory_name).write_bytes(inventory)
     command = package_command(swift, checkout, state / "manifest")
     manifest_name = "tooling-install-manifest.json"
     raw = run(command + ["dump-package"], environment, evidence / "tooling-install-manifest.log")
@@ -180,26 +188,36 @@ def verify_installed_products(swift, tooling_node, state, evidence, environment,
     }
     if products != expected:
         raise ValueError(f"Unexpected tooling products in the resolved package: {products}")
-    return {manifest_name: hashlib.sha256(raw).hexdigest()}
+    return {manifest_name: hashlib.sha256(raw).hexdigest(), inventory_name: hashlib.sha256(inventory).hexdigest()}
 
 
 def verify(repository, revision, contents, syntax_mirror, evidence):
     validate_revision(revision)
+    info = verify_archive(contents, repository, revision)
+    syntax = info["compatibility"]["swiftSyntax"]
+    syntax_mirror = syntax_mirror.resolve(strict=True)
     swift, environment = swift_toolchain()
-    environment |= {"GIT_ALLOW_PROTOCOL": "file", "GIT_PROTOCOL_FROM_USER": "0"}
+    environment |= {
+        "GIT_ALLOW_PROTOCOL": "file", "GIT_PROTOCOL_FROM_USER": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1",
+    }
     if git_text(syntax_mirror, ["rev-parse", "--is-bare-repository"], environment) != "true":
         raise ValueError("The SwiftSyntax mirror must be a local bare Git repository")
+    actual_syntax = git_text(syntax_mirror, [
+        "rev-parse", "--verify", "--end-of-options", f"refs/tags/{syntax['version']}^{{commit}}",
+    ], environment)
+    if actual_syntax != syntax["revision"]:
+        raise ValueError("The prepared SwiftSyntax mirror does not contain the verified source pin")
 
+    evidence.mkdir(parents=True, exist_ok=True)
+    path = evidence / "tooling-install-report.json"
+    path.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="Verified Tooling Install ", dir=evidence) as temporary:
         root = Path(temporary)
         exported = root / TOOLING_ID
-        info, exported_commit = export_repository(contents, exported, repository, revision, environment)
-        syntax = info["compatibility"]["swiftSyntax"]
-        actual_syntax = git_text(syntax_mirror, [
-            "rev-parse", "--verify", "--end-of-options", f"refs/tags/{syntax['version']}^{{commit}}",
-        ], environment)
-        if actual_syntax != syntax["revision"]:
-            raise ValueError("The prepared SwiftSyntax mirror does not contain the verified source pin")
+        _, exported_commit = export_repository(contents, exported, repository, revision, environment)
+        files = {entry["path"]: entry["sha256"] for entry in info["files"]}
+        files[PROVENANCE] = hashlib.sha256((exported / PROVENANCE).read_bytes()).hexdigest()
 
         runtime_alias = root / PACKAGE_ID
         runtime_alias.symlink_to(repository, target_is_directory=True)
@@ -228,8 +246,9 @@ def verify(repository, revision, contents, syntax_mirror, evidence):
         validate_pin(pins[SYNTAX_ID], syntax["revision"], syntax_alias,
                      version=syntax["version"], original_url=syntax["url"])
         product_hashes = verify_installed_products(
-            swift, nodes[TOOLING_ID], tooling_state, evidence, environment, exported_commit,
+            swift, nodes[TOOLING_ID], tooling_state, evidence, environment, exported_commit, files,
         )
+        print("PASS: installed tooling checkout matches every verified archive file", flush=True)
         print("PASS: exported tooling resolves by exact SCM revision with pinned SwiftSyntax", flush=True)
         print("PASS: resolved tooling exposes the executable and SwiftPM build plugin", flush=True)
 
@@ -255,7 +274,6 @@ def verify(repository, revision, contents, syntax_mirror, evidence):
             "swiftSyntax": syntax,
             "artifacts": hashes | product_hashes | runtime_hashes,
         }
-        path = evidence / "tooling-install-report.json"
         path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"EVIDENCE: {path.name} SHA-256 {hashlib.sha256(path.read_bytes()).hexdigest()}")
 
@@ -270,10 +288,8 @@ def main():
     args = parser.parse_args()
     try:
         evidence = args.evidence_dir.resolve()
-        evidence.mkdir(parents=True, exist_ok=True)
-        (evidence / "tooling-install-report.json").unlink(missing_ok=True)
         verify(args.repository.resolve(strict=True), args.revision, args.archive.read_bytes(),
-               args.swift_syntax_mirror.resolve(strict=True), evidence)
+               args.swift_syntax_mirror, evidence)
         return 0
     except (OSError, KeyError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"Tooling install verification failed: {error}", file=sys.stderr)

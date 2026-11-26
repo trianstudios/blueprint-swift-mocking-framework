@@ -107,6 +107,8 @@ python3 scripts/verify_tooling_install.py "$revision" --archive "$archive" \
 
 Set `prepared_swift_syntax_mirror` to a local bare Git mirror containing the SwiftSyntax tag and commit in the export manifest. The install check resolves separate tooling and runtime packages by exact Git revision using local Git transport. It verifies the prepared SwiftSyntax pin and the runtime-only dependency graph. The check covers package resolution. Building the exported tool and qualifying public distribution and other hosts remain separate gates.
 
+On macOS, set `BLUEPRINT_VERIFY_TOOLING_ARCHIVE_MIRROR` to the prepared SwiftSyntax mirror when running `scripts/verify.py` from a clean checkout. The tooling archive check resolves a fresh verified extraction and confirms that the installer rejects altered and substituted archives before Swift selection or evidence changes.
+
 ### Offline runtime qualification on macOS
 
 Run the runtime-only SwiftPM consumer from a prepared bare Git mirror containing the selected commit.

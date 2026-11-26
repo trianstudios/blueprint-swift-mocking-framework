@@ -150,6 +150,9 @@ def main():
     offline_runtime_mirror = os.environ.get("BLUEPRINT_VERIFY_OFFLINE_RUNTIME_MIRROR")
     if offline_runtime_mirror and (not source_before or not source_before["clean"]):
         raise ValueError("Offline runtime qualification requires a clean Git checkout at the mirror revision")
+    tooling_archive_mirror = os.environ.get("BLUEPRINT_VERIFY_TOOLING_ARCHIVE_MIRROR")
+    if tooling_archive_mirror and (not source_before or not source_before["clean"]):
+        raise ValueError("Tooling archive qualification requires a clean Git checkout")
     swift = Path(xcrun("--find", "swift"))
     swiftc = Path(xcrun("--find", "swiftc"))
     if any(not executable.is_absolute() or not os.access(executable, os.X_OK)
@@ -1265,6 +1268,15 @@ def main():
                       r"PASS: independent configured SwiftPM consumer built and ran with networking denied",
                       r"EVIDENCE: offline-configured-generation-report\.json SHA-256 [0-9a-f]{64}"])
 
+    if tooling_archive_mirror:
+        run("tooling-archive-consumer", [
+            sys.executable, "scripts/verify_tooling_archive_consumer.py", source_before["revision"],
+            "--swift-syntax-mirror", tooling_archive_mirror, "--evidence-dir", EVIDENCE,
+        ], env=swift_environment, timeout=240,
+            patterns=[r"PASS: verified tooling archive resolved from a fresh extraction using the prepared mirror",
+                      r"PASS: tampered and substituted archives rejected before toolchain selection with prior evidence preserved",
+                      r"EVIDENCE: tooling-archive-consumer-report\.json SHA-256 [0-9a-f]{64}"])
+
     check_swiftpm_plugin = os.environ.get("BLUEPRINT_VERIFY_SWIFTPM_PLUGIN") == "1"
     if check_swiftpm_plugin:
         run("swiftpm-build-plugin-consumer", [
@@ -1310,6 +1322,7 @@ def main():
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
         "swiftPMOfflineRuntimeVerified": bool(offline_runtime_mirror),
         "swiftPMBuildPluginVerified": check_swiftpm_plugin,
+        "swiftPMToolingArchiveConsumerVerified": bool(tooling_archive_mirror),
         "swiftPMExplicitConditionalConsumerVerified": check_explicit_conditional_consumer,
         "swiftPMConfiguredBindingPluginVerifiedWithBundledParser": check_configured_binding_plugin,
         "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
