@@ -53,3 +53,5 @@ The tested profile is **Apple Swift 6.4, Swift 6 language mode, arm64 macOS 27 e
 The MainActor example injects this Sendable mock into a MainActor service. It does not establish actor-specific mock support. Histories retain Sendable inputs directly; the example's String arguments are value snapshots. General projection, redaction, retention budgets, session coordination, reset/reconfiguration, sequences, generic/ownership-sensitive declarations, class/Objective-C adapters, XCTest, plugins, migration and release certification remain roadmap work.
 
 See the [implementation evidence](Docs/Implementation-Evidence.md) for the verified scope and the next slice. The [contribution guide](CONTRIBUTING.md) explains the TDD workflow and how to submit a milestone.
+
+This repository is licensed under the [MIT License](LICENSE).
