@@ -28,6 +28,12 @@ FIXTURES = {
         "Sources/PluginProbe/main.swift",
     ),
     "RuntimeOnly": ("Package.swift", "Sources/RuntimeOnly/main.swift"),
+    "OfflineGenerationConsumer": (
+        "Package.swift",
+        "blueprint-mocking.json",
+        "Sources/OfflineDomain/Lookup.swift",
+        "Sources/OfflineProbe/main.swift",
+    ),
 }
 
 

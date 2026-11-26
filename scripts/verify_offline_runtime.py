@@ -111,6 +111,15 @@ def validate_linkage(dynamic, linked_objects):
         raise ValueError("The executable must include both the runtime and the consumer objects")
 
 
+def validate_deployment(load_commands, version):
+    expected = re.escape(version.encode("ascii"))
+    if not re.search(
+        rb"(?m)^\s+cmd LC_BUILD_VERSION\n\s+cmdsize \d+\n\s+platform 1\n\s+minos " + expected + rb"\n",
+        load_commands,
+    ):
+        raise ValueError(f"The Mach-O deployment target must be macOS {version}")
+
+
 def checked(command, environment, log):
     result = subprocess.run(command, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=240)
     log.write_bytes(result.stdout + result.stderr)
@@ -179,9 +188,7 @@ def verify(repository, revision, mirror, evidence):
         object_log.write_bytes(objects)
         deployment_log = evidence / f"{lane}-deployment.log"
         load_commands = checked(NETWORK_BLOCK + ["/usr/bin/otool", "-l", str(executable)], environment, deployment_log)
-        if not re.search(rb"(?m)^\s+cmd LC_BUILD_VERSION\n\s+cmdsize \d+\n\s+platform 1\n\s+minos 13\.0\n",
-                         load_commands):
-            raise ValueError("The consumer Mach-O deployment target must be macOS 13.0")
+        validate_deployment(load_commands, "13.0")
         hashes.update({path.name: hashlib.sha256(path.read_bytes()).hexdigest()
                        for path in (build_log, bin_log, run_log, linkage_log, object_log, deployment_log)})
         report = {

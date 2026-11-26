@@ -148,7 +148,7 @@ DX-001 and SYS-003 have native evidence for a clean SwiftPM runtime consumer at 
 
 Before resolving, the verifier connects to a local test listener and then requires a child-reported permission error under the same macOS policy used to resolve, build and run. The executable's Mach-O load commands identify macOS 13.0 as the deployment target. Dynamic library inspection excludes parser, generator and reporter libraries, and the native SwiftPM link-input file lists only the compiled core and consumer objects. The verifier selects the native build system to inspect these original link inputs. The runtime smoke fixture configures a typed stub, invokes it and verifies the call.
 
-The local evidence uses Apple Swift 6.4 on arm64 macOS. The report records the selected compiler, SDK, host build, Git revision, network probe, executable hash and evidence digests. The main verifier captures the report's SHA-256. Additional native profiles and maintainer review remain. The wider DX-020 contract still requires network-blocked generation, the remaining artifact-class corruption cases and trusted release provenance. The SwiftSyntax cache contains the pinned 600.0.1 source mirror. Packaged parser compilation and parity require a prepared compiled cache or a separate build host.
+The local evidence uses Apple Swift 6.4 on arm64 macOS. The report records the selected compiler, SDK, host build, Git revision, network probe, executable hash and evidence digests. The main verifier captures the report's SHA-256. Additional native profiles and maintainer review remain. The wider DX-020 contract still requires full offline generator qualification, the remaining artifact-class corruption cases and trusted release provenance. The SwiftSyntax cache contains the pinned 600.0.1 source mirror. Packaged parser compilation and parity require a prepared compiled cache or a separate build host.
 
 ## Git mirror integrity before SwiftPM consumption
 
@@ -157,6 +157,14 @@ The offline runtime installer checks the prepared Git object store before choosi
 The DX-020 corruption fixture copies the pinned commit graph into a disposable bare mirror and changes a readable `Package.swift` blob under its original object path. The commit and manifest object IDs seen from the commit remain unchanged. Before the integrity check, the real installer accepted this mirror and built the consumer. It now rejects the same mutation at the Git check and leaves the prior valid consumer report unchanged. The named `reject-runtime-mirror-corruption` result binds the rejection log and original and altered manifest digests to the exact input revision.
 
 This verifies a prepared local Git mirror against the expected commit. Publisher authentication, other artifact classes and cross-host qualification retain their own gates.
+
+## Configured generation with network denial
+
+The DX-020 verifier stages an independent SwiftPM package from the exact commit. A loopback connection succeeds in the control and the same probe reports a permission error under the macOS network policy. The configured generator starts with an absent output directory for each run. The normal and network-blocked runs use the same request and emit byte-identical shard and index files. The index references the shard marker and the fixed input-set ID.
+
+Both runs capture the actual loader paths of the selected Xcode toolchain's host SwiftParser and SwiftSyntax dylibs. The verifier records their hashes and the generator hash. It checks the generated pair, resolves the exact runtime dependency from the prepared Git mirror, and builds and runs the staged SwiftPM consumer under the same network denial. The Swift consumer references the index alias, calls the typed mock through the authored protocol and verifies the returned call. [Apple dyld documentation](https://github.com/apple-oss-distributions/dyld/blob/main/doc/man/man1/dyld.1#L140-L153)
+
+The host tool targets macOS 15.0 and the consumer targets macOS 13.0. Both run on arm64 macOS 27.0.1 with Apple Swift 6.4 and SDK 27.0. This uses configured CLI generation and the bundled Xcode parser. Packaged SwiftSyntax 600.0.1 parity, native plugin qualification, additional hosts, remaining artifact classes and signed release provenance retain their own gates.
 
 ## Same-module protocol inheritance
 

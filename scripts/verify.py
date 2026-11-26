@@ -1243,6 +1243,13 @@ def main():
         ], env=swift_environment, timeout=240,
             patterns=[r"PASS: pinned corrupt runtime mirror rejected before SwiftPM consumption and prior evidence preserved",
                       r"EVIDENCE: runtime-mirror-corruption-report\.json SHA-256 [0-9a-f]{64}"])
+        run("offline-configured-generation", [
+            sys.executable, "scripts/verify_offline_generation.py", source_before["revision"],
+            "--runtime-mirror", offline_runtime_mirror, "--tool", tool, "--evidence-dir", EVIDENCE,
+        ], env=swift_environment, timeout=420,
+            patterns=[r"PASS: bundled Xcode parser generated identical shard and index bytes with networking denied",
+                      r"PASS: independent configured SwiftPM consumer built and ran with networking denied",
+                      r"EVIDENCE: offline-configured-generation-report\.json SHA-256 [0-9a-f]{64}"])
 
     check_swiftpm_plugin = os.environ.get("BLUEPRINT_VERIFY_SWIFTPM_PLUGIN") == "1"
     if check_swiftpm_plugin:
