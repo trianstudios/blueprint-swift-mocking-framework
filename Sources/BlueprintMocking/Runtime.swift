@@ -72,7 +72,7 @@ public struct RuleRevision: Sendable, Equatable {
 public enum CallPhase: Sendable, Equatable { case admitted, returned, threw, terminated }
 public struct Invocation<Input: Sendable>: Sendable {
     public let id: UInt64
-    public let input: Input
+    public fileprivate(set) var input: Input
     public let configurationRevision: RuleRevision
     public let sessionInvocationID: SessionInvocationID
     public let epoch: SessionEpoch
@@ -184,22 +184,49 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         return revision
     }
 
-    func complete(_ admission: JournalAdmission, phase: CallPhase) {
-        let (delivery, wake) = scope.session.withLock { session in
+    func update(_ admission: JournalAdmission, replacing input: Input) {
+        let (retired, wake) = scope.session.withLock { session -> (Input?, SessionObservationDelivery?) in
+            guard admission.event.epoch == session.epoch else { return (nil, nil) }
+            let retired = state.withLock { history in
+                let index = Self.retainedIndex(of: admission, in: history.calls)
+                precondition(history.calls[index].phase == .admitted, "Cannot update a completed invocation")
+                let previous = history.calls[index].input
+                history.calls[index].input = input
+                return previous
+            }
+            return (retired, session.observationWake())
+        }
+        wake?.publish()
+        withExtendedLifetime(retired) {}
+    }
+
+    func complete(_ admission: JournalAdmission, phase: CallPhase, replacing input: Input? = nil) {
+        let (delivery, wake, retired) = scope.session.withLock { session in
             let ready = session.complete(admission.event.invocationID, phase: phase)
+            var retired: Input? = nil
             if admission.event.epoch == session.epoch {
-                state.withLock { history in
-                    guard let first = history.calls.first else {
-                        preconditionFailure("Current-epoch admission is missing from its endpoint")
-                    }
-                    let index = Int(admission.id - first.id)
+                retired = state.withLock { history -> Input? in
+                    let index = Self.retainedIndex(of: admission, in: history.calls)
                     history.calls[index].phase = phase
+                    guard let input else { return nil }
+                    let previous = history.calls[index].input
+                    history.calls[index].input = input
+                    return previous
                 }
             }
-            return (ready, session.observationWake())
+            return (ready, session.observationWake(), retired)
         }
         delivery?.publish()
         wake?.publish()
+        // A projected payload's destructor may reenter the session.
+        withExtendedLifetime(retired) {}
+    }
+
+    private static func retainedIndex(of admission: JournalAdmission, in calls: [Invocation<Input>]) -> Int {
+        guard let first = calls.first else {
+            preconditionFailure("Current-epoch admission is missing from its endpoint")
+        }
+        return Int(admission.id - first.id)
     }
 
     func snapshot(validating expectedEpoch: SessionEpoch? = nil) -> JournalSnapshot<Input> {
@@ -351,6 +378,10 @@ struct Rule<Input: Sendable, Answer: Sendable>: Sendable {
 
 public struct SyncConfiguration<Input: Sendable, Output: Sendable>: Sendable {
     fileprivate let rules: [Rule<Input, @Sendable (Input) -> Output>]
+
+    func answer(matching input: Input) -> (@Sendable (Input) -> Output)? {
+        rules.reversed().first { $0.matcher.matches(input) }?.answer
+    }
 }
 /// Setup is confined to its caller. finish() publishes an immutable plan.
 public final class SyncStubbing<Input: Sendable, Output: Sendable> {
@@ -396,8 +427,8 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
             return journal.resolveFinishedNonthrowingCall(source: source, fallback: fallback)
         }
         // Last registration wins. Matching and answer execution are outside the journal lock.
-        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            let result = rule.answer(input)
+        if let answer = configuration.answer(matching: input) {
+            let result = answer(input)
             journal.complete(admission, phase: .returned)
             return result
         }

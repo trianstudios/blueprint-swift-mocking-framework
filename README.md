@@ -60,6 +60,8 @@ Pass the same `MockSession` to multiple generated Sendable mocks to inspect a sh
 
 Use `try session.resetHistory()` to clear history once all calls have completed, or `try session.resetHistory(.detachActive)` to start a fresh epoch while old calls finish. Detachment keeps the old epoch's event metadata. Typed arguments are discarded from endpoint history, and old calls do not update the new epoch's counts. Reset keeps configured rules and stored property values. Build a new verification descriptor after reset. An old descriptor fails as stale and does not evaluate its matcher.
 
+Use `ProjectedSyncEndpoint` with an `InvocationProjection(argument:result:)` to retain selected Sendable fields from a synchronous call. Supply value snapshots such as identifiers or redacted summaries when history must survive changes to an object. `projectedHistory()` returns the endpoint's current-epoch records. A field stays pending while its projection runs, and a result publishes together with its returned phase.
+
 Use `session.checkpoint()` and `try session.events(since: checkpoint)` to read the events added after a position. This includes completions of calls admitted before the checkpoint. A foreign session or a reset epoch produces a typed error.
 
 Use `session.withContext { ... }` to bind an epoch to the current lexical scope. Structured child tasks inherit the token. Detached work and callbacks can capture `session.contextHandle` and rebind it explicitly with `session.withContext(handle) { ... }`. Validation rejects missing, foreign and stale context. Keep passing `session:` explicitly when constructing instance mocks.
