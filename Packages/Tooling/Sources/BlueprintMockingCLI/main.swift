@@ -236,7 +236,7 @@ struct GeneratedProtocolMock {
 
 func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
-    subscriptSpecializations: [String], spy: Bool
+    subscriptSpecializations: [String], spy: Bool, associatedTypeBindings: [String] = []
 ) throws -> GeneratedProtocolMock {
     let input = root.origin.path
     let module = root.origin.module
@@ -250,23 +250,22 @@ func generate(
         !name.isEmpty && name.first!.isLetter &&
         name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
     }
-    guard simple(module), simple(selected), proto.primaryAssociatedTypeClause == nil,
-          proto.genericWhereClause == nil, proto.modifiers.map({ $0.name.text }) == ["public"] else {
+    guard simple(module), simple(selected), proto.genericWhereClause == nil, proto.modifiers.map({ $0.name.text }) == ["public"] else {
         try reject(proto, "Select a top-level, non-generic public protocol")
     }
     let conformances = proto.inheritanceClause?.inheritedTypes.map { $0.type.trimmedDescription } ?? []
     let isolation: Isolation
-    let declarations: [IndexedProtocol]
+    let inheritance: ResolvedProtocolInheritance
     if proto.attributes.isEmpty {
         isolation = .sendable
-        declarations = try index.resolveSendable(from: root)
+        inheritance = try index.resolveSendable(from: root)
     } else if proto.attributes.count == 1,
               let attribute = proto.attributes.first?.as(AttributeSyntax.self),
               attribute.attributeName.trimmedDescription == "MainActor",
               attribute.leftParen == nil, attribute.arguments == nil,
               conformances.isEmpty {
         isolation = .mainActor
-        declarations = [root]
+        inheritance = ResolvedProtocolInheritance(declarations: [root], parentsByDeclaration: [:])
     } else {
         try reject(proto, "Use a public Sendable protocol without attributes or a public @MainActor protocol without inheritance")
     }
@@ -277,6 +276,13 @@ func generate(
         }
     }
 
+    let bindings = try ConcreteAssociatedTypeBindings(
+        options: associatedTypeBindings, root: root, inheritance: inheritance, index: index)
+    let hasBindings = !bindings.types.isEmpty
+    if hasBindings && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || !subscriptSpecializations.isEmpty) {
+        try reject(proto, "Concrete associated-type bindings support ordinary witnesses without forwarding, projections or generic specializations")
+    }
+    let declarations = inheritance.declarations
     let hasImportedRequirements = declarations.contains { $0.origin.module != module }
     if hasImportedRequirements && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || !subscriptSpecializations.isEmpty) {
         try reject(proto, "Supplied cross-module inheritance supports ordinary witnesses without forwarding, projections or generic specializations")
@@ -310,7 +316,7 @@ func generate(
               !["Self", "Never", "Void", "Stubs", "Verification", selected + "Mock"].contains(identifier.name.text) else {
             return nil
         }
-        return identifier.name.text
+        return bindings.resolve(identifier)
     }
     func supportedResult(_ type: TypeSyntax?) -> String? {
         guard let type else { return "Void" }
@@ -349,6 +355,7 @@ func generate(
     var members: [Member] = []
     var descriptors: [String: Member] = [:]
     var witnessesByName: [String: Member] = [:]
+    var boundSelectors: [String: Member] = [:]
     func witnessName(_ name: String, kind: WitnessKind) -> String? {
         switch kind {
         case .method: name
@@ -414,6 +421,15 @@ func generate(
         let member = Member(name: name, parameters: parameters, outputType: outputType,
                             effect: effect, identity: identity, origin: source,
                             isolation: isolation, kind: kind)
+        if hasBindings {
+            // Distinct type spellings can become the same Swift type after binding.
+            let selector = member.selector
+            if let previous = boundSelectors[selector] {
+                try reject(node, "Concrete associated-type bindings need distinct argument labels for overloaded requirement '\(selector)' "
+                           + "(previous requirement at \(previous.origin))")
+            }
+            boundSelectors[selector] = member
+        }
         if let witness { witnessesByName[witness] = member }
         descriptors[descriptor] = member
         members.append(member)
@@ -615,6 +631,10 @@ func generate(
     }
 
     for item in declarations.flatMap({ $0.declaration.memberBlock.members }) {
+        if item.decl.is(AssociatedTypeDeclSyntax.self) { continue }
+        if hasBindings && !item.decl.is(FunctionDeclSyntax.self) {
+            try reject(item, "Concrete associated-type bindings currently support ordinary instance methods")
+        }
         let source = index.origin(of: item)
         let imported = source.module != module
         if imported && !item.decl.is(FunctionDeclSyntax.self) {
@@ -635,6 +655,14 @@ func generate(
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
               simple(fn.name.text), !["init", "verify", "Stubs", "Verification"].contains(fn.name.text) else {
             try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
+        }
+        if hasBindings {
+            if bindings.types[fn.name.text] != nil {
+                try reject(fn, "A method name conflicts with its generated associated type alias")
+            }
+            if fn.signature.effectSpecifiers?.throwsClause?.type != nil {
+                try reject(fn, "Concrete associated-type bindings do not yet support typed throws")
+            }
         }
         let returnType = fn.signature.returnClause?.type
         let outputType: String
@@ -859,6 +887,9 @@ func generate(
         private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
 
     """
+    for (name, bound) in bindings.types.sorted(by: { $0.key < $1.key }) {
+        output += "    public typealias \(name) = \(bound)\n"
+    }
     let specializedEndpoints = Dictionary(grouping: members.indices.filter {
         if case .specializedSubscriptGetter = members[$0].kind { return true }
         return false
@@ -1265,13 +1296,14 @@ private func run(_ arguments: [String]) throws {
         return
     }
     let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
-    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy] [--source MODULE FILE]...")
+    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']...")
     guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
           arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
     var options = arguments.dropFirst(8)
     var projections: [String] = []
     var variadicForwarding: [String] = []
     var subscriptSpecializations: [String] = []
+    var associatedTypeBindings: [String] = []
     var spy = false
     var sourcePaths: [String: [String]] = [:]
     while let flag = options.popFirst() {
@@ -1291,6 +1323,9 @@ private func run(_ arguments: [String]) throws {
         case "--specialize-subscript":
             guard let specialization = options.popFirst() else { throw usage }
             subscriptSpecializations.append(specialization)
+        case "--bind-associated-type":
+            guard let binding = options.popFirst() else { throw usage }
+            associatedTypeBindings.append(binding)
         default: throw usage
         }
     }
@@ -1304,7 +1339,8 @@ private func run(_ arguments: [String]) throws {
     }
     let output = try generate(index: index, root: root, projections: projections,
                               variadicForwarding: variadicForwarding,
-                              subscriptSpecializations: subscriptSpecializations, spy: spy)
+                              subscriptSpecializations: subscriptSpecializations, spy: spy,
+                              associatedTypeBindings: associatedTypeBindings)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.source.write(toFile: arguments[7], atomically: true, encoding: .utf8)
 }

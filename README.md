@@ -115,6 +115,19 @@ The generator follows transitive parents in the supplied sources and emits a sha
 
 Parents must be public, top-level, nongeneric protocols. Across modules, ordinary instance methods may use explicitly qualified `Swift.Bool`, `Swift.Int` and `Swift.String` parameters and results or omit the return type. Inherited methods from other modules need distinct member names. These requests use ordinary mocks. Forwarding, projections and generic specializations are outside the cross-module profile. The SwiftPM configuration entry uses the same resolver with both modules supplied as source inputs. In the build plugin, the attached target must directly depend on all participating source targets. Conditional and actor-isolated parents, imported module interfaces, qualified nominal payloads and typed errors in foreign requirements are outside this profile.
 
+To bind a primary or ordinary associated type, pass `--bind-associated-type Name=Type` to standalone generation. The generated mock exposes the bound name as a public type alias and uses the concrete type in its stubs and verification API. Supply inherited declarations from the same module as usual.
+
+```sh
+bash scripts/generate.sh \
+  --input Fixtures/ProtocolConsumer/Sources/ConsumerDomain/AssociatedDirectory.swift \
+  --module ConsumerDomain --protocol AssociatedDirectory \
+  --output Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/AssociatedDirectoryMock.swift \
+  --source ConsumerDomain Fixtures/ProtocolConsumer/Sources/ConsumerDomain/AssociatedDirectoryBase.swift \
+  --bind-associated-type Element=String
+```
+
+This profile supports ordinary instance methods on `Sendable` protocols, with `Swift.Bool`, `Swift.Int`, or `Swift.String` bindings and optional `Sendable` constraints. Bind each associated type once. Overloads need distinct argument labels. Dependent constraints, defaults, cross-module associated types, and SwiftPM configuration bindings remain open.
+
 For supported Sendable methods, add `--project 'fetch(id:)'` and any other `--project` selectors to generate a separate `<Protocol>ProjectedMock`. Synchronous nonthrowing and async-throwing methods can opt in. A selector uses the declaration's argument labels, including `_:` for unlabeled arguments. If overloads share the same labels, use the canonical endpoint ID listed in the diagnostic.
 
 Supply an `InvocationProjection` for each selected initializer argument `projectionN`, then read `mock.verify.historyN` for its typed history. The generated index follows canonical endpoint order. For projected String fields, `mock.verify.stableHistoryN` accepts `matchingArgument:` or `matchingResult:` and a session-clock window. Unselected methods retain the ordinary verification descriptors, and stubbing uses the same typed setup for all methods.

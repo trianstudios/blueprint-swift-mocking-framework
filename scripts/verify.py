@@ -41,7 +41,8 @@ def record_result(name, output, returncode, valid, *, expected_failure):
     return output
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
-             module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=()):
+             module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=(),
+             associated_bindings=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -54,6 +55,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.append("--spy")
     for source_module, path in sources:
         arguments.extend(["--source", source_module, path])
+    for binding in associated_bindings:
+        arguments.extend(["--bind-associated-type", binding])
     return arguments
 
 def xcrun(*arguments):
@@ -145,6 +148,12 @@ def main():
         tool, qualified_source, qualified_generated, "QualifiedDirectory", sources=qualified_parents))
     qualified_mock = qualified_generated.read_text()
     assert len(re.findall(r"(?m)^    public func recordForeign\(", qualified_mock)) == 1
+    associated_source = source.with_name("AssociatedDirectory.swift")
+    associated_generated = generated.with_name("AssociatedDirectoryMock.swift")
+    associated_parents = (("ConsumerDomain", source.with_name("AssociatedDirectoryBase.swift")),)
+    run("associated-binding-generation", generate(
+        tool, associated_source, associated_generated, "AssociatedDirectory",
+        sources=associated_parents, associated_bindings=("Element=String",)))
     actor_source = source.with_name("MainActorDirectory.swift")
     actor_generated = generated.with_name("MainActorDirectoryMock.swift")
     run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
@@ -267,6 +276,11 @@ def main():
             "BlueprintMocks.generated.swift", "BlueprintMockingIndex.generated.swift",
         )))
     assert qualified_outputs[0] == qualified_outputs[1]
+    qualified_binding = temp / "RepeatedAssociatedBinding.swift"
+    run("associated-binding-generation-qualified", generate(
+        tool, associated_source, qualified_binding, "AssociatedDirectory",
+        sources=associated_parents, associated_bindings=("Element=Swift.String",)))
+    assert qualified_binding.read_bytes() == associated_generated.read_bytes()
     assert baseline == (temp / "Repeated.swift").read_bytes()
     actor_repeated = temp / "RepeatedMainActor.swift"
     run("main-actor-generation-repeat",
@@ -568,6 +582,43 @@ def main():
             tool, inheritance_rejections / (selected + ".swift"), output, selected, sources=inputs),
             fails=True, patterns=patterns)
         assert output.read_bytes() == sentinel
+    associated_negatives = [
+        ("missing", associated_source, associated_parents, (),
+         r"Missing explicit binding for associated type 'Element'"),
+        ("duplicate", associated_source, associated_parents, ("Element=String", "Element=Swift.String"),
+         r"Duplicate explicit bindings for associated type 'Element'"),
+        ("conflicting", associated_source, associated_parents, ("Element=String", "Element=Int"),
+         r"Conflicting explicit bindings for associated type 'Element'"),
+        ("unknown", associated_source, associated_parents, ("Element=String", "Missing=String"),
+         r"Unknown associated type 'Missing'"),
+        ("unsupported", associated_source, associated_parents, ("Element=Double",),
+         r"Unsupported concrete associated type binding for 'Element'"),
+        ("constraint", inheritance_rejections / "AssociatedUnsupportedConstraint.swift", (), ("Element=String",),
+         r"Concrete associated-type bindings support only an optional Sendable constraint"),
+        ("imported", inheritance_rejections / "ImportedAssociatedDirectory.swift",
+         (("ParentDomain", inheritance_rejections / "ForeignAssociatedDirectory.swift"),), ("Element=String",),
+         r"Cross-module associated-type bindings require compiler-backed type resolution"),
+        ("nominal-collision", inheritance_rejections / "AssociatedNominalCollision.swift",
+         (*associated_parents, ("ConsumerDomain", inheritance_rejections / "NominalElementBranch.swift")),
+         ("Element=String",), r"Use a supported result type"),
+        ("overload-collision", inheritance_rejections / "AssociatedOverloadCollision.swift", (),
+         ("Element=String",),
+         r"Concrete associated-type bindings need distinct argument labels for overloaded requirement 'put\(_:\)'"),
+    ]
+    associated_origins = {
+        "nominal-collision": [r"NominalElementBranch\.swift:4:\d+: error:"],
+        "overload-collision": [r"AssociatedOverloadCollision\.swift:3:\d+",
+                               r"AssociatedOverloadCollision\.swift:4:\d+"],
+    }
+    for label, selected, inputs, bindings, diagnostic in associated_negatives:
+        output = temp / "RejectedAssociatedBinding.swift"
+        sentinel = b"sentinel: preserve the previous associated binding generation\n"
+        output.write_bytes(sentinel)
+        patterns = [r"BPM001: " + diagnostic, *associated_origins.get(label, ())]
+        run("reject-associated-binding-" + label, generate(
+            tool, selected, output, selected.stem, sources=inputs, associated_bindings=bindings),
+            fails=True, patterns=patterns)
+        assert output.read_bytes() == sentinel
     mapper_fixture = ROOT / "Fixtures/FailureMappingConsumer"
     mapper_tests = "Tests/FailureMappingProbeTests/FailureMappingTests.swift"
     baseline_probe = (mapper_fixture / "Variants/A/Probe.swift").read_text()
@@ -596,7 +647,9 @@ def main():
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
                   r"GEN002_diamondBranchesShareOneTypedWitnessAndEndpoint\(\) passed",
                   r"GEN002_unstubbedSharedWitnessReportsItsOriginalDeclarationFile\(\) passed",
-                  r"GEN002_qualifiedParentsKeepModuleIdentityAndForeignDeclarationProvenance\(\) passed"])
+                  r"GEN002_qualifiedParentsKeepModuleIdentityAndForeignDeclarationProvenance\(\) passed",
+                  r"GEN008_concretePrimaryAssociatedTypeBindingSurvivesConsumerCalls\(\) passed",
+                  r"GEN008_inheritedAssociatedRequirementKeepsItsDeclarationSource\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [
@@ -610,6 +663,7 @@ def main():
         "MainActorVerificationAccess": r"main actor-isolated.*'display",
         "MainActorWitnessAccess": r"main actor-isolated.*'display",
         "WrongResult": r"cannot convert value of type 'Int'",
+        "AssociatedBindingWrongResult": r"cannot convert value of type 'Int' to expected argument type 'String'",
         "WrongError": r"cannot convert value of type 'Other'",
         "GeneratedWrongError": r"cannot convert value of type 'UnrelatedError'",
         "GeneratedOrdinalFailureMapping": r"incorrect argument label.*failureMapping0.*failureMappings",

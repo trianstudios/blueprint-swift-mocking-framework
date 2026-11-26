@@ -19,6 +19,11 @@ struct IndexedProtocol {
     var name: String { declaration.name.text }
 }
 
+struct ResolvedProtocolInheritance {
+    let declarations: [IndexedProtocol]
+    let parentsByDeclaration: [SyntaxIdentifier: [SyntaxIdentifier]]
+}
+
 final class ProtocolSourceIndex {
     private struct SourceFile {
         let module: String
@@ -173,8 +178,9 @@ final class ProtocolSourceIndex {
         }
     }
 
-    func resolveSendable(from root: IndexedProtocol) throws -> [IndexedProtocol] {
+    func resolveSendable(from root: IndexedProtocol) throws -> ResolvedProtocolInheritance {
         var resolved: [IndexedProtocol] = []
+        var parentsByDeclaration: [SyntaxIdentifier: [SyntaxIdentifier]] = [:]
         var activePath: [ProtocolName] = []
         var visited: Set<ProtocolName> = []
         var hasSendable = false
@@ -192,8 +198,7 @@ final class ProtocolSourceIndex {
 
             let declaration = current.declaration
             guard declaration.modifiers.map(\.name.text) == ["public"],
-                  declaration.attributes.isEmpty, declaration.primaryAssociatedTypeClause == nil,
-                  declaration.genericWhereClause == nil else {
+                  declaration.attributes.isEmpty, declaration.genericWhereClause == nil else {
                 throw Self.error(at: current.origin, "Protocol \(module).\(current.name) must be public, non-generic "
                                  + "and attribute-free for Sendable inheritance")
             }
@@ -201,20 +206,21 @@ final class ProtocolSourceIndex {
             activePath.append(identity)
             defer { activePath.removeLast() }
             resolved.append(current)
+            parentsByDeclaration[declaration.id] = []
 
             let inheritedTypes = declaration.inheritanceClause?.inheritedTypes ?? []
             let edges = inheritedTypes.sorted { $0.type.trimmedDescription < $1.type.trimmedDescription }
             for edge in edges {
                 let site = origin(of: edge.type)
+                let parentName: ProtocolName
                 if let name = Self.simpleName(edge.type) {
                     if name == "Sendable" {
                         try requireUnshadowed("Sendable", in: module, at: site,
                                               remedy: ". Use Swift.Sendable for the standard marker.")
                         hasSendable = true
-                    } else {
-                        let parentName = ProtocolName(module: module, name: name)
-                        try visit(parent(named: parentName, at: site), referencedAt: site)
+                        continue
                     }
+                    parentName = ProtocolName(module: module, name: name)
                 } else if let qualified = edge.type.as(MemberTypeSyntax.self),
                           let qualifier = Self.simpleName(qualified.baseType), qualified.genericArgumentClause == nil,
                           Self.isSimple(qualified.name.text) {
@@ -222,19 +228,22 @@ final class ProtocolSourceIndex {
                     if qualifier == "Swift", name == "Sendable" {
                         try requireUnshadowedQualifier(qualifier, at: qualified.baseType)
                         hasSendable = true
-                    } else {
-                        let parentName = ProtocolName(module: qualifier, name: name)
-                        if qualifier != module, !file(containing: edge).imports.unconditional.contains(qualifier) {
-                            throw Self.error(at: site, "Foreign inherited protocol '\(parentName)' requires "
-                                             + "an unconditional plain import \(qualifier) in the declaring file")
-                        }
-                        try requireUnshadowedQualifier(qualifier, at: qualified.baseType)
-                        try visit(parent(named: parentName, at: site), referencedAt: site)
+                        continue
                     }
+                    parentName = ProtocolName(module: qualifier, name: name)
+                    if qualifier != module, !file(containing: edge).imports.unconditional.contains(qualifier) {
+                        throw Self.error(at: site, "Foreign inherited protocol '\(parentName)' requires "
+                                         + "an unconditional plain import \(qualifier) in the declaring file")
+                    }
+                    try requireUnshadowedQualifier(qualifier, at: qualified.baseType)
                 } else {
                     throw Self.error(at: site, "Unsupported inherited type '\(edge.type.trimmedDescription)'. "
                                      + "Use a simple protocol name, Module.Protocol, or Sendable")
                 }
+
+                let inherited = try parent(named: parentName, at: site)
+                parentsByDeclaration[declaration.id, default: []].append(inherited.declaration.id)
+                try visit(inherited, referencedAt: site)
             }
         }
 
@@ -242,7 +251,7 @@ final class ProtocolSourceIndex {
         guard hasSendable else {
             throw Self.error(at: root.origin, "Use a public Sendable protocol or inherit the standard Sendable marker")
         }
-        return resolved
+        return ResolvedProtocolInheritance(declarations: resolved, parentsByDeclaration: parentsByDeclaration)
     }
 
     private func parent(named name: ProtocolName, at origin: ProtocolSourceOrigin) throws -> IndexedProtocol {

@@ -170,3 +170,12 @@ DX-011 adds the read-only `verify-generated` command for the SwiftPM-style gener
 GEN-002 now indexes explicit source inputs by Swift module and protocol name. A parent from another module requires an unconditional plain import in the file that declares the child. Bare parent names resolve within the declaring module, including when traversing a supplied dependency. The compiled consumer distinguishes the same-named protocols in two modules, exercises their typed setup and verification through existential views, and checks the original foreign module and file on an inherited invocation. The standalone and SwiftPM configuration entries generate the same mock.
 
 The generator accepts ordinary instance methods with explicitly qualified Swift scalars in foreign parents. It rejects missing exact sources, duplicate parents, missing imports, ambiguous witness names and unsupported foreign types before publishing output. When a known imported declaration or selective import shadows a module qualifier, generation rejects that edge with its competing origin. A native compiler probe confirmed such an edge can bind a nested protocol whose default implementation allows an incorrect generated conformance to compile. Re-exports and unsupplied import scopes need compiler context. Textual or compiler-queried module interfaces remain under GEN-003. Broader signatures and inherited isolation also remain open.
+
+
+## Concrete associated-type bindings
+
+GEN-008 adds explicit scalar bindings to standalone generation. The resolver retains each direct inheritance edge and computes which associated names are visible in the declaring protocol. The emitter publishes a public value-type alias and concrete typed stubbing, mocking and verification APIs. The bound endpoint keeps the selected protocol identity and the original declaring file and line.
+
+A separate SwiftPM consumer calls an `any AssociatedDirectory<String>` with the generated mock and verifies inherited and selected methods. The compiler rejects a stub with an `Int` result. `Element=String` and `Element=Swift.String` emit identical bytes. Missing, duplicate, conflicting, unknown or unsupported bindings, unrelated nominal names, collapsed overloads and foreign associated sources fail before replacing output.
+
+Independent generic parameters, dependent same-type constraints, inherited parameterized parents, imported associated types and SwiftPM configuration bindings remain open.
