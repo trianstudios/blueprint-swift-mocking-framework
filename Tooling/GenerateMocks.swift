@@ -174,6 +174,16 @@ func generate(input: String, module: String, selected: String) throws -> String 
     // The consumer compiler resolves aliases and validates the conformance. Reject type
     // shapes this emitter cannot reproduce, including references to a witness's Self.
     func supportedType(_ type: TypeSyntax) -> String? {
+        if let optional = type.as(OptionalTypeSyntax.self) {
+            return supportedType(optional.wrappedType).map { "\($0)?" }
+        }
+        if let array = type.as(ArrayTypeSyntax.self) {
+            return supportedType(array.element).map { "[\($0)]" }
+        }
+        if let dictionary = type.as(DictionaryTypeSyntax.self),
+           let key = supportedType(dictionary.key), let value = supportedType(dictionary.value) {
+            return "[\(key): \(value)]"
+        }
         guard let identifier = type.as(IdentifierTypeSyntax.self),
               identifier.genericArgumentClause == nil,
               simple(identifier.name.text),
@@ -200,7 +210,7 @@ func generate(input: String, module: String, selected: String) throws -> String 
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
               simple(fn.name.text), !["init", "verify", "Stubs", "Verification"].contains(fn.name.text),
               let outputType = supportedResult(fn.signature.returnClause?.type) else {
-            try reject(fn, "Use a simple named result type or Void. Generics, attributes, modifiers and reserved mock names are unsupported")
+            try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
         }
         let parameters = try fn.signature.parameterClause.parameters.map { parameter in
             let label = parameter.firstName.text
@@ -208,7 +218,7 @@ func generate(input: String, module: String, selected: String) throws -> String 
                   parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
                   parameter.ellipsis == nil, parameter.defaultValue == nil,
                   simple(label) || label == "_" else {
-                try reject(parameter, "Use simple named parameter types without ownership, variadics or default values")
+                try reject(parameter, "Use named, optional, array or dictionary parameter types without ownership, variadics or default values")
             }
             return Parameter(label: label, type: type)
         }

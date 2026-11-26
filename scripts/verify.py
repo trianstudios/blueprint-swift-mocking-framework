@@ -97,6 +97,10 @@ def main():
     parameter_generated = generated.with_name("LookupParametersMock.swift")
     run("parameter-list-generation",
         generate(tool, parameter_source, parameter_generated, "LookupParameters"))
+
+    structural_generated = generated.with_name("ValueDirectoryMock.swift")
+    run("structural-types-generation",
+        generate(tool, parameter_source, structural_generated, "ValueDirectory"))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -213,6 +217,7 @@ def main():
         "effectsGeneratedSHA256": hashlib.sha256(effect_generated.read_bytes()).hexdigest(),
         "effectEdgesGeneratedSHA256": hashlib.sha256(edge_generated.read_bytes()).hexdigest(),
         "parameterListGeneratedSHA256": hashlib.sha256(parameter_generated.read_bytes()).hexdigest(),
+        "structuralTypesGeneratedSHA256": hashlib.sha256(structural_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")

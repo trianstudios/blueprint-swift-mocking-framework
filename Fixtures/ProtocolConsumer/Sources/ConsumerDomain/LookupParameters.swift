@@ -22,3 +22,8 @@ public struct LookupClient: Sendable {
         return lookup.lookup(namespace: namespace, key)
     }
 }
+
+public protocol ValueDirectory: Sendable {
+    func fetch(_ ids: [Int]?) -> [Int: LookupRecord]
+    func current() -> LookupRecord?
+}
