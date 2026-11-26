@@ -54,6 +54,27 @@ public final class SpyDirectoryMock: SpyDirectory {
         }
     }
 
+    public struct ForwardingLinks: Sendable {
+        public init(_ configure: (inout Self) -> Void = { _ in }) {
+            configure(&self)
+        }
+        fileprivate var __link2: AsyncThrowingForwardingLink<String, String, SpyDirectoryFailure>? = nil
+        public mutating func fetch(id _: (String).Type, through link: AsyncThrowingForwardingLink<String, String, SpyDirectoryFailure>) {
+            __link2 = link
+        }
+    }
+
+    public struct ForwardingTargets: Sendable {
+        fileprivate let __endpoint2: AsyncThrowingEndpoint<String, String, SpyDirectoryFailure>
+        public func fetch(id _: (String).Type) -> AsyncThrowingForwardingTarget<String, String, SpyDirectoryFailure> {
+            __endpoint2.forwardingTarget
+        }
+    }
+
+    public var forwardingTargets: ForwardingTargets {
+        ForwardingTargets(__endpoint2: __endpoint2)
+    }
+
     public struct Verification: Sendable {
         fileprivate let __endpoint0: SyncThrowingEndpoint<String, String, SpyDirectoryFailure>
         public func cached(id matcher: Matcher<String>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<String> {
@@ -91,13 +112,26 @@ public final class SpyDirectoryMock: SpyDirectory {
                 failureMappings: FailureMappings = .init(),
                 _ configure: (Stubs) -> Void) {
         self.init(failureReporter: failureReporter, session: session, forwardingTo: forwardingTo,
-                  maximumAsyncThrowingForwardingDepth: nil, failureMappings: failureMappings, configure)
+                  maximumAsyncThrowingForwardingDepth: nil, forwardingLinks: .init(),
+                  failureMappings: failureMappings, configure)
+    }
+
+    public convenience init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
+                forwardingTo: (any SpyDirectory)? = nil,
+                maximumAsyncThrowingForwardingDepth: Int?,
+                failureMappings: FailureMappings = .init(),
+                _ configure: (Stubs) -> Void) {
+        self.init(failureReporter: failureReporter, session: session, forwardingTo: forwardingTo,
+                  maximumAsyncThrowingForwardingDepth: maximumAsyncThrowingForwardingDepth,
+                  forwardingLinks: .init(), failureMappings: failureMappings, configure)
     }
 
     public init(failureReporter: FailureReporter,
                 session: MockSession = MockSession(),
                 forwardingTo: (any SpyDirectory)? = nil,
-                maximumAsyncThrowingForwardingDepth: Int?,
+                maximumAsyncThrowingForwardingDepth: Int? = nil,
+                forwardingLinks: ForwardingLinks,
                 failureMappings: FailureMappings = .init(),
                 _ configure: (Stubs) -> Void) {
         let scope = session.makeMock()
@@ -117,7 +151,7 @@ public final class SpyDirectoryMock: SpyDirectory {
                 { @Sendable input in target.display(for: input) }
             })
         self.__endpoint2 = AsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.SpyDirectory|fetch(id:String) async throws(SpyDirectoryFailure)->String|Sendable"),
-            configuration: setup2.finish(), failureReporter: failureReporter, scope: scope, forwarding: forwardingTo.map { target in
+            configuration: setup2.finish(), failureReporter: failureReporter, scope: scope, forwarding: forwardingLinks.__link2.map { AsyncThrowingForwarding(link: $0) } ?? forwardingTo.map { target in
                 AsyncThrowingForwarding<String, String, SpyDirectoryFailure>(maximumDepth: maximumAsyncThrowingForwardingDepth) { @Sendable input async throws(SpyDirectoryFailure) in try await target.fetch(id: input) }
             }, failureMapping: failureMappings.__mapping2)
         self.__endpoint3 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.SpyDirectory|property:displayPrefix.get->String|Sendable"),

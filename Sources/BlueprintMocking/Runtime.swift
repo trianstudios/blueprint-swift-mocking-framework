@@ -109,7 +109,7 @@ public struct RuleRevision: Sendable, Equatable {
 /// Admission queries include unfinished and throwing calls; terminal phases are explicit.
 public enum CallPhase: Sendable, Equatable { case admitted, returned, threw, terminated }
 
-/// An outcome produced by an explicitly supplied real implementation.
+/// A terminal outcome produced by invoking a real provider or a linked endpoint.
 public enum CallOrigin: Sendable, Equatable { case forwarded }
 
 public struct Invocation<Input: Sendable>: Sendable {
@@ -201,6 +201,9 @@ fileprivate enum UnansweredCallReason: Sendable {
     case noMatchingStub
     case exhaustedSequence
     case forwardingDepthExceeded(Int)
+    case forwardingCycle([String])
+    case forwardingTargetUnbound
+    case forwardingTargetReleased
 }
 
 typealias Journal<Input: Sendable> = ConfiguredJournal<Input, Void>
@@ -412,6 +415,15 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         case .forwardingDepthExceeded(let limit):
             kind = .unexpectedCall
             message = "Forwarding depth limit \(limit) exceeded for \(endpoint.diagnosticName)"
+        case .forwardingCycle(let route):
+            kind = .unexpectedCall
+            message = "Forwarding cycle detected for \(endpoint.diagnosticName): \(route.joined(separator: " -> "))"
+        case .forwardingTargetUnbound:
+            kind = .unexpectedCall
+            message = "Forwarding target is unbound for \(endpoint.diagnosticName)"
+        case .forwardingTargetReleased:
+            kind = .unexpectedCall
+            message = "Forwarding target was released for \(endpoint.diagnosticName)"
         }
         let issue = MockIssue(kind: kind, endpoint: endpoint, message: message,
                               source: source, watermark: admission.id)
@@ -640,10 +652,21 @@ fileprivate enum AsyncDispatchOutcome<Output: Sendable, Failure: Error>: Sendabl
     case unanswered(UnansweredCallReason)
 }
 
-/// A real implementation for a checked Sendable async throwing endpoint.
+// Retained for the duration of traversal; no endpoint is kept alive by the path.
+final class AsyncForwardingInstance: Sendable {
+    let id: EndpointID
+
+    init(id: EndpointID) { self.id = id }
+}
+
+/// A forwarding route for a checked Sendable async throwing endpoint.
 public struct AsyncThrowingForwarding<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    private let answer: AsyncAnswer<Input, Output, Failure>
-    private let maximumDepth: Int?
+    private enum Route: Sendable {
+        case implementation(AsyncAnswer<Input, Output, Failure>, maximumDepth: Int?)
+        case link(AsyncThrowingForwardingLink<Input, Output, Failure>)
+    }
+
+    private let route: Route
 
     public init(_ body: @escaping @Sendable (Input) async throws(Failure) -> Output) {
         self.init(maximumDepth: nil, body)
@@ -652,15 +675,49 @@ public struct AsyncThrowingForwarding<Input: Sendable, Output: Sendable, Failure
     /// Limits active forwarding hops on this task's connected path. The depth must be positive if supplied.
     public init(maximumDepth: Int?, _ body: @escaping @Sendable (Input) async throws(Failure) -> Output) {
         precondition(maximumDepth.map { $0 > 0 } ?? true, "Maximum forwarding depth must be positive")
-        self.maximumDepth = maximumDepth
-        self.answer = { input in
+        route = .implementation({ input in
             do throws(Failure) { return .success(try await body(input)) }
             catch { return .failure(error) }
-        }
+        }, maximumDepth: maximumDepth)
     }
 
-    fileprivate func forward(_ input: Input) async -> AsyncDispatchOutcome<Output, Failure> {
-        switch await AsyncForwardingDepth.run(maximumDepth: maximumDepth, { await answer(input) }) {
+    /// Forwards through a framework-owned endpoint link on a stub miss.
+    public init(link: AsyncThrowingForwardingLink<Input, Output, Failure>) {
+        route = .link(link)
+    }
+
+    fileprivate func forward(
+        _ input: Input, source: SourceLocation, instance: AsyncForwardingInstance,
+        path: [AsyncForwardingInstance]
+    ) async -> AsyncDispatchOutcome<Output, Failure> {
+        let maximumDepth: Int?
+        let perform: @Sendable () async -> Result<Output, Failure>
+        switch route {
+        case .implementation(let answer, let limit):
+            maximumDepth = limit
+            perform = { await answer(input) }
+        case .link(let link):
+            let nextPath = path + [instance]
+            if path.contains(where: { $0 === instance }) {
+                return .unanswered(.forwardingCycle(nextPath.map { $0.id.diagnosticName }))
+            }
+            switch link.snapshot() {
+            case .unbound:
+                return .unanswered(.forwardingTargetUnbound)
+            case .released:
+                return .unanswered(.forwardingTargetReleased)
+            case .available(let target):
+                maximumDepth = nil
+                perform = {
+                    do throws(Failure) {
+                        return .success(try await target.invoke(input, source: source, forwardingPath: nextPath))
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+        }
+        switch await AsyncForwardingDepth.run(maximumDepth: maximumDepth, perform) {
         case .completed(let result):
             return .answered(result, origin: .forwarded)
         case .exceeded(let limit):
@@ -778,6 +835,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
     private let journal: ConfiguredJournal<History, PublishedAsyncThrowingConfiguration<Input, Output, Failure>>
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
     private let forwarding: AsyncThrowingForwarding<Input, Output, Failure>?
+    private let forwardingInstance: AsyncForwardingInstance
     private let sessionID: SessionID
 
     init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
@@ -786,6 +844,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
          failureMapping: (@Sendable (MockIssue) -> Failure)?, tracksProjectionTimeline: ProjectionTimelineFields = []) {
         self.sessionID = scope.session.id
         self.forwarding = forwarding
+        self.forwardingInstance = AsyncForwardingInstance(id: id)
         self.failureMapping = failureMapping
         journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
                                     configuration: configuration.publish(for: sessionID),
@@ -825,6 +884,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
 
     func invoke(
         _ input: Input, recording initialHistory: History, source: SourceLocation,
+        forwardingPath: [AsyncForwardingInstance] = [],
         argumentProjection: @Sendable (Input) -> History? = { _ in nil },
         completionProjection: @Sendable (History, Output?) -> History? = { _, _ in nil }
     ) async throws(Failure) -> Output {
@@ -851,7 +911,8 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
                 outcome = .unanswered(.exhaustedSequence)
             }
         } else if let forwarding {
-            outcome = await forwarding.forward(input)
+            outcome = await forwarding.forward(input, source: source, instance: forwardingInstance,
+                                               path: forwardingPath)
         } else {
             outcome = .unanswered(.noMatchingStub)
         }
@@ -908,8 +969,19 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
         dispatch.replaceConfiguration(configuration)
     }
 
+    /// Supplies a typed handle for a structural forwarding link.
+    public var forwardingTarget: AsyncThrowingForwardingTarget<Input, Output, Failure> {
+        AsyncThrowingForwardingTarget(endpoint: self)
+    }
+
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
         try await dispatch.invoke(input, recording: input, source: source)
+    }
+
+    fileprivate func invoke(
+        _ input: Input, source: SourceLocation, forwardingPath: [AsyncForwardingInstance]
+    ) async throws(Failure) -> Output {
+        try await dispatch.invoke(input, recording: input, source: source, forwardingPath: forwardingPath)
     }
 
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {

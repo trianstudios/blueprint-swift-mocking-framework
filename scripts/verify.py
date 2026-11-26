@@ -160,6 +160,7 @@ def main():
         ("inout-spy", "InoutSpyDirectory"),
         ("callback-spy", "CallbackSpyDirectory"),
         ("depth-spy", "DepthSpyDirectory"),
+        ("structural-spy", "StructuralSpyDirectory"),
     ]
     for check, protocol in additional_spies:
         run(check + "-generation", generate(
@@ -332,7 +333,14 @@ def main():
                                       "    func apply(id: Int, using block: (Int) -> Int) -> Int\n"
                                       "    func apply(id: Int) -> Int\n"
                                       "}\n")
+    spy_link_collision = temp / "SpyLinkCollision.swift"
+    spy_link_collision.write_text("public protocol SpyLinkCollision: Sendable {\n"
+                                  "    var forwardingTargets: Int { get }\n"
+                                  "    func probe() async throws -> Int\n"
+                                  "}\n")
     spy_rejections = (
+        ("link-name-collision", spy_link_collision, "SpyLinkCollision", (),
+         "conflicts with generated forwarding link setup or target names"),
         ("variadic", variadic_source, "VariadicDirectory", (), "cannot splat a Swift variadic argument"),
         ("writable-property", property_source, "PropertyDirectory", (), "writable property requires a nonmutating setter"),
         ("writable-subscript", subscript_source, "SubscriptDirectory", (), "writable subscript requires a nonmutating setter"),
@@ -481,6 +489,7 @@ def main():
         "CallbackSpyDeferredCapture": r"passing non-escaping parameter 'callback'.*'@escaping'",
         "CallbackSpyDetachedCapture": r"escaping closure captures non-escaping value",
         "InoutSpyRetainsAccess": r"escaping closure captures 'inout' parameter 'value'",
+        "StructuralSpyWrongLink": r"cannot convert value of type 'AsyncThrowingForwardingTarget<Int, Int, StructuralSpyFailure>' to expected argument type 'AsyncThrowingForwardingTarget<Int, String, StructuralSpyFailure>'",
         "SpyWrongTarget": r"argument type 'UnrelatedDependency' does not conform to expected type 'SpyDirectory'",
         "SubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "SubscriptWrongNewValue": r"cannot convert value of type 'Int' to expected argument type 'String'",

@@ -743,6 +743,18 @@ func generate(
         return ["\(types.argument): Sendable", "\(types.result): Sendable"]
     }
     let declaration = genericTypes.isEmpty ? name : name + "<" + genericTypes.joined(separator: ", ") + ">"
+    let linkedIndices = spy ? instanceIndices.filter { members[$0].family == "AsyncThrowing" } : []
+    if !linkedIndices.isEmpty &&
+        (!usedNames.isDisjoint(with: ["ForwardingLinks", "ForwardingTargets"]) ||
+         members.contains(where: { member in
+             switch member.kind {
+             case .method: member.name == "forwardingTargets" && member.parameters.isEmpty
+             case .getter(let name), .setter(let name): name == "forwardingTargets"
+             default: false
+             }
+         })) {
+        try reject(proto, "A requirement conflicts with generated forwarding link setup or target names")
+    }
     func endpointFamily(_ index: Int) -> String {
         let family = members[index].family
         return projectedIndices.contains(index) ? "Projected" + family : family
@@ -807,6 +819,32 @@ func generate(
         }
         output += "    }\n\n"
     }
+    if !linkedIndices.isEmpty {
+        output += "    public struct ForwardingLinks: Sendable {\n"
+        output += "        public init(_ configure: (inout Self) -> Void = { _ in }) {\n"
+        output += "            configure(&self)\n        }\n"
+        for index in linkedIndices {
+            let member = members[index]
+            let link = "AsyncThrowingForwardingLink<\(member.genericArguments)>"
+            let selector = member.parameters.map { "\($0.label) _: (\($0.runtimeType)).Type" }
+            let signature = (selector + ["through link: \(link)"]).joined(separator: ", ")
+            output += "        fileprivate var __link\(index): \(link)? = nil\n"
+            output += "        public mutating func \(member.name)(\(signature)) {\n"
+            output += "            __link\(index) = link\n        }\n"
+        }
+        output += "    }\n\n"
+        output += "    public struct ForwardingTargets: Sendable {\n"
+        for index in linkedIndices {
+            let member = members[index]
+            let selector = member.parameters.map { "\($0.label) _: (\($0.runtimeType)).Type" }
+            let signature = selector.joined(separator: ", ")
+            output += "        fileprivate let __endpoint\(index): \(endpointType(index))\n"
+            output += "        public func \(member.name)(\(signature)) -> AsyncThrowingForwardingTarget<\(member.genericArguments)> {\n"
+            output += "            __endpoint\(index).forwardingTarget\n        }\n"
+        }
+        output += "    }\n\n    public var forwardingTargets: ForwardingTargets {\n        ForwardingTargets(" +
+            linkedIndices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
+    }
     if !forwardingIndices.isEmpty {
         output += "    public struct VariadicForwarding: Sendable {\n"
         output += "        public init(_ configure: (inout Self) -> Void = { _ in }) {\n"
@@ -855,8 +893,7 @@ func generate(
     }
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
         instanceIndices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
-    let supportsForwardingDepth = spy && members.contains { $0.family == "AsyncThrowing" }
-    if supportsForwardingDepth {
+    if !linkedIndices.isEmpty {
         output += """
             public convenience init(failureReporter: FailureReporter,
                         session: MockSession = MockSession(),
@@ -864,7 +901,19 @@ func generate(
                         failureMappings: FailureMappings = .init(),
                         _ configure: (Stubs) -> Void) {
                 self.init(failureReporter: failureReporter, session: session, forwardingTo: forwardingTo,
-                          maximumAsyncThrowingForwardingDepth: nil, failureMappings: failureMappings, configure)
+                          maximumAsyncThrowingForwardingDepth: nil, forwardingLinks: .init(),
+                          failureMappings: failureMappings, configure)
+            }
+
+            public convenience init(failureReporter: FailureReporter,
+                        session: MockSession = MockSession(),
+                        forwardingTo: (any \(selected))? = nil,
+                        maximumAsyncThrowingForwardingDepth: Int?,
+                        failureMappings: FailureMappings = .init(),
+                        _ configure: (Stubs) -> Void) {
+                self.init(failureReporter: failureReporter, session: session, forwardingTo: forwardingTo,
+                          maximumAsyncThrowingForwardingDepth: maximumAsyncThrowingForwardingDepth,
+                          forwardingLinks: .init(), failureMappings: failureMappings, configure)
             }
 
 
@@ -873,8 +922,9 @@ func generate(
     output += "    public init(failureReporter: FailureReporter,\n"
     if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
     if spy { output += "                forwardingTo: (any \(selected))? = nil,\n" }
-    if supportsForwardingDepth {
-        output += "                maximumAsyncThrowingForwardingDepth: Int?,\n"
+    if !linkedIndices.isEmpty {
+        output += "                maximumAsyncThrowingForwardingDepth: Int? = nil,\n"
+        output += "                forwardingLinks: ForwardingLinks,\n"
     }
     if !failureIndices.isEmpty {
         output += "                failureMappings: FailureMappings = .init(),\n"
@@ -902,7 +952,8 @@ func generate(
         output += "        forwarding.__install\(i)?(setup\(i))\n"
     }
     output += "        configure(Stubs(" + instanceIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
-    func spyForwardingArgument(_ member: Member) -> String {
+    func spyForwardingArgument(_ index: Int) -> String {
+        let member = members[index]
         func inputExpression(_ index: Int) -> String {
             member.metadataParameters.count == 1 ? "input" : "input.\(index)"
         }
@@ -944,13 +995,15 @@ func generate(
             let depth = member.family == "AsyncThrowing" ? "(maximumDepth: maximumAsyncThrowingForwardingDepth)" : ""
             wrapper = "\(member.family)Forwarding<\(member.genericArguments)>\(depth) "
         }
-        return ", forwarding: forwardingTo.map { target in\n                \(wrapper){ \(isolationAttribute) \(input)\(effects) in \(member.effect.callPrefix)\(call) }\n            }"
+        let link = member.family == "AsyncThrowing"
+            ? "forwardingLinks.__link\(index).map { AsyncThrowingForwarding(link: $0) } ?? " : ""
+        return ", forwarding: \(link)forwardingTo.map { target in\n                \(wrapper){ \(isolationAttribute) \(input)\(effects) in \(member.effect.callPrefix)\(call) }\n            }"
     }
 
     for i in instanceIndices {
         let m = members[i]
         var mapping = isolation == .sendable ? ", scope: scope" : ""
-        if spy { mapping += spyForwardingArgument(m) }
+        if spy { mapping += spyForwardingArgument(i) }
         if let failure = m.effect.runtimeFailure {
             mapping += ", failureMapping: failureMappings.__mapping\(i)"
             if failure.isOrdinary {
