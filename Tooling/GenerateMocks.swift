@@ -65,29 +65,76 @@ struct Effect {
         (runtimeFailure != nil ? "try " : "") + (isAsync ? "await " : "")
     }
 }
+struct Parameter {
+    let label: String
+    let type: String
+}
 struct Member {
     let name: String
-    let label: String
-    let inputType: String
+    let parameters: [Parameter]
     let outputType: String
     let effect: Effect
     let identity: String
     let line: Int
     let isolation: Isolation
+
     var family: String { isolation.prefix + effect.family }
-    var arguments: String {
+
+    var inputType: String {
+        if parameters.isEmpty { return "Void" }
+        if parameters.count == 1 { return parameters[0].type }
+        return "(" + parameters.map(\.type).joined(separator: ", ") + ")"
+    }
+
+    var genericArguments: String {
         let types = "\(inputType), \(outputType)"
         return effect.runtimeFailure.map { "\(types), \($0.type)" } ?? types
     }
-    var signature: String {
-        let parameter = label == "_" ? "_ input" : label + " input"
-        return "\(name)(\(parameter): \(inputType))\(effect.declaration) -> \(outputType)"
+
+    private func argumentName(_ index: Int) -> String {
+        parameters.count == 1 ? "input" : "input\(index)"
     }
+
+    private func matcherName(_ index: Int) -> String {
+        parameters.count == 1 ? "matcher" : "matcher\(index)"
+    }
+
+    var signature: String {
+        let declaration = parameters.enumerated().map { index, parameter in
+            "\(parameter.label) \(argumentName(index)): \(parameter.type)"
+        }.joined(separator: ", ")
+        return "\(name)(\(declaration))\(effect.declaration) -> \(outputType)"
+    }
+
+    var invocationInput: String {
+        if parameters.count == 1 { return argumentName(0) }
+        return "(" + parameters.indices.map(argumentName).joined(separator: ", ") + ")"
+    }
+
+    private var descriptorParameters: [String] {
+        parameters.enumerated().map { index, parameter in
+            "\(parameter.label) \(matcherName(index)): \(isolation.prefix)Matcher<\(parameter.type)>"
+        }
+    }
+
     var descriptorSignature: String {
-        let parameter = label == "_" ? "_ matcher" : label + " matcher"
-        return "\(name)(\(parameter): \(isolation.prefix)Matcher<\(inputType)>)"
+        "\(name)(\(descriptorParameters.joined(separator: ", ")))"
+    }
+
+    var verificationSignature: String {
+        let descriptor = descriptorParameters + ["phase: CallPhase = .admitted"]
+        return "\(name)(\(descriptor.joined(separator: ", ")))"
+    }
+
+    var matcherExpression: String {
+        if parameters.isEmpty { return ".any" }
+        if parameters.count == 1 { return matcherName(0) }
+        let matches = parameters.indices.map { "\(matcherName($0)).matches(input.\($0))" }
+            .joined(separator: " && ")
+        return "\(isolation.prefix)Matcher<\(inputType)> { input in \(matches) }"
     }
 }
+
 func generate(input: String, module: String, selected: String) throws -> String {
     let source = try String(contentsOfFile: input, encoding: .utf8)
     let tree = Parser.parse(source: source)
@@ -127,7 +174,6 @@ func generate(input: String, module: String, selected: String) throws -> String 
     // The consumer compiler resolves aliases and validates the conformance. Reject type
     // shapes this emitter cannot reproduce, including references to a witness's Self.
     func supportedType(_ type: TypeSyntax) -> String? {
-        if isolation == .sendable { return type.trimmedDescription == "String" ? "String" : nil }
         guard let identifier = type.as(IdentifierTypeSyntax.self),
               identifier.genericArgumentClause == nil,
               simple(identifier.name.text),
@@ -150,18 +196,21 @@ func generate(input: String, module: String, selected: String) throws -> String 
         guard let fn = item.decl.as(FunctionDeclSyntax.self) else {
             try reject(item, "Only function requirements are supported in this slice")
         }
-        let parameters = fn.signature.parameterClause.parameters
         guard fn.body == nil, fn.attributes.isEmpty, fn.modifiers.isEmpty,
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
               simple(fn.name.text), !["init", "verify", "Stubs", "Verification"].contains(fn.name.text),
-              parameters.count == 1, let parameter = parameters.first,
-              let inputType = supportedType(parameter.type),
-              parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
-              parameter.ellipsis == nil, parameter.defaultValue == nil,
-              (simple(parameter.firstName.text) || parameter.firstName.text == "_"),
               let outputType = supportedResult(fn.signature.returnClause?.type) else {
-            let shape = isolation == .sendable ? "String input and String, Void or Never result" : "a simple named value or reference type"
-            try reject(fn, "Supported requirements take one parameter and return a value of the supported type shape (\(shape)); generics, ownership modifiers, attributes and reserved mock names are unsupported")
+            try reject(fn, "Use a simple named result type or Void. Generics, attributes, modifiers and reserved mock names are unsupported")
+        }
+        let parameters = try fn.signature.parameterClause.parameters.map { parameter in
+            let label = parameter.firstName.text
+            guard let type = supportedType(parameter.type),
+                  parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+                  parameter.ellipsis == nil, parameter.defaultValue == nil,
+                  simple(label) || label == "_" else {
+                try reject(parameter, "Use simple named parameter types without ownership, variadics or default values")
+            }
+            return Parameter(label: label, type: type)
         }
         let specifiers = fn.signature.effectSpecifiers
         if let asyncSpecifier = specifiers?.asyncSpecifier, asyncSpecifier.text != "async" {
@@ -186,13 +235,13 @@ func generate(input: String, module: String, selected: String) throws -> String 
         }
         let effect = Effect(isAsync: isAsync, failure: failure)
         let name = fn.name.text
-        let label = parameter.firstName.text
-        let descriptor = "\(name)(\(label):\(inputType))"
+        let parameterTypes = parameters.map { "\($0.label):\($0.type)" }.joined(separator: ",")
+        let descriptor = "\(name)(\(parameterTypes))"
         guard descriptors.insert(descriptor).inserted else {
             try reject(fn, "Overloads that differ only by effects or result type require separate descriptor names")
         }
         let identity = "schema1|\(module).\(selected)|\(descriptor)\(effect.declaration)->\(outputType)|\(isolation.identity)"
-        members.append(Member(name: name, label: label, inputType: inputType, outputType: outputType,
+        members.append(Member(name: name, parameters: parameters, outputType: outputType,
                               effect: effect, identity: identity,
                               line: converter.location(for: fn.positionAfterSkippingLeadingTrivia).line,
                               isolation: isolation))
@@ -203,7 +252,7 @@ func generate(input: String, module: String, selected: String) throws -> String 
     var output = """
     // Generated by the Blueprint Mocking prototype. Schema 1. Do not edit.
     // Source: \(URL(fileURLWithPath: input).lastPathComponent), protocol \(selected).
-    // \((isolation == .sendable ? "Restricted Sendable/String" : "MainActor nominal types")) profile; consumer compilation is the conformance gate.
+    // \((isolation == .sendable ? "Sendable nominal types" : "MainActor nominal types")) profile; consumer compilation is the conformance gate.
     import BlueprintMocking
     import \(module)
 
@@ -212,18 +261,18 @@ func generate(input: String, module: String, selected: String) throws -> String 
 
     """
     for (i, m) in members.enumerated() {
-        output += "    private let __endpoint\(i): \(m.family)Endpoint<\(m.arguments)>\n"
+        output += "    private let __endpoint\(i): \(m.family)Endpoint<\(m.genericArguments)>\n"
     }
     output += "\n    \(isolation.annotation)public struct Stubs {\n"
     for (i,m) in members.enumerated() {
-        output += "        fileprivate let __setup\(i): \(m.family)Stubbing<\(m.arguments)>\n"
-        output += "        public func \(m.descriptorSignature) -> \(m.family)Stub<\(m.arguments)> {\n            __setup\(i).matching(matcher)\n        }\n"
+        output += "        fileprivate let __setup\(i): \(m.family)Stubbing<\(m.genericArguments)>\n"
+        output += "        public func \(m.descriptorSignature) -> \(m.family)Stub<\(m.genericArguments)> {\n            __setup\(i).matching(\(m.matcherExpression))\n        }\n"
     }
     let verificationConformance = isolation == .sendable ? ": Sendable" : ""
     output += "    }\n\n    \(isolation.annotation)public struct Verification\(verificationConformance) {\n"
     for (i,m) in members.enumerated() {
-        output += "        fileprivate let __endpoint\(i): \(m.family)Endpoint<\(m.arguments)>\n"
-        output += "        public func \(m.descriptorSignature.dropLast()), phase: CallPhase = .admitted) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.inputType)> {\n            __endpoint\(i).verification(matching: matcher, phase: phase)\n        }\n"
+        output += "        fileprivate let __endpoint\(i): \(m.family)Endpoint<\(m.genericArguments)>\n"
+        output += "        public func \(m.verificationSignature) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.inputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression), phase: phase)\n        }\n"
     }
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
         members.indices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
@@ -235,7 +284,7 @@ func generate(input: String, module: String, selected: String) throws -> String 
     }
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void) {\n"
     for (i,m) in members.enumerated() {
-        output += "        let setup\(i) = \(m.family)Stubbing<\(m.arguments)>()\n"
+        output += "        let setup\(i) = \(m.family)Stubbing<\(m.genericArguments)>()\n"
     }
     output += "        configure(Stubs(" + members.indices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
     for (i,m) in members.enumerated() {
@@ -253,7 +302,7 @@ func generate(input: String, module: String, selected: String) throws -> String 
     output += "    }\n"
     for (i,m) in members.enumerated() {
         let file = module + "/" + URL(fileURLWithPath: input).lastPathComponent
-        output += "\n    public func \(m.signature) {\n        \(m.effect.callPrefix)__endpoint\(i).invoke(input, source: SourceLocation(fileID: \(String(reflecting: file)), filePath: \(String(reflecting: URL(fileURLWithPath: input).lastPathComponent)), line: \(m.line), column: 1))\n    }\n"
+        output += "\n    public func \(m.signature) {\n        \(m.effect.callPrefix)__endpoint\(i).invoke(\(m.invocationInput), source: SourceLocation(fileID: \(String(reflecting: file)), filePath: \(String(reflecting: URL(fileURLWithPath: input).lastPathComponent)), line: \(m.line), column: 1))\n    }\n"
     }
     return output + "}\n"
 }

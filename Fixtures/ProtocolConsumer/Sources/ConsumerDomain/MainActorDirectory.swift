@@ -18,6 +18,7 @@ public protocol MainActorDirectory {
     func require(_ entry: DirectoryEntry) throws(DirectoryFailure) -> DirectoryEntry
     func read(_ entry: DirectoryEntry) async -> DirectoryEntry
     func audit(_ entry: DirectoryEntry)
+    func merge(_ entry: DirectoryEntry, with suffix: DirectoryEntry) -> DirectoryEntry
 }
 
 @MainActor

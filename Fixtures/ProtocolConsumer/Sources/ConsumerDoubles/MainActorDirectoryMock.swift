@@ -8,9 +8,10 @@ import ConsumerDomain
     private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
     private let __endpoint0: MainActorSyncEndpoint<DirectoryEntry, Void>
     private let __endpoint1: MainActorSyncEndpoint<DirectoryEntry, DirectoryEntry>
-    private let __endpoint2: MainActorAsyncEndpoint<DirectoryEntry, DirectoryEntry>
-    private let __endpoint3: MainActorAsyncThrowingEndpoint<DirectoryEntry, DirectoryEntry, DirectoryFailure>
-    private let __endpoint4: MainActorSyncThrowingEndpoint<DirectoryEntry, DirectoryEntry, DirectoryFailure>
+    private let __endpoint2: MainActorSyncEndpoint<(DirectoryEntry, DirectoryEntry), DirectoryEntry>
+    private let __endpoint3: MainActorAsyncEndpoint<DirectoryEntry, DirectoryEntry>
+    private let __endpoint4: MainActorAsyncThrowingEndpoint<DirectoryEntry, DirectoryEntry, DirectoryFailure>
+    private let __endpoint5: MainActorSyncThrowingEndpoint<DirectoryEntry, DirectoryEntry, DirectoryFailure>
 
     @MainActor public struct Stubs {
         fileprivate let __setup0: MainActorSyncStubbing<DirectoryEntry, Void>
@@ -21,17 +22,21 @@ import ConsumerDomain
         public func display(_ matcher: MainActorMatcher<DirectoryEntry>) -> MainActorSyncStub<DirectoryEntry, DirectoryEntry> {
             __setup1.matching(matcher)
         }
-        fileprivate let __setup2: MainActorAsyncStubbing<DirectoryEntry, DirectoryEntry>
-        public func read(_ matcher: MainActorMatcher<DirectoryEntry>) -> MainActorAsyncStub<DirectoryEntry, DirectoryEntry> {
-            __setup2.matching(matcher)
+        fileprivate let __setup2: MainActorSyncStubbing<(DirectoryEntry, DirectoryEntry), DirectoryEntry>
+        public func merge(_ matcher0: MainActorMatcher<DirectoryEntry>, with matcher1: MainActorMatcher<DirectoryEntry>) -> MainActorSyncStub<(DirectoryEntry, DirectoryEntry), DirectoryEntry> {
+            __setup2.matching(MainActorMatcher<(DirectoryEntry, DirectoryEntry)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) })
         }
-        fileprivate let __setup3: MainActorAsyncThrowingStubbing<DirectoryEntry, DirectoryEntry, DirectoryFailure>
-        public func refresh(_ matcher: MainActorMatcher<DirectoryEntry>) -> MainActorAsyncThrowingStub<DirectoryEntry, DirectoryEntry, DirectoryFailure> {
+        fileprivate let __setup3: MainActorAsyncStubbing<DirectoryEntry, DirectoryEntry>
+        public func read(_ matcher: MainActorMatcher<DirectoryEntry>) -> MainActorAsyncStub<DirectoryEntry, DirectoryEntry> {
             __setup3.matching(matcher)
         }
-        fileprivate let __setup4: MainActorSyncThrowingStubbing<DirectoryEntry, DirectoryEntry, DirectoryFailure>
-        public func require(_ matcher: MainActorMatcher<DirectoryEntry>) -> MainActorSyncThrowingStub<DirectoryEntry, DirectoryEntry, DirectoryFailure> {
+        fileprivate let __setup4: MainActorAsyncThrowingStubbing<DirectoryEntry, DirectoryEntry, DirectoryFailure>
+        public func refresh(_ matcher: MainActorMatcher<DirectoryEntry>) -> MainActorAsyncThrowingStub<DirectoryEntry, DirectoryEntry, DirectoryFailure> {
             __setup4.matching(matcher)
+        }
+        fileprivate let __setup5: MainActorSyncThrowingStubbing<DirectoryEntry, DirectoryEntry, DirectoryFailure>
+        public func require(_ matcher: MainActorMatcher<DirectoryEntry>) -> MainActorSyncThrowingStub<DirectoryEntry, DirectoryEntry, DirectoryFailure> {
+            __setup5.matching(matcher)
         }
     }
 
@@ -44,44 +49,51 @@ import ConsumerDomain
         public func display(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {
             __endpoint1.verification(matching: matcher, phase: phase)
         }
-        fileprivate let __endpoint2: MainActorAsyncEndpoint<DirectoryEntry, DirectoryEntry>
-        public func read(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {
-            __endpoint2.verification(matching: matcher, phase: phase)
+        fileprivate let __endpoint2: MainActorSyncEndpoint<(DirectoryEntry, DirectoryEntry), DirectoryEntry>
+        public func merge(_ matcher0: MainActorMatcher<DirectoryEntry>, with matcher1: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<(DirectoryEntry, DirectoryEntry)> {
+            __endpoint2.verification(matching: MainActorMatcher<(DirectoryEntry, DirectoryEntry)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
-        fileprivate let __endpoint3: MainActorAsyncThrowingEndpoint<DirectoryEntry, DirectoryEntry, DirectoryFailure>
-        public func refresh(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {
+        fileprivate let __endpoint3: MainActorAsyncEndpoint<DirectoryEntry, DirectoryEntry>
+        public func read(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {
             __endpoint3.verification(matching: matcher, phase: phase)
         }
-        fileprivate let __endpoint4: MainActorSyncThrowingEndpoint<DirectoryEntry, DirectoryEntry, DirectoryFailure>
-        public func require(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {
+        fileprivate let __endpoint4: MainActorAsyncThrowingEndpoint<DirectoryEntry, DirectoryEntry, DirectoryFailure>
+        public func refresh(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {
             __endpoint4.verification(matching: matcher, phase: phase)
+        }
+        fileprivate let __endpoint5: MainActorSyncThrowingEndpoint<DirectoryEntry, DirectoryEntry, DirectoryFailure>
+        public func require(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {
+            __endpoint5.verification(matching: matcher, phase: phase)
         }
     }
 
     public var verify: Verification {
-        Verification(__endpoint0: __endpoint0, __endpoint1: __endpoint1, __endpoint2: __endpoint2, __endpoint3: __endpoint3, __endpoint4: __endpoint4)
+        Verification(__endpoint0: __endpoint0, __endpoint1: __endpoint1, __endpoint2: __endpoint2, __endpoint3: __endpoint3, __endpoint4: __endpoint4, __endpoint5: __endpoint5)
     }
 
     public init(failureReporter: FailureReporter,
-                failureMapping3: (@MainActor (MockIssue) -> DirectoryFailure)? = nil,
                 failureMapping4: (@MainActor (MockIssue) -> DirectoryFailure)? = nil,
+                failureMapping5: (@MainActor (MockIssue) -> DirectoryFailure)? = nil,
                 _ configure: @MainActor (Stubs) -> Void) {
         let setup0 = MainActorSyncStubbing<DirectoryEntry, Void>()
         let setup1 = MainActorSyncStubbing<DirectoryEntry, DirectoryEntry>()
-        let setup2 = MainActorAsyncStubbing<DirectoryEntry, DirectoryEntry>()
-        let setup3 = MainActorAsyncThrowingStubbing<DirectoryEntry, DirectoryEntry, DirectoryFailure>()
-        let setup4 = MainActorSyncThrowingStubbing<DirectoryEntry, DirectoryEntry, DirectoryFailure>()
-        configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2, __setup3: setup3, __setup4: setup4))
+        let setup2 = MainActorSyncStubbing<(DirectoryEntry, DirectoryEntry), DirectoryEntry>()
+        let setup3 = MainActorAsyncStubbing<DirectoryEntry, DirectoryEntry>()
+        let setup4 = MainActorAsyncThrowingStubbing<DirectoryEntry, DirectoryEntry, DirectoryFailure>()
+        let setup5 = MainActorSyncThrowingStubbing<DirectoryEntry, DirectoryEntry, DirectoryFailure>()
+        configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2, __setup3: setup3, __setup4: setup4, __setup5: setup5))
         self.__endpoint0 = MainActorSyncEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|audit(_:DirectoryEntry)->Void|MainActor"),
             configuration: setup0.finish(), failureReporter: failureReporter, fallback: { _ in () })
         self.__endpoint1 = MainActorSyncEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|display(_:DirectoryEntry)->DirectoryEntry|MainActor"),
             configuration: setup1.finish(), failureReporter: failureReporter)
-        self.__endpoint2 = MainActorAsyncEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|read(_:DirectoryEntry) async->DirectoryEntry|MainActor"),
+        self.__endpoint2 = MainActorSyncEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|merge(_:DirectoryEntry,with:DirectoryEntry)->DirectoryEntry|MainActor"),
             configuration: setup2.finish(), failureReporter: failureReporter)
-        self.__endpoint3 = MainActorAsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|refresh(_:DirectoryEntry) async throws(DirectoryFailure)->DirectoryEntry|MainActor"),
-            configuration: setup3.finish(), failureReporter: failureReporter, failureMapping: failureMapping3)
-        self.__endpoint4 = MainActorSyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|require(_:DirectoryEntry) throws(DirectoryFailure)->DirectoryEntry|MainActor"),
+        self.__endpoint3 = MainActorAsyncEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|read(_:DirectoryEntry) async->DirectoryEntry|MainActor"),
+            configuration: setup3.finish(), failureReporter: failureReporter)
+        self.__endpoint4 = MainActorAsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|refresh(_:DirectoryEntry) async throws(DirectoryFailure)->DirectoryEntry|MainActor"),
             configuration: setup4.finish(), failureReporter: failureReporter, failureMapping: failureMapping4)
+        self.__endpoint5 = MainActorSyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|require(_:DirectoryEntry) throws(DirectoryFailure)->DirectoryEntry|MainActor"),
+            configuration: setup5.finish(), failureReporter: failureReporter, failureMapping: failureMapping5)
     }
 
     public func audit(_ input: DirectoryEntry) -> Void {
@@ -92,15 +104,19 @@ import ConsumerDomain
         __endpoint1.invoke(input, source: SourceLocation(fileID: "ConsumerDomain/MainActorDirectory.swift", filePath: "MainActorDirectory.swift", line: 16, column: 1))
     }
 
+    public func merge(_ input0: DirectoryEntry, with input1: DirectoryEntry) -> DirectoryEntry {
+        __endpoint2.invoke((input0, input1), source: SourceLocation(fileID: "ConsumerDomain/MainActorDirectory.swift", filePath: "MainActorDirectory.swift", line: 21, column: 1))
+    }
+
     public func read(_ input: DirectoryEntry) async -> DirectoryEntry {
-        await __endpoint2.invoke(input, source: SourceLocation(fileID: "ConsumerDomain/MainActorDirectory.swift", filePath: "MainActorDirectory.swift", line: 19, column: 1))
+        await __endpoint3.invoke(input, source: SourceLocation(fileID: "ConsumerDomain/MainActorDirectory.swift", filePath: "MainActorDirectory.swift", line: 19, column: 1))
     }
 
     public func refresh(_ input: DirectoryEntry) async throws(DirectoryFailure) -> DirectoryEntry {
-        try await __endpoint3.invoke(input, source: SourceLocation(fileID: "ConsumerDomain/MainActorDirectory.swift", filePath: "MainActorDirectory.swift", line: 17, column: 1))
+        try await __endpoint4.invoke(input, source: SourceLocation(fileID: "ConsumerDomain/MainActorDirectory.swift", filePath: "MainActorDirectory.swift", line: 17, column: 1))
     }
 
     public func require(_ input: DirectoryEntry) throws(DirectoryFailure) -> DirectoryEntry {
-        try __endpoint4.invoke(input, source: SourceLocation(fileID: "ConsumerDomain/MainActorDirectory.swift", filePath: "MainActorDirectory.swift", line: 18, column: 1))
+        try __endpoint5.invoke(input, source: SourceLocation(fileID: "ConsumerDomain/MainActorDirectory.swift", filePath: "MainActorDirectory.swift", line: 18, column: 1))
     }
 }

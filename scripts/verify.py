@@ -92,6 +92,11 @@ def main():
     edge_source = source.with_name("EffectEdges.swift")
     edge_generated = generated.with_name("EffectEdgesMock.swift")
     run("effect-edges-generation", generate(tool, edge_source, edge_generated, "EffectEdges"))
+
+    parameter_source = source.with_name("LookupParameters.swift")
+    parameter_generated = generated.with_name("LookupParametersMock.swift")
+    run("parameter-list-generation",
+        generate(tool, parameter_source, parameter_generated, "LookupParameters"))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -137,6 +142,7 @@ def main():
         "WrongError": r"cannot convert value of type 'Other'",
         "GeneratedWrongError": r"cannot convert value of type 'UnrelatedError'",
         "AsyncAnswerForSync": r"cannot pass function of type.*async",
+        "InvalidSendablePayload": r"type 'DirectoryEntry' does not conform to the 'Sendable' protocol",
         "NonSendableCapture": r"capture of 'box'.*non-[Ss]endable",
         "SchemaMismatch": r"cannot find type 'BlueprintRuntimeSchemaV999'",
         "ThrowForSync": r"has no member 'willThrow'",
@@ -206,6 +212,7 @@ def main():
         "mainActorGeneratedSHA256": hashlib.sha256(actor_baseline).hexdigest(),
         "effectsGeneratedSHA256": hashlib.sha256(effect_generated.read_bytes()).hexdigest(),
         "effectEdgesGeneratedSHA256": hashlib.sha256(edge_generated.read_bytes()).hexdigest(),
+        "parameterListGeneratedSHA256": hashlib.sha256(parameter_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
