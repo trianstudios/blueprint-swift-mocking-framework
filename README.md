@@ -107,6 +107,19 @@ python3 scripts/verify_tooling_install.py "$revision" --archive "$archive" \
 
 Set `prepared_swift_syntax_mirror` to a local bare Git mirror containing the SwiftSyntax tag and commit in the export manifest. The install check resolves separate tooling and runtime packages by exact Git revision using local Git transport. It verifies the prepared SwiftSyntax pin and the runtime-only dependency graph. The check covers package resolution. Building the exported tool and qualifying public distribution and other hosts remain separate gates.
 
+### Offline runtime qualification on macOS
+
+Run the runtime-only SwiftPM consumer from a prepared bare Git mirror containing the selected commit.
+
+```sh
+revision=$(git rev-parse HEAD)
+python3 scripts/verify_offline_runtime.py "$revision" \
+  --runtime-mirror "$prepared_runtime_mirror" \
+  --evidence-dir "$artifact_dir/offline-runtime"
+```
+
+The verifier isolates SwiftPM caches and mirror configuration, confirms OS-level network denial, then resolves, builds and runs the typed consumer. It checks Mach-O libraries and static link inputs for the runtime-only dependency boundary. Set `BLUEPRINT_VERIFY_OFFLINE_RUNTIME_MIRROR` to the same mirror path when running `scripts/verify.py` from a clean checkout to collect the named check with the rest of the prototype evidence.
+
 ### Standalone generation
 
 The generated source is included so the consumer can build directly. Regenerate it with:

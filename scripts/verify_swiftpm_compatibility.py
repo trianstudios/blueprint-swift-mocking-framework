@@ -105,7 +105,7 @@ def stage_fixture(repository, destination, *, plugin, syntax_version):
 
 def check_resolved(swift, package, state, evidence, lane, env, mirror, revision, version, repository, *, plugin):
     graph, pins, hashes = resolve_lane(
-        swift, package, state, evidence, lane, env, mirror=(SWIFT_SYNTAX_URL, str(mirror)),
+        package_command(swift, package, state), package, evidence, lane, env, mirror=(SWIFT_SYNTAX_URL, str(mirror)),
     )
     runtime = repository.name.lower()
     roots = {runtime, "swift-syntax", "tooling"} if plugin else {runtime, "swift-syntax"}

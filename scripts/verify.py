@@ -146,6 +146,9 @@ def verify_conditional_generation(tool, temp):
 
 def main():
     source_before = checkout_state()
+    offline_runtime_mirror = os.environ.get("BLUEPRINT_VERIFY_OFFLINE_RUNTIME_MIRROR")
+    if offline_runtime_mirror and (not source_before or not source_before["clean"]):
+        raise ValueError("Offline runtime qualification requires a clean Git checkout at the mirror revision")
     swift = Path(xcrun("--find", "swift"))
     swiftc = Path(xcrun("--find", "swiftc"))
     if any(not executable.is_absolute() or not os.access(executable, os.X_OK)
@@ -1225,6 +1228,15 @@ def main():
     excluded_imports = ("SwiftSyntax", "SwiftParser", "SourceKit", "Testing", "XCTest")
     assert all(not any(f"import {module}" in p.read_text() for module in excluded_imports) for p in runtime_sources)
 
+    if offline_runtime_mirror:
+        run("runtime-only-offline", [
+            sys.executable, "scripts/verify_offline_runtime.py", source_before["revision"],
+            "--runtime-mirror", offline_runtime_mirror, "--evidence-dir", EVIDENCE,
+        ], env=swift_environment, timeout=420,
+            patterns=[r"PASS: runtime-only consumer resolved, built and ran from its exact mirror with networking denied",
+                      r"PASS: runtime-only linkage contains only core and consumer objects",
+                      r"EVIDENCE: runtime-only-offline-report\.json SHA-256 [0-9a-f]{64}"])
+
     check_swiftpm_plugin = os.environ.get("BLUEPRINT_VERIFY_SWIFTPM_PLUGIN") == "1"
     if check_swiftpm_plugin:
         run("swiftpm-build-plugin-consumer", [
@@ -1268,6 +1280,7 @@ def main():
         "architecture": platform.machine(), "deploymentTarget": f"macOS {deployment_target}",
         "defaultIsolation": "compiler default (nonisolated); no upcoming feature flags",
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
+        "swiftPMOfflineRuntimeVerified": bool(offline_runtime_mirror),
         "swiftPMBuildPluginVerified": check_swiftpm_plugin,
         "swiftPMExplicitConditionalConsumerVerified": check_explicit_conditional_consumer,
         "swiftPMConfiguredBindingPluginVerifiedWithBundledParser": check_configured_binding_plugin,

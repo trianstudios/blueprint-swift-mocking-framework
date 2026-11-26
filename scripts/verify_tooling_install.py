@@ -81,9 +81,9 @@ def stage_fixture(repository, revision, fixture, destination, environment, runti
     manifest.write_text(source, encoding="utf-8")
 
 
-def package_command(swift, package, state):
+def package_command(swift, package, state, *, action="package"):
     return [
-        str(swift), "package", "--package-path", str(package),
+        str(swift), action, "--package-path", str(package),
         "--scratch-path", str(state / "build"),
         "--cache-path", str(state / "cache"),
         "--config-path", str(state / "configuration"),
@@ -134,8 +134,7 @@ def dependency_nodes(node, identities):
     return by_id
 
 
-def resolve_lane(swift, package, state, evidence, lane, environment, *, mirror=None):
-    command = package_command(swift, package, state)
+def resolve_lane(command, package, evidence, lane, environment, *, mirror=None):
     if mirror:
         original, offline_url = mirror
         run(command + ["config", "set-mirror", "--original", original, "--mirror", offline_url],
@@ -207,8 +206,8 @@ def verify(repository, revision, contents, syntax_mirror, evidence):
         stage_fixture(repository, revision, "RuntimeOnly", runtime_fixture, environment, str(runtime_alias))
 
         tooling_state = root / "Tooling State"
-        graph, pins, hashes = resolve_lane(swift, tooling_fixture, tooling_state, evidence,
-                                            "tooling-install", environment,
+        graph, pins, hashes = resolve_lane(package_command(swift, tooling_fixture, tooling_state), tooling_fixture,
+                                            evidence, "tooling-install", environment,
                                             mirror=(syntax["url"], str(syntax_alias)))
         nodes = dependency_nodes(graph, {PACKAGE_ID, TOOLING_ID})
         dependency_nodes(nodes[PACKAGE_ID], set())
@@ -229,7 +228,8 @@ def verify(repository, revision, contents, syntax_mirror, evidence):
         print("PASS: resolved tooling exposes the executable and SwiftPM build plugin", flush=True)
 
         runtime, runtime_pins, runtime_hashes = resolve_lane(
-            swift, runtime_fixture, root / "Runtime State", evidence, "runtime-only-install", environment,
+            package_command(swift, runtime_fixture, root / "Runtime State"), runtime_fixture,
+            evidence, "runtime-only-install", environment,
         )
         runtime_nodes = dependency_nodes(runtime, {PACKAGE_ID})
         dependency_nodes(runtime_nodes[PACKAGE_ID], set())

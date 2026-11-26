@@ -140,7 +140,15 @@ The checked-in `Packages/Tooling/ExportManifest.json` specifies the standalone p
 
 Tests cover repeatable exports across checkout paths, staged and unstaged source changes, archive attributes, corrupted bytes, unsafe paths, a tracked symlink, and an internally consistent older archive checked against a newer revision. The local install verifier places the exact unpacked artifact in a disposable Git repository and checks the consumer’s tooling, runtime and SwiftSyntax pins. A separate runtime-only fixture resolves zero transitive dependencies.
 
-This milestone covers local source packaging and resolution through a prepared local mirror on Apple Swift 6.4. The checks use file-only Git transport. Compilation from the exported package, complete offline build qualification, hosted tooling distribution and signed release exports remain open.
+This milestone covers local source packaging and resolution through a prepared local mirror on Apple Swift 6.4. The checks use file-only Git transport. Compilation from the exported tooling package, offline generation, hosted tooling distribution and signed release exports remain open.
+
+## Offline runtime installation from a prepared mirror
+
+DX-001 and SYS-003 have native evidence for a clean SwiftPM runtime consumer at an exact revision. The verifier stages the consumer from committed files, preserves its public package URL and points SwiftPM at a prepared bare mirror in isolated configuration. It checks the lockfile, the independent SwiftPM checkout and the graph with zero transitive runtime dependencies. Git replacement refs are disabled so fixture reads honor the committed objects.
+
+Before resolving, the verifier connects to a local test listener and then requires a child-reported permission error under the same macOS policy used to resolve, build and run. The executable's Mach-O load commands identify macOS 13.0 as the deployment target. Dynamic library inspection excludes parser, generator and reporter libraries, and the native SwiftPM link-input file lists only the compiled core and consumer objects. The verifier selects the native build system to inspect these original link inputs. The runtime smoke fixture configures a typed stub, invokes it and verifies the call.
+
+The local evidence uses Apple Swift 6.4 on arm64 macOS. The report records the selected compiler, SDK, host build, Git revision, network probe, executable hash and evidence digests. The main verifier captures the report's SHA-256. Additional native profiles and maintainer review remain. The wider DX-020 contract still requires network-blocked generation, artifact-class corruption cases and trusted release provenance. The SwiftSyntax cache contains the pinned 600.0.1 source mirror. Packaged parser compilation and parity require a prepared compiled cache or a separate build host.
 
 ## Same-module protocol inheritance
 
