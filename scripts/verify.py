@@ -112,6 +112,10 @@ def main():
     subscript_source = source.with_name("SubscriptDirectory.swift")
     subscript_generated = generated.with_name("SubscriptDirectoryMock.swift")
     run("subscript-generation", generate(tool, subscript_source, subscript_generated, "SubscriptDirectory"))
+    effectful_subscript_source = source.with_name("EffectfulSubscriptDirectory.swift")
+    effectful_subscript_generated = generated.with_name("EffectfulSubscriptDirectoryMock.swift")
+    run("effectful-subscript-generation", generate(
+        tool, effectful_subscript_source, effectful_subscript_generated, "EffectfulSubscriptDirectory"))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -223,6 +227,8 @@ def main():
         "SubscriptWrongNewValue": r"cannot convert value of type 'Int' to expected argument type 'String'",
         "SubscriptWrongGetterResult": r"cannot convert value of type 'Int' to expected argument type 'String'",
         "SubscriptThrowForSetter": r"has no member 'willThrow'",
+        "SubscriptWrongTypedError": r"cannot convert value of type 'WrongSubscriptFailure' to expected argument type 'EffectfulSubscriptFailure'",
+        "SubscriptWriteReadonly": r"subscript is get-only",
     }
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
         compiler_stage = ["-typecheck"]
@@ -288,6 +294,7 @@ def main():
         "structuralTypesGeneratedSHA256": hashlib.sha256(structural_generated.read_bytes()).hexdigest(),
         "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
         "subscriptGeneratedSHA256": hashlib.sha256(subscript_generated.read_bytes()).hexdigest(),
+        "effectfulSubscriptGeneratedSHA256": hashlib.sha256(effectful_subscript_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")

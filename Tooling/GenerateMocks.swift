@@ -344,9 +344,6 @@ func generate(input: String, module: String, selected: String, projections: [Str
         if let setter, effect.isAsync || effect.failure != nil || setter.effectSpecifiers != nil {
             try reject(setter, "Effectful subscript getters require read-only subscripts; setters must be synchronous and nonthrowing")
         }
-        if effect.isAsync || effect.failure != nil {
-            try reject(getter, "Effectful subscript getters are not implemented in the synchronous subscript profile")
-        }
         let identity = "(" + indices.map { "\($0.label):\($0.type)" }.joined(separator: ",") + ")"
         try addMember(name: "get_subscript", parameters: indices, outputType: output, effect: effect,
                       kind: .subscriptGetter(identity), at: getter)
