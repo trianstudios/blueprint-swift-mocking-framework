@@ -53,3 +53,9 @@ Sendable synchronous and async-throwing endpoints can retain typed argument and 
 For RUN-006, `xcrun swift test --filter 'RUN006'` exercises equality versus identity, optional matching, and typed case extraction in both Sendable and MainActor fixtures. The pre-Mutex iOS probe in `scripts/verify_apple_deployment.py` also exercises equality, identity, and typed case projection on the available iOS 17.5 simulator. These runs provide scoped evidence. Native execution on the remaining applicable Apple, Ubuntu, and Windows profiles and review of the exact applicable profile plan remain required.
 
 For SYS-008, `python3 -m unittest discover -s scripts/tests -p 'test_check_release.py'` checks that otherwise valid evidence cannot certify a completed row with a missing source reference, check name, or required profile result. The unit bundle uses synthetic profile metadata. Certification requires a reviewed plan covering the applicable release-validation hosts and actual evidence tied to the exact Git revision.
+
+## Public SwiftPM installation
+
+`python3 scripts/verify_remote_install.py <commit>` runs committed fixtures in fresh scratch using the public GitHub URL and a fresh SwiftPM cache shared within that run. It builds and runs the runtime-only product and runs actual Swift Testing and XCTest test targets. Each lockfile must record the repository identity and exact commit. All three fixtures passed at `8937eb9`, `568502a`, and `44ba673` on the tested macOS toolchain. The runtime package's product name is `BluepringMockingFramework` and its module is `BlueprintMocking`.
+
+The optional `--version <exact-semver>` makes those fixtures resolve the supplied exact version and checks the resulting commit. Manifest and pin validation for exact versions are covered by unit tests. Live SemVer verification requires an approved release tag at the candidate commit.

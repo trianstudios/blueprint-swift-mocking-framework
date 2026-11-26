@@ -29,6 +29,18 @@ bash scripts/generate.sh \
   --output Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/UserRepositoryMock.swift
 ```
 
+To install a tested development revision from GitHub, use a URL dependency and the repository identity in your test target's product declaration:
+
+```swift
+.package(
+    url: "https://github.com/trianstudios/blueprint-swift-mocking-framework.git",
+    revision: "568502aaa8ecc8c449393dd247a8afd77ecd35cf"
+)
+.product(name: "BluepringMockingFramework", package: "blueprint-swift-mocking-framework")
+```
+
+Run `python3 scripts/verify_remote_install.py <commit>` to verify RuntimeOnly, Swift Testing, and XCTest from the public URL. It exports the fixtures at that commit and records their resolved pins in an ignored `.build/remote-install/` report. After an approved release tag is available, add `--version <exact-semver>` to verify the tag resolves to the supplied commit.
+
 A test uses the production interface without adding mocking imports to its module:
 
 ```swift
