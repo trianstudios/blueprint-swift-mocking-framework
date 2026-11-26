@@ -59,11 +59,100 @@ public final class LookupMock: Lookup {
             configuration: setup1.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMappings.__mapping1)
     }
 
+    @TaskLocal private static var __typeScope: TypeScope?
+
+    public struct TypeStubs {
+        fileprivate let __setup2: SyncStubbing<Int, Int>
+        public func get_subscript(_ matcher: Matcher<Int>) -> SyncStub<Int, Int> {
+            __setup2.matching(matcher)
+        }
+        fileprivate let __setup3: SyncStubbing<(Int, Int), Void>
+        public func set_subscript(_ matcher0: Matcher<Int>, newValue matcher1: Matcher<Int>) -> SyncStub<(Int, Int), Void> {
+            __setup3.matching(Matcher<(Int, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) })
+        }
+    }
+
+    public struct TypeVerification: Sendable {
+        fileprivate let __endpoint2: SyncEndpoint<Int, Int>
+        public func get_subscript(_ matcher: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<Int> {
+            __endpoint2.verification(matching: matcher, phase: phase)
+        }
+        fileprivate let __endpoint3: SyncEndpoint<(Int, Int), Void>
+        public func set_subscript(_ matcher0: Matcher<Int>, newValue matcher1: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(Int, Int)> {
+            __endpoint3.verification(matching: Matcher<(Int, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+        }
+    }
+
+    public struct TypeScope: Sendable {
+        fileprivate let __endpoint2: SyncEndpoint<Int, Int>
+        fileprivate let __endpoint3: SyncEndpoint<(Int, Int), Void>
+        public var verify: TypeVerification {
+            TypeVerification(__endpoint2: __endpoint2, __endpoint3: __endpoint3)
+        }
+
+        public func withValue<Value>(_ body: () throws -> Value) rethrows -> Value {
+            try LookupMock.$__typeScope.withValue(self, operation: body)
+        }
+
+        public func withValue<Value, Failure: Error>(
+            isolation: isolated (any Actor)? = #isolation,
+            _ body: () async throws(Failure) -> Value
+        ) async throws(Failure) -> Value {
+            #if compiler(>=6.2)
+            let operation: nonisolated(nonsending) () async -> Result<Value, Failure> = {
+                do throws(Failure) { return .success(try await body()) }
+                catch { return .failure(error) }
+            }
+            let result = await LookupMock.$__typeScope.withValue(self, operation: operation)
+            #else
+            let result: Result<Value, Failure> = await LookupMock.$__typeScope.withValue(
+                self, operation: {
+                    do throws(Failure) { return .success(try await body()) }
+                    catch { return .failure(error) }
+                }, isolation: isolation
+            )
+            #endif
+            return try result.get()
+        }
+    }
+
+    public static func makeTypeScope(
+        failureReporter: FailureReporter,
+        session: MockSession = MockSession(),
+        _ configure: (TypeStubs) -> Void
+    ) -> TypeScope {
+        let scope = session.makeEpochBoundMock()
+        let setup2 = SyncStubbing<Int, Int>()
+        let setup3 = SyncStubbing<(Int, Int), Void>()
+        configure(TypeStubs(__setup2: setup2, __setup3: setup3))
+        let endpoint2 = SyncEndpoint(id: EndpointID("schema1|LookupDomain.Lookup|type:subscript:(_:Int).get->Int|Sendable"),
+            configuration: setup2.finish(), failureReporter: failureReporter, scope: scope)
+        let endpoint3 = SyncEndpoint(id: EndpointID("schema1|LookupDomain.Lookup|type:subscript:(_:Int).set(_:Int,newValue:Int)->Void|Sendable"),
+            configuration: setup3.finish(), failureReporter: failureReporter, scope: scope, fallback: { _ in () })
+        return TypeScope(__endpoint2: endpoint2, __endpoint3: endpoint3)
+    }
+
     public func name(for input: String) -> String {
         __endpoint0.invoke(input, source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 4, column: 1))
     }
 
     public func refresh(id input: String) async throws(LookupFailure) -> String {
         try await __endpoint1.invoke(input, source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 5, column: 1))
+    }
+
+    public static subscript(_ input: Int) -> Int {
+        get {
+            guard let scope = __typeScope else {
+                fatalError(BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|LookupDomain.Lookup|type:subscript:(_:Int).get->Int|Sendable"), source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1)))
+            }
+            return scope.__endpoint2.invoke(input, source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1))
+        }
+        set {
+            guard let scope = __typeScope else {
+                _ = BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|LookupDomain.Lookup|type:subscript:(_:Int).set(_:Int,newValue:Int)->Void|Sendable"), source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1))
+                return
+            }
+            scope.__endpoint3.invoke((input, newValue), source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1))
+        }
     }
 }

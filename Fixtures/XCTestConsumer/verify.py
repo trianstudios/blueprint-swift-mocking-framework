@@ -39,6 +39,7 @@ def main():
         "SDKROOT": sdk,
     })
     environment.pop("BLUEPRINT_XCTEST_EXPECT_FAILURE", None)
+    environment.pop("BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE", None)
     generated = run(
         "bash", "scripts/generate.sh",
         "--input", str(FIXTURE / "Sources/LookupDomain/Lookup.swift"),
@@ -68,6 +69,19 @@ def main():
         if runner.returncode == 0 or len(re.findall(pattern, runner.stdout)) != 1:
             raise SystemExit(f"XCTest {kind} failure was not attributed to ReporterTests.swift:{invocation_line}")
     print("PASS: XCTest reports sync and async verification failures at their caller lines")
+
+    late = test(swift, "LateTaskReporterTests.testLateTypeScopeTaskKeepsOwningReporter", {
+        **environment, "BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE": "1",
+    })
+    expected_late_issue = (
+        r"error: .*testLateTypeScopeTaskKeepsOwningReporter.*Lookup\.swift:\d+: Cannot call "
+        r"schema1\|LookupDomain\.Lookup\|type:subscript:[^\n]+\.set[^\n]+ in a finished mock session"
+    )
+    if (late.returncode == 0 or len(re.findall(expected_late_issue, late.stdout)) != 1
+            or not re.search(r"Executed 1 test, with 1 failure \(0 unexpected\)", late.stdout)
+            or "PASS: DX023 late type task retained its owning reporter" not in late.stdout):
+        raise SystemExit("XCTest late type task did not retain its owning session reporter")
+    print("PASS: XCTest late type task retained its owning reporter")
 
 
 if __name__ == "__main__":

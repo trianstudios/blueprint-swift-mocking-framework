@@ -87,6 +87,7 @@ def main():
         raise RuntimeError("xcrun must select an installed macOS SDK")
     deployment_target = (ROOT / "scripts/macos-deployment-target").read_text().strip()
     swift_environment = os.environ | {"SWIFT_EXEC": str(swiftc), "SDKROOT": sdk}
+    swift_environment.pop("BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE", None)
     swift_version = subprocess.check_output(
         [str(swift), "--version"], text=True, stderr=subprocess.STDOUT, env=swift_environment
     ).strip()
@@ -535,9 +536,22 @@ def main():
         "--filter", "DX022_intentionalReporterFailure"], fails=True,
         extra_environment={"BLUEPRINT_EXPECT_FAILURE": "1"},
         patterns=[r"ConsumerTests.swift:\d+", r"Expected exactly 1 calls; observed 0"])
+    swift_testing_late_issue = (
+        r"Cannot call schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:[^\n]+"
+        r"\.set[^\n]+ in a finished mock session"
+    )
+    late_reporter = run_swift("swift-testing-late-reporter-ownership", [
+        "test", "--package-path", "Fixtures/ProtocolConsumer",
+        "--filter", "DX023_lateTypeScopeTaskKeepsOwningReporter"], fails=True,
+        extra_environment={"BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE": "1"},
+        patterns=[swift_testing_late_issue, r"recorded an issue at TypeSubscriptDirectory\.swift:",
+                  r"PASS: DX023 late type task retained its owning reporter",
+                  r"Test run with 1 test.*failed.*with 1 issue\b"])
+    assert len(re.findall(swift_testing_late_issue, late_reporter)) == 1
     run("xctest-consumer", [sys.executable, "Fixtures/XCTestConsumer/verify.py"],
         env=swift_environment, timeout=600,
-        patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines"])
+        patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines",
+                  r"PASS: XCTest late type task retained its owning reporter"])
     for label, flag in [("typed", "--missing"), ("sync", "--missing-sync"), ("never", "--missing-never")]:
         fatal_log = run(label + "-missing-terminates", [modules / "consumer-demo", flag],
                         fails=True, patterns=[r"MOCK ISSUE: No matching stub", r"Fatal error: No matching stub"])
