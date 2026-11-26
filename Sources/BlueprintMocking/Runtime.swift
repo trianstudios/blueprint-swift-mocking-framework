@@ -393,24 +393,36 @@ struct Rule<Input: Sendable, Answer: Sendable>: Sendable {
     let answer: Answer
 }
 
-public struct SyncConfiguration<Input: Sendable, Output: Sendable>: Sendable {
-    fileprivate let rules: [Rule<Input, @Sendable (Input) -> Output>]
+fileprivate struct SyncRuleBehavior<Input: Sendable, Output: Sendable>: Sendable {
+    let answer: @Sendable (Input) -> Output
+    let capture: WinningRuleCapture<Input>?
+}
 
-    func answer(matching input: Input) -> (@Sendable (Input) -> Output)? {
-        rules.reversed().first { $0.matcher.matches(input) }?.answer
+public struct SyncConfiguration<Input: Sendable, Output: Sendable>: Sendable {
+    fileprivate let rules: [Rule<Input, SyncRuleBehavior<Input, Output>>]
+
+    func validateCaptureSession(_ sessionID: SessionID) {
+        precondition(rules.allSatisfy { $0.answer.capture.map { $0.sessionID == sessionID } ?? true },
+                     "Argument captor belongs to a different mock session")
+    }
+
+    func answer(matching input: Input, recording admission: SessionEvent) -> (@Sendable (Input) -> Output)? {
+        guard let winner = rules.reversed().first(where: { $0.matcher.matches(input) }) else { return nil }
+        winner.answer.capture?.publish(input, admission)
+        return winner.answer.answer
     }
 }
 /// Setup is confined to its caller. finish() publishes an immutable plan.
 public final class SyncStubbing<Input: Sendable, Output: Sendable> {
-    private var rules: [Rule<Input, @Sendable (Input) -> Output>] = []
+    private var rules: [Rule<Input, SyncRuleBehavior<Input, Output>>] = []
     private var finished = false
     public init() {}
     public func matching(_ matcher: Matcher<Input>) -> SyncStub<Input, Output> {
-        SyncStub(owner: self, matcher: matcher)
+        SyncStub(owner: self, matcher: matcher, capture: nil)
     }
-    fileprivate func add(_ matcher: Matcher<Input>, _ answer: @escaping @Sendable (Input) -> Output) {
+    fileprivate func add(_ matcher: Matcher<Input>, _ behavior: SyncRuleBehavior<Input, Output>) {
         precondition(!finished, "Setup is already published; live reconfiguration is not implemented")
-        rules.append(Rule(matcher: matcher, answer: answer))
+        rules.append(Rule(matcher: matcher, answer: behavior))
     }
     public func finish() -> SyncConfiguration<Input, Output> {
         precondition(!finished, "Setup is already published")
@@ -421,8 +433,22 @@ public final class SyncStubbing<Input: Sendable, Output: Sendable> {
 public struct SyncStub<Input: Sendable, Output: Sendable> {
     fileprivate let owner: SyncStubbing<Input, Output>
     fileprivate let matcher: Matcher<Input>
-    public func willReturn(_ output: Output) { owner.add(matcher) { _ in output } }
-    public func willAnswer(_ answer: @escaping @Sendable (Input) -> Output) { owner.add(matcher, answer) }
+    fileprivate let capture: WinningRuleCapture<Input>?
+
+    /// Projects the argument once when this rule wins, before its answer executes.
+    /// A second call replaces the policy on the returned descriptor. The captor and
+    /// endpoint must use the same session, or endpoint initialization fails a precondition.
+    public func capturing<Value: Sendable>(
+        into captor: ArgumentCaptor<Value>, projecting projection: @escaping @Sendable (Input) -> Value
+    ) -> Self {
+        SyncStub(owner: owner, matcher: matcher, capture: WinningRuleCapture(captor: captor, projecting: projection))
+    }
+
+    public func willReturn(_ output: Output) { willAnswer { _ in output } }
+
+    public func willAnswer(_ answer: @escaping @Sendable (Input) -> Output) {
+        owner.add(matcher, SyncRuleBehavior(answer: answer, capture: capture))
+    }
 }
 
 public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
@@ -435,6 +461,7 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
                 failureReporter: FailureReporter,
                 scope: MockScope = MockSession().makeMock(),
                 fallback: (@Sendable (MockIssue) -> Output)? = nil) {
+        configuration.validateCaptureSession(scope.session.id)
         self.configuration = configuration
         self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
         self.fallback = fallback
@@ -444,7 +471,7 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
             return journal.resolveFinishedNonthrowingCall(source: source, fallback: fallback)
         }
         // Last registration wins. Matching and answer execution are outside the journal lock.
-        if let answer = configuration.answer(matching: input) {
+        if let answer = configuration.answer(matching: input, recording: admission.event) {
             let result = answer(input)
             journal.complete(admission, phase: .returned)
             return result

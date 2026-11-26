@@ -11,6 +11,7 @@ private struct FrozenGeneratedResult: Equatable, Sendable {
 @Test(.timeLimit(.minutes(1)))
 func RUN009_generatedProjectionPreservesTypedEffectsAndDetachedHistory() async throws {
     let session = MockSession()
+    let readCaptor = ArgumentCaptor<String>(session: session)
     let entered = AsyncStream<Void>.makeStream()
     let resume = AsyncStream<Void>.makeStream()
     defer { resume.continuation.finish() }
@@ -24,7 +25,7 @@ func RUN009_generatedProjectionPreservesTypedEffectsAndDetachedHistory() async t
             argument: { (input: GeneratedProjectionPayload) in input.snapshot() },
             result: { (output: GeneratedProjectionPayload) in FrozenGeneratedResult(value: output.snapshot()) })
     ) { stubs in
-        stubs.read(id: .any).willAnswer { input in
+        stubs.read(id: .any).capturing(into: readCaptor, projecting: { $0.snapshot() }).willAnswer { input in
             input.update("changed in read")
             return GeneratedProjectionPayload("read response", value: "read returned")
         }
@@ -49,6 +50,8 @@ func RUN009_generatedProjectionPreservesTypedEffectsAndDetachedHistory() async t
     #expect(readInput.snapshot() == "changed in read")
     #expect(readOutput.snapshot() == "changed by caller")
     #expect(read.argument == .value("before read"))
+    #expect(readCaptor.captures.map(\.value) == ["before read"])
+    #expect(readCaptor.captures.map(\.invocation.invocationID) == [read.sessionInvocationID])
     #expect(read.result == .value(FrozenGeneratedResult(value: "read returned")))
     #expect(mock.verify.history2.verify(.once, matchingArgument: .equal("before read")).passed)
     #expect(directory.ping() == "pong")
@@ -80,6 +83,7 @@ func RUN009_generatedProjectionPreservesTypedEffectsAndDetachedHistory() async t
     #expect(epoch != pending.epoch)
     #expect(mock.verify.history0.calls.isEmpty)
     #expect(mock.verify.history2.calls.isEmpty)
+    #expect(readCaptor.captures.isEmpty)
     #expect(mock.verify.ping().wasCalled(.never).passed)
 
     let freshInput = GeneratedProjectionPayload("fresh", value: "before fresh fetch")

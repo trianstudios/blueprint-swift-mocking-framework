@@ -77,6 +77,7 @@ public final class ProjectedSyncEndpoint<Input: Sendable, Output: Sendable,
         failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
         fallback: (@Sendable (MockIssue) -> Output)? = nil
     ) {
+        configuration.validateCaptureSession(scope.session.id)
         self.configuration = configuration
         self.projection = projection
         self.fallback = fallback
@@ -91,7 +92,7 @@ public final class ProjectedSyncEndpoint<Input: Sendable, Output: Sendable,
         projectedJournal.update(admission, replacing: .init(argument: argument, result: .pending))
 
         let output: Output
-        if let answer = configuration.answer(matching: input) {
+        if let answer = configuration.answer(matching: input, recording: admission.event) {
             output = answer(input)
         } else {
             guard let fallback else {
