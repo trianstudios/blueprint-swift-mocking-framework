@@ -23,6 +23,12 @@ public final class PropertyDirectoryMock: PropertyDirectory {
         public func set_title(_ matcher: Matcher<String>) -> SyncStub<String, Void> {
             __setup2.matching(matcher)
         }
+
+        public func store_title(initialValue: String) {
+            let cell = StoredProperty(initialValue)
+            __setup1.matching(.any).willAnswer { _ in cell.get() }
+            __setup2.matching(.any).willAnswer { cell.set($0) }
+        }
     }
 
     public struct Verification: Sendable {

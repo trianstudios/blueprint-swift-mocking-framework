@@ -65,3 +65,21 @@ import ConsumerDoubles
     }
     #expect(mock.verify.get_summary(phase: .threw).wasCalled(.once).passed)
 }
+
+@Test func GEN022_optInStoredPropertyPreservesIndependentAccessHistory() {
+    let mock = PropertyDirectoryMock(failureReporter: .swiftTesting) { stubs in
+        stubs.store_title(initialValue: "start")
+    }
+    var screen = PropertyScreen(directory: mock)
+
+    #expect(mock.verify.get_title().wasCalled(.never).passed)
+    #expect(mock.verify.set_title(.any).wasCalled(.never).passed)
+    #expect(screen.title() == "start")
+
+    screen.setTitle("updated")
+    #expect(mock.verify.get_title(phase: .returned).wasCalled(.once).passed)
+    #expect(mock.verify.set_title(.equal("updated"), phase: .returned).wasCalled(.once).passed)
+    #expect(screen.title() == "updated")
+    #expect(mock.verify.get_title(phase: .returned).wasCalled(.exactly(2)).passed)
+    #expect(mock.verify.set_title(.any).wasCalled(.once).passed)
+}
