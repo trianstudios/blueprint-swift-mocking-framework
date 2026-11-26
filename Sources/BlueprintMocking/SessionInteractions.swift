@@ -33,6 +33,26 @@ public extension MockSession {
     ) throws(SessionCheckpointError) -> SessionInteractionResult {
         try snapshot().verifyNoInteractions(in: domain, since: checkpoint, ignoring: endpoints)
     }
+
+    /// Checks for unconsumed admissions in the selected domain and named consumption scope.
+    ///
+    /// The result's immutable watermark comes from one atomic snapshot of retained events
+    /// and consumed invocation IDs. A checkpoint bounds the observation from below.
+    func verifyNoMoreInteractions(
+        in domain: SessionInteractionDomain,
+        consumptionScope scope: SessionConsumptionScope,
+        since checkpoint: SessionCheckpoint? = nil,
+        ignoring endpoints: [SessionCallSelector] = []
+    ) throws(SessionConsumptionError) -> SessionInteractionResult {
+        let observation = try consumptionSnapshot(in: scope)
+        if let checkpoint {
+            guard checkpoint.sessionID == observation.snapshot.sessionID else { throw .foreignSession }
+            guard checkpoint.epoch == observation.snapshot.epoch else { throw .staleEpoch }
+        }
+        return observation.snapshot.checkInteractionAbsence(
+            in: domain, after: checkpoint?.watermark, ignoring: endpoints,
+            consumed: observation.consumedInvocationIDs)
+    }
 }
 
 public extension SessionSnapshot {
@@ -48,6 +68,16 @@ public extension SessionSnapshot {
         if let checkpoint {
             try checkpoint.validate(for: epoch)
         }
+        return checkInteractionAbsence(in: domain, after: checkpoint?.watermark,
+                                       ignoring: endpoints, consumed: [])
+    }
+
+    fileprivate func checkInteractionAbsence(
+        in domain: SessionInteractionDomain,
+        after checkpointWatermark: UInt64?,
+        ignoring endpoints: [SessionCallSelector],
+        consumed: Set<SessionInvocationID>
+    ) -> SessionInteractionResult {
         func result(_ outcome: SessionInteractionResult.Outcome) -> SessionInteractionResult {
             SessionInteractionResult(epoch: epoch, watermark: watermark, outcome: outcome)
         }
@@ -65,11 +95,11 @@ public extension SessionSnapshot {
         }
 
         // Session ordinals start at one, so zero includes the entire current epoch.
-        let lowerBound = checkpoint?.watermark ?? 0
+        let lowerBound = checkpointWatermark ?? 0
         guard lowerBound <= watermark else { return result(.checkpointAfterSnapshot) }
         let suffix = events[events.firstEventIndex(after: lowerBound)...]
         let evidence = suffix.first { event in
-            guard event.phase == .admitted else { return false }
+            guard event.phase == .admitted, !consumed.contains(event.invocationID) else { return false }
             if let selectedMock, event.mockID != selectedMock { return false }
             return !endpoints.contains { $0.mockID == event.mockID && $0.endpoint == event.endpoint }
         }

@@ -86,3 +86,38 @@ func RUN031_RUN032_generatedSelectorsDriveTimedMetadataAssertions() async throws
     #expect(stable.watermark == snapshot.watermark)
     #expect(stable.elapsed >= window)
 }
+
+@Test func RUN027_RUN028_generatedCallsRemainInHistoryAfterConsumption() throws {
+    let session = MockSession()
+    let mock = UserRepositoryMock(failureReporter: .swiftTesting, session: session) { stubs in
+        stubs.greeting(for: .any).willAnswer { $0 }
+    }
+    let start = session.checkpoint()
+    #expect(mock.greeting(for: "first") == "first")
+    #expect(mock.greeting(for: "second") == "second")
+
+    let admissions = session.snapshot().events.filter { $0.phase == .admitted }
+    try #require(admissions.count == 2)
+    let selector = SessionCallSelector(mockID: admissions[0].mockID, endpoint: admissions[0].endpoint)
+    let domain = SessionInteractionDomain.mock(selector.mockID)
+    let scope = session.consumptionScope(named: "generated greetings")
+
+    let first = try session.consume(.earliest(1), for: selector, in: scope)
+    #expect(first.invocationIDs == [admissions[0].invocationID])
+    let incomplete = try session.verifyNoMoreInteractions(in: domain, consumptionScope: scope, since: start)
+    #expect(!incomplete.passed)
+
+    let remaining = try session.consume(.all, for: selector, in: scope)
+    #expect(remaining.invocationIDs == [admissions[1].invocationID])
+    let complete = try session.verifyNoMoreInteractions(in: domain, consumptionScope: scope, since: start)
+    #expect(complete.passed)
+    #expect(complete.watermark == remaining.watermark)
+
+    let otherScope = session.consumptionScope(named: "independent consumer")
+    let independent = try session.verifyNoMoreInteractions(in: domain, consumptionScope: otherScope, since: start)
+    #expect(!independent.passed)
+    let original = try session.verifyNoInteractions(in: domain, since: start)
+    #expect(original.outcome == .interaction(admissions[0]))
+    #expect(mock.verify.greeting(for: .equal("first")).wasCalled(.once).passed)
+    #expect(mock.verify.greeting(for: .equal("second")).wasCalled(.once).passed)
+}

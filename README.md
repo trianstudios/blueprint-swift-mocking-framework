@@ -72,7 +72,7 @@ Use `try session.discardEvents(through: checkpoint)` to discard a current epoch'
 
 Use `try session.verifyNoInteractions(in: .session)` to check for admissions through the current snapshot, or pass `.mock(mockID)` to check one mock. Use `since:` to start after a checkpoint and `ignoring:` to exclude explicit mock-and-endpoint pairs. A retained admission disproves absence. A pruned prefix can leave the result unavailable.
 
-Create an epoch-scoped verification scope with `session.consumptionScope(named:)`. Use `try session.consume(.earliest(1), for: selector, in: scope)` to claim one matching admission, or `.all` to claim every match in the snapshot. A concurrent change to the same scope can cause a conflict. A failed claim leaves the scope unchanged.
+Create an epoch-scoped verification scope with `session.consumptionScope(named:)`. Use `try session.consume(.earliest(1), for: selector, in: scope)` to claim one matching admission, or `.all` to claim every match in the snapshot. A concurrent change to the same scope can cause a conflict. A failed claim leaves the scope unchanged. Use `try session.verifyNoMoreInteractions(in: .session, consumptionScope: scope)` to check for unclaimed admissions. Ordinary interaction and typed count checks still include claimed calls.
 
 For live observation, retain `session.observeChanges()`, then use its notifications as wake-ups. Read `try session.replay(since: checkpoint)` after a wake and use the returned checkpoint for the next read. Replay returns all retained events through that position, so coalesced wakes preserve intermediate transitions. Cancel the observation when finished.
 
