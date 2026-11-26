@@ -232,11 +232,28 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     func snapshot(validating expectedEpoch: SessionEpoch? = nil) -> JournalSnapshot<Input> {
         scope.session.withLock { session in
             let stale = expectedEpoch.map { $0 != session.epoch } ?? false
-            return state.withLock {
-                JournalSnapshot(calls: stale ? [] : $0.calls, watermark: $0.nextID,
-                                epoch: session.epoch, isStale: stale)
-            }
+            return snapshot(epoch: session.epoch, stale: stale)
         }
+    }
+
+    private func snapshot(epoch: SessionEpoch, stale: Bool = false) -> JournalSnapshot<Input> {
+        state.withLock {
+            JournalSnapshot(calls: stale ? [] : $0.calls, watermark: $0.nextID,
+                            epoch: epoch, isStale: stale)
+        }
+    }
+
+    func captureForConsumption(in consumptionScope: SessionConsumptionScope) throws(SessionConsumptionError)
+        -> (journal: JournalSnapshot<Input>, claims: SessionConsumptionClaims, watermark: UInt64) {
+        try scope.session.withLock { session throws(SessionConsumptionError) in
+            let (prefix, claims) = try session.captureConsumption(in: consumptionScope)
+            guard prefix.prunedThrough == nil else { throw .historyUnavailable }
+            return (snapshot(epoch: prefix.epoch), claims, prefix.watermark)
+        }
+    }
+
+    func commitPreparedConsumption(_ prepared: PreparedSessionConsumption) throws(SessionConsumptionError) {
+        _ = try scope.session.commitConsumption(prepared)
     }
 
     // Called by the session under its lock, in the same order as admission.

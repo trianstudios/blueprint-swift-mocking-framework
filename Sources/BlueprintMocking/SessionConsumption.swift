@@ -45,7 +45,7 @@ struct PreparedSessionConsumption: Sendable {
     let result: SessionConsumption
     let scopeRevision: UInt64
 
-    fileprivate init(result: SessionConsumption, scopeRevision: UInt64) {
+    init(result: SessionConsumption, scopeRevision: UInt64) {
         self.result = result
         self.scopeRevision = scopeRevision
     }

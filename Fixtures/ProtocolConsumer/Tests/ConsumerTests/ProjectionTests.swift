@@ -213,3 +213,30 @@ func RUN009_resetDropsPendingProjectionFromTheDetachedEpoch(_ stage: ProjectionP
     #expect(archived.events.map(\.phase) == [.admitted, .returned])
     #expect(archived.events.map(\.invocationID) == [previous.sessionInvocationID, previous.sessionInvocationID])
 }
+
+@Test func RUN027_projectedCapturesCommitWithTheVerifiedInvocationIDs() throws {
+    let session = MockSession()
+    let scope = session.consumptionScope(named: "projection workflow")
+    let mock = session.makeMock()
+    let stubs = SyncStubbing<String, String>()
+    stubs.matching(.any).willAnswer { $0 }
+    let endpoint = ProjectedSyncEndpoint(
+        id: EndpointID("projected capture"),
+        configuration: stubs.finish(),
+        projection: InvocationProjection(argument: { $0 }, result: { $0.count }),
+        failureReporter: .swiftTesting, scope: mock
+    )
+    _ = endpoint.invoke("first")
+    _ = endpoint.invoke("second")
+
+    let first = try endpoint.consume(.earliest(1), matchingArgument: .equal("first"), in: scope)
+    #expect(first.claim.invocationIDs == first.captures.map(\.sessionInvocationID))
+    #expect(first.captures.first?.argument == .value("first"))
+    #expect(first.captures.first?.result == .value(5))
+    #expect(try !session.verifyNoMoreInteractions(in: .mock(mock.id), consumptionScope: scope).passed)
+
+    let rest = try endpoint.consume(.all, matchingArgument: .any, in: scope)
+    #expect(rest.captures.map(\.argument) == [.value("second")])
+    #expect(try session.verifyNoMoreInteractions(in: .mock(mock.id), consumptionScope: scope).passed)
+    #expect(endpoint.projectedHistory().verify(.exactly(2), matchingArgument: .any).passed)
+}
