@@ -61,3 +61,11 @@ The [candidate release profile plan](Release-Profile-Plan.md) lists the reproduc
 `python3 scripts/verify_remote_install.py <commit>` runs committed fixtures in fresh scratch using the public GitHub URL and a fresh SwiftPM cache shared within that run. It builds and runs the runtime-only product and runs actual Swift Testing and XCTest test targets. Each lockfile must record the repository identity and exact commit. All three fixtures passed at `8937eb9`, `568502a`, and `44ba673` on the tested macOS toolchain. The runtime package's product name is `BluepringMockingFramework` and its module is `BlueprintMocking`.
 
 The optional `--version <exact-semver>` makes those fixtures resolve the supplied exact version and checks the resulting commit. Manifest and pin validation for exact versions are covered by unit tests. Live SemVer verification requires an approved release tag at the candidate commit.
+
+## Parameterized reporter ownership
+
+For each available mode, the local verifier runs two concurrent cases of one Swift Testing function in an isolated failure subprocess. Both cases have the same native function ID and distinct mock sessions. The peer holds its scope open while a detached task explicitly rebinds the owner's type scope. The fixture's neutral reporter captures the detached issue, and the live owner delivers it through the normal Swift Testing adapter. The verifier checks the native runner's owner argument, the generated source location, the single issue count and zero issues at the peer.
+
+A scratch control delivered the same issue from the peer and still produced one native failure under the same function ID. The attribution check rejected the peer argument.
+
+The explicit fixture uses the Swift 6.0 scoped path. The optional per-case fixture uses the [Swift Testing test scoping trait](https://github.com/swiftlang/swift-evolution/blob/main/proposals/testing/0007-test-scoping-traits.md) when the compiler supports it. Both modes use the package's existing test dependencies. Delivery after the native case finishes, a run-level orphan sink and foreign-thread ownership remain open.

@@ -88,6 +88,7 @@ def main():
     deployment_target = (ROOT / "scripts/macos-deployment-target").read_text().strip()
     swift_environment = os.environ | {"SWIFT_EXEC": str(swiftc), "SDKROOT": sdk}
     swift_environment.pop("BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE", None)
+    swift_environment.pop("BLUEPRINT_EXPECT_PARAMETERIZED_REPORTER_FAILURE", None)
     swift_version = subprocess.check_output(
         [str(swift), "--version"], text=True, stderr=subprocess.STDOUT, env=swift_environment
     ).strip()
@@ -548,6 +549,34 @@ def main():
                   r"PASS: DX023 late type task retained its owning reporter",
                   r"Test run with 1 test.*failed.*with 1 issue\b"])
     assert len(re.findall(swift_testing_late_issue, late_reporter)) == 1
+
+    parameterized_reporter_checks = [
+        ("swift-testing-parameterized-owner-explicit", "DX023_detachedParameterizedReporterAttribution"),
+    ]
+    release = re.search(r"\bSwift version (\d+)\.(\d+)", compiler_version)
+    if release and tuple(map(int, release.groups())) >= (6, 1):
+        parameterized_reporter_checks.append(
+            ("swift-testing-parameterized-owner-trait", "DX023_scopedParameterizedReporterAttribution"))
+    for check, test in parameterized_reporter_checks:
+        display_name = re.escape(test + "(_:)")
+        issue_line = rf"(?m)^[^\n]*\bTest {display_name} recorded an issue\b[^\n]*$"
+        owner_issue = (
+            rf'Test {display_name} recorded an issue with 1 argument scenario\s*(?:→|->)\s*"owner-A"'
+            r"\s+at TypeSubscriptDirectory\.swift:\d+:\d+: Issue recorded"
+        )
+        owner_started = rf'Test case passing 1 argument scenario\s*(?:→|->)\s*"owner-A" to {display_name} started\.'
+        peer_started = rf'Test case passing 1 argument scenario\s*(?:→|->)\s*"peer-B" to {display_name} started\.'
+        attribution = run_swift(check, [
+            "test", "--package-path", "Fixtures/ProtocolConsumer", "--filter", test], fails=True,
+            extra_environment={"BLUEPRINT_EXPECT_PARAMETERIZED_REPORTER_FAILURE": "1"},
+            patterns=[owner_started, peer_started, owner_issue, r"PASS: DX023 owner case drained 1 detached issue",
+                      r"PASS: DX023 peer case drained 0 issues",
+                      rf"Test {display_name} with 2 test cases failed[^\n]+with 1 issue\.",
+                      r"Test run with 1 test\b[^\n]*failed[^\n]+with 1 issue\."])
+        assert len(re.findall(issue_line, attribution)) == 1, f"{check} emitted extra native issues"
+        peer_id, = re.findall(r"^BLUEPRINT_PARAM_PEER_ACTIVE id=(.+)$", attribution, re.MULTILINE)
+        owner_id, = re.findall(r"^BLUEPRINT_PARAM_OWNER_ACTIVE id=(.+)$", attribution, re.MULTILINE)
+        assert peer_id == owner_id and test in owner_id, f"{check} did not exercise one native function"
     run("xctest-consumer", [sys.executable, "Fixtures/XCTestConsumer/verify.py"],
         env=swift_environment, timeout=600,
         patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines",
