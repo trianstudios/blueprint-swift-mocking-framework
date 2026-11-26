@@ -82,7 +82,11 @@ public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failu
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) throws(Failure) -> Output {
-        let admission = journal.begin(input)
+        guard let admission = journal.begin(input) else {
+            let issue = journal.reportFinishedCall(source: source)
+            if let failureMapping { throw failureMapping(issue) }
+            fatalError(issue.message)
+        }
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             switch rule.answer(input) {
             case .success(let result):
@@ -177,7 +181,9 @@ public final class AsyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async -> Output {
-        let admission = journal.begin(input)
+        guard let admission = journal.begin(input) else {
+            return journal.resolveFinishedNonthrowingCall(source: source, fallback: fallback)
+        }
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             let result = await rule.answer(input)
             journal.complete(admission, phase: .returned)

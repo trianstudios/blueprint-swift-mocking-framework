@@ -11,6 +11,7 @@ public struct MockSessionContext: Hashable, Sendable {
 
 public enum MockSessionContextError: Error, Equatable {
     case missingContext
+    case finishedSession
     case foreignSession(expected: SessionID, actual: SessionID)
     case staleEpoch(expected: SessionEpoch, actual: SessionEpoch)
 }
@@ -98,9 +99,10 @@ extension MockSession {
         guard handle.sessionID == id else {
             throw .foreignSession(expected: id, actual: handle.sessionID)
         }
-        let currentEpoch = contextEpoch
-        guard handle.epoch == currentEpoch else {
-            throw .staleEpoch(expected: currentEpoch, actual: handle.epoch)
+        let current = withLock { (epoch: $0.epoch, finished: $0.isFinished) }
+        guard !current.finished else { throw .finishedSession }
+        guard handle.epoch == current.epoch else {
+            throw .staleEpoch(expected: current.epoch, actual: handle.epoch)
         }
     }
 }

@@ -47,6 +47,7 @@ public struct SessionSnapshot: Equatable, Sendable {
     public let events: [SessionEvent]
     public let activeInvocationCount: Int
     public let watermark: UInt64
+    public let isFinished: Bool
 }
 
 public enum SessionResetMode: Sendable {
@@ -57,6 +58,11 @@ public enum SessionResetMode: Sendable {
 }
 
 public enum SessionResetError: Error, Equatable, Sendable {
+    case activeInvocations(count: Int)
+    case finished
+}
+
+public enum SessionFinishError: Error, Equatable, Sendable {
     case activeInvocations(count: Int)
 }
 
@@ -115,6 +121,15 @@ public final class MockSession: Sendable {
         return retirement.epoch
     }
 
+    /// Closes admission at zero active calls across all epochs and preserves the final metadata.
+    /// Repeated calls return the same final snapshot. The caller owns teardown of its tasks.
+    @discardableResult
+    public func finishIfQuiescent() throws(SessionFinishError) -> SessionSnapshot {
+        try state.withLock { (state: inout State) throws(SessionFinishError) in
+            try state.finishIfQuiescent()
+        }
+    }
+
     func register(_ journal: any SessionJournalRegistration) {
         state.withLock { $0.register(journal) }
     }
@@ -134,6 +149,7 @@ public final class MockSession: Sendable {
         }
 
         private(set) var epoch: SessionEpoch
+        private(set) var isFinished = false
         private var nextMockNumber: UInt64 = 0
         private var nextInvocationNumber: UInt64 = 0
         private var lastEventOrdinal: UInt64 = 0
@@ -161,7 +177,7 @@ public final class MockSession: Sendable {
             return SessionSnapshot(
                 sessionID: epoch.sessionID, epoch: epoch,
                 events: history.events, activeInvocationCount: history.activeInvocationCount,
-                watermark: lastEventOrdinal
+                watermark: lastEventOrdinal, isFinished: isFinished
             )
         }
 
@@ -171,6 +187,7 @@ public final class MockSession: Sendable {
 
         mutating func admit(mockID: MockID, endpoint: EndpointID,
                             configurationRevision: RuleRevision) -> SessionEvent {
+            precondition(!isFinished, "Cannot record an admission in a finished session")
             precondition(mockID.sessionID == epoch.sessionID, "Cannot admit a mock from another session")
             nextInvocationNumber += 1
             lastEventOrdinal += 1
@@ -223,8 +240,15 @@ public final class MockSession: Sendable {
             return delivery
         }
 
+        fileprivate mutating func finishIfQuiescent() throws(SessionFinishError) -> SessionSnapshot {
+            guard active.isEmpty else { throw .activeInvocations(count: active.count) }
+            isFinished = true
+            return snapshot(epoch: epoch)!
+        }
+
         fileprivate mutating func resetHistory(_ mode: SessionResetMode)
             throws(SessionResetError) -> SessionRetirement {
+            guard !isFinished else { throw .finished }
             if mode == .requireQuiescence {
                 guard active.isEmpty else { throw .activeInvocations(count: active.count) }
                 histories.removeAll()

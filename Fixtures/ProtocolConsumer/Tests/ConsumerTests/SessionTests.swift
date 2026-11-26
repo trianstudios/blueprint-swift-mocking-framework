@@ -34,3 +34,21 @@ import ConsumerDoubles
     #expect(first.verify.greeting(for: .equal("second call")).wasCalled(.never).passed)
     #expect(second.verify.greeting(for: .equal("second call")).wasCalled(.once).passed)
 }
+
+@Test func DX026_generatedMockReportsLateCallWithoutChangingFinalHistory() throws {
+    let session = MockSession()
+    let mock = EffectDirectoryMock(failureReporter: .swiftTesting, session: session) { stubs in
+        stubs.cachedName(id: .any).willReturn("admitted")
+    }
+    #expect(try mock.cachedName(id: "before") == "admitted")
+    let finished = try session.finishIfQuiescent()
+
+    withKnownIssue("A call to a finished session must report to its original test") {
+        #expect(throws: UnexpectedInvocationError.self) {
+            try mock.cachedName(id: "after")
+        }
+    }
+    #expect(session.snapshot() == finished)
+    #expect(mock.verify.cachedName(id: .equal("before")).wasCalled(.once).passed)
+    #expect(mock.verify.cachedName(id: .equal("after")).wasCalled(.never).passed)
+}

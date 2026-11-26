@@ -145,10 +145,11 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         scope.session.register(self)
     }
 
-    func admit(_ input: Input) -> (admission: JournalAdmission, configuration: Configuration) {
+    func admit(_ input: Input) -> (admission: JournalAdmission, configuration: Configuration)? {
         // Lock order is session, then this endpoint. No operation holds two endpoint locks.
         scope.session.withLock { session in
-            state.withLock {
+            guard !session.isFinished else { return nil }
+            return state.withLock {
                 $0.nextID += 1
                 let id = $0.nextID
                 let event = session.admit(mockID: scope.id, endpoint: endpoint,
@@ -230,6 +231,22 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         return issue
     }
 
+    func reportFinishedCall(source: SourceLocation) -> MockIssue {
+        let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
+                              message: "Cannot call \(endpoint.rawValue) in a finished mock session",
+                              source: source, watermark: state.withLock { $0.nextID })
+        report(issue)
+        return issue
+    }
+
+    func resolveFinishedNonthrowingCall<Output: Sendable>(
+        source: SourceLocation, fallback: (@Sendable (MockIssue) -> Output)?
+    ) -> Output {
+        let issue = reportFinishedCall(source: source)
+        guard let fallback else { fatalError(issue.message) }
+        return fallback(issue)
+    }
+
     func resolveMissingNonthrowingCall<Output: Sendable>(
         _ admission: JournalAdmission,
         source: SourceLocation,
@@ -251,7 +268,7 @@ extension ConfiguredJournal where Configuration == Void {
         self.init(endpoint: endpoint, reporter: reporter, scope: scope, configuration: ())
     }
 
-    func begin(_ input: Input) -> JournalAdmission { admit(input).admission }
+    func begin(_ input: Input) -> JournalAdmission? { admit(input)?.admission }
 }
 
 public struct Verification<Input: Sendable>: Sendable {
@@ -349,7 +366,9 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
         self.fallback = fallback
     }
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) -> Output {
-        let admission = journal.begin(input)
+        guard let admission = journal.begin(input) else {
+            return journal.resolveFinishedNonthrowingCall(source: source, fallback: fallback)
+        }
         // Last registration wins. Matching and answer execution are outside the journal lock.
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             let result = rule.answer(input)
@@ -423,7 +442,11 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
-        let (admission, configuration) = journal.admit(input)
+        guard let (admission, configuration) = journal.admit(input) else {
+            let issue = journal.reportFinishedCall(source: source)
+            if let failureMapping { throw failureMapping(issue) }
+            fatalError(issue.message)
+        }
         defer { withExtendedLifetime(configuration) {} }
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             switch await rule.answer(input) {
