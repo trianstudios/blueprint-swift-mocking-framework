@@ -83,3 +83,9 @@ On Apple Swift 6.4 with Swift Testing 2084, the verifier requires one failing na
 RUN-035 adds the direct `AsyncThrowingEndpoint.replaceConfigurationIfQuiescent(_:)` operation. It checks all session epochs and publishes the new revision under the same lock used for admission. Active calls, finished sessions, and stale epoch-bound scopes produce typed errors. A refusal preserves the plan and its revision.
 
 Deterministic runtime fixtures hold a sibling invocation across an epoch reset, check stale and finished scope rejection, and race two successful replacement candidates. An external SwiftPM executable proves that a retired plan's destructor can read both histories and perform a nested replacement. The verifier bounds the executable's runtime so a lock regression fails the check. The Apple SDK cross-links the runtime at all six declared target triples. The iOS 17.5 simulator also executes a successful replacement through the NSLock fallback using the iOS 16 build target. Deadline-based replacement, managed teardown and native certification remain outstanding.
+
+## Bounded fatal-child verification
+
+DX-029's six fatal consumer paths run in separate processes. For each path, the verifier requires the expected termination signal and one endpoint-specific issue on stderr before one fatal diagnostic. It captures up to 4 KiB of stderr, enforces a 10-second deadline through process exit, and reaps timed-out or oversized processes. The local arm64 macOS paths all terminated with `SIGTRAP`.
+
+Synthetic children exercise ordinary failure with valid-looking diagnostics, an unexpected signal, reordered or duplicate diagnostics, stdout-only diagnostics, a buffer exactly at the limit, overflow, and a hang after stderr closes. The x86_64 verifier expects `SIGILL`, pending native validation. Additional native runner profiles and the full legal-fallback matrix remain outstanding.

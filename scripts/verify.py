@@ -7,8 +7,11 @@ import os
 from pathlib import Path
 import platform
 import re
+import signal
 import subprocess
 import sys
+
+from fatal_child import check_fatal_child
 
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = ROOT / "Evidence"
@@ -20,12 +23,16 @@ def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
         [str(x) for x in command], cwd=ROOT, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
     output = completed.stdout
-    log = EVIDENCE / (name + ".log")
-    log.write_text(output, encoding="utf-8")
     valid = (completed.returncode != 0) if fails else (completed.returncode == 0)
     valid = valid and all(re.search(pattern, output) for pattern in patterns)
-    RESULTS.append({"check": name, "passed": bool(valid), "exit": completed.returncode,
-                    "expected_failure": fails, "log": log.name,
+    return record_result(name, output, completed.returncode, valid, expected_failure=fails)
+
+
+def record_result(name, output, returncode, valid, *, expected_failure):
+    log = EVIDENCE / (name + ".log")
+    log.write_text(output, encoding="utf-8")
+    RESULTS.append({"check": name, "passed": bool(valid), "exit": returncode,
+                    "expected_failure": expected_failure, "log": log.name,
                     "logSHA256": hashlib.sha256(log.read_bytes()).hexdigest()})
     print(("PASS " if valid else "FAIL ") + name, flush=True)
     if not valid:
@@ -593,26 +600,39 @@ def main():
     run("quiescent-configuration-retirement", [
         modules / "consumer-demo", "--quiescent-configuration"], timeout=20,
         patterns=[r"PASS: RUN035 retired configuration reentered both locks and published the next revision"])
-    for label, flag in [("typed", "--missing"), ("sync", "--missing-sync"), ("never", "--missing-never")]:
-        fatal_log = run(label + "-missing-terminates", [modules / "consumer-demo", flag],
-                        fails=True, patterns=[r"MOCK ISSUE: No matching stub", r"Fatal error: No matching stub"])
-        assert fatal_log.index("MOCK ISSUE:") < fatal_log.index("Fatal error:")
-    unlisted = r"No configured specialization for schema1\|ConsumerDomain\.GenericSubscriptDirectory.*\[Swift.Bool\]"
-    fatal_log = run("generic-subscript-missing-terminates", [
-        modules / "consumer-demo", "--missing-generic-specialization"], fails=True,
-        patterns=[r"MOCK ISSUE: " + unlisted, r"Fatal error: " + unlisted])
-    assert fatal_log.index("MOCK ISSUE:") < fatal_log.index("Fatal error:")
+    fatal_signal = {"arm64": signal.SIGTRAP, "x86_64": signal.SIGILL}[platform.machine()]
+
+    def run_fatal(name, flag, message, *, issue_prefix=r"^MOCK ISSUE: "):
+        result = check_fatal_child(
+            [modules / "consumer-demo", flag], cwd=ROOT, expected_signal=fatal_signal,
+            issue_pattern=issue_prefix + message, fatal_pattern=r"^.+:\d+: Fatal error: " + message,
+        )
+        output = result.stderr
+        if result.error is not None:
+            output += f"\nVerifier: {result.error}\n"
+        record_result(name, output, result.returncode, result.error is None, expected_failure=True)
+
+    missing_stubs = [
+        ("typed", "--missing", r"UserRepository\|fetchUser\(id:String\) async throws\(RepositoryError\)->String"),
+        ("sync", "--missing-sync", r"UserRepository\|greeting\(_:String\)->String"),
+        ("never", "--missing-never", r"EffectEdges\|stop\(id:String\)->Never"),
+    ]
+    for label, flag, endpoint in missing_stubs:
+        run_fatal(label + "-missing-terminates", flag,
+                  rf"No matching stub for schema1\|ConsumerDomain\.{endpoint}\|Sendable$")
+    unlisted = r"No configured specialization for schema1\|ConsumerDomain\.GenericSubscriptDirectory.*\[Swift.Bool\]$"
+    run_fatal("generic-subscript-missing-terminates", "--missing-generic-specialization", unlisted)
     type_scope = r"Missing type-level mock scope for schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:"
-    detached = run("type-subscript-detached-reject", [modules / "consumer-demo", "--type-subscript-detached"],
-                   fails=True, patterns=[r"TypeSubscriptDirectory.swift:\d+:\d+: error: BlueprintMocking: " + type_scope,
-                                         r"Fatal error: " + type_scope])
-    assert detached.index("error: BlueprintMocking:") < detached.index("Fatal error:")
+    run_fatal("type-subscript-detached-reject", "--type-subscript-detached",
+              type_scope + r".*\.get->Int\|Sendable$",
+              issue_prefix=r"^TypeSubscriptDirectory\.swift:\d+:\d+: error: BlueprintMocking: ")
     run("type-subscript-unbound-setter", [modules / "consumer-demo", "--type-subscript-unbound-setter"],
         patterns=[type_scope + r".*\.set", r"PASS: unbound type setter returned after diagnosis"])
-    stale_scope = r"Cannot call schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:.*with a stale type-level mock scope"
-    stale = run("type-subscript-stale-reject", [modules / "consumer-demo", "--type-subscript-stale"], fails=True,
-                patterns=[r"MOCK ISSUE: " + stale_scope, r"Fatal error: " + stale_scope])
-    assert stale.index("MOCK ISSUE:") < stale.index("Fatal error:")
+    stale_scope = (
+        r"Cannot call schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:"
+        r".*\.get->Int\|Sendable with a stale type-level mock scope$"
+    )
+    run_fatal("type-subscript-stale-reject", "--type-subscript-stale", stale_scope)
     run_swift("runtime-only-consumer", [
         "run", "--package-path", "Fixtures/RuntimeOnly", "RuntimeOnly"],
         patterns=[r"PASS: runtime-only consumer"])
