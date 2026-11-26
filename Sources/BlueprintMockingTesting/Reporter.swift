@@ -9,4 +9,16 @@ extension FailureReporter {
                 line: issue.source.line, column: issue.source.column))
         }
     }
+
+    /// Reports an orphaned issue to the active Swift Testing run and awaits its delivery.
+    ///
+    /// The diagnostic text preserves the original location. The native location points
+    /// to this adapter so Swift Testing does not infer a test from the original location.
+    public static func reportAtSwiftTestingRunLevel(_ issue: MockIssue) async {
+        await Task.detached {
+            let location = issue.source
+            let original = "\(location.filePath):\(location.line):\(location.column)"
+            Issue.record(Comment(rawValue: "\(original): \(issue.message)"))
+        }.value
+    }
 }

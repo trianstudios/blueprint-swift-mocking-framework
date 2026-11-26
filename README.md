@@ -108,6 +108,8 @@ Await `session.waitForQuiescence(until: deadline, clock: clock)` to observe a sn
 
 After your tasks have finished, call `try session.finishIfQuiescent()` to close admission and preserve the final timeline. Active calls cause a typed error. A later mock call reports through its original endpoint reporter and uses the endpoint's legal fallback, error mapping or termination behavior. It leaves final history unchanged. This operation does not join application tasks.
 
+In an active Swift Testing run, a custom reporter can buffer a neutral `MockIssue` for work whose owning case has ended. Import `BlueprintMockingTesting` and call `await FailureReporter.reportAtSwiftTestingRunLevel(issue)` from the code draining that buffer. The issue fails the run and includes its original source in the diagnostic. Drain each issue once before the runner exits.
+
 Use `try session.discardEvents(through: checkpoint)` to discard a current epoch's session metadata prefix. A checkpoint that misses a discarded event reports unavailable history. A gap in global ordinals alone is valid because another epoch can receive events. Endpoint argument histories are separate.
 
 Use `try session.verifyNoInteractions(in: .session)` to check for admissions through the current snapshot, or pass `.mock(mockID)` to check one mock. Use `since:` to start after a checkpoint and `ignoring:` to exclude explicit mock-and-endpoint pairs. A retained admission disproves absence. A pruned prefix can leave the result unavailable.

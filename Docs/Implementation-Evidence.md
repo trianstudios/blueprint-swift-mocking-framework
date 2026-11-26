@@ -68,4 +68,12 @@ For each available mode, the local verifier runs two concurrent cases of one Swi
 
 A scratch control delivered the same issue from the peer and still produced one native failure under the same function ID. The attribution check rejected the peer argument.
 
-The explicit fixture uses the Swift 6.0 scoped path. The optional per-case fixture uses the [Swift Testing test scoping trait](https://github.com/swiftlang/swift-evolution/blob/main/proposals/testing/0007-test-scoping-traits.md) when the compiler supports it. Both modes use the package's existing test dependencies. Delivery after the native case finishes, a run-level orphan sink and foreign-thread ownership remain open.
+The explicit fixture uses the Swift 6.0 scoped path. The optional per-case fixture uses the [Swift Testing test scoping trait](https://github.com/swiftlang/swift-evolution/blob/main/proposals/testing/0007-test-scoping-traits.md) when the compiler supports it. Both modes use the package's existing test dependencies.
+
+## Finished Swift Testing case ownership
+
+The native fixture runs two parameter cases of one Swift Testing function with distinct mock sessions. The verifier waits for A's native `testCaseEnded` event and B's readiness before releasing a callback that uses A's finished session. It repeats the run with an inherited task, a detached task, and a Foundation thread. The session snapshots stay fixed, and only A's neutral reporter receives an issue.
+
+The normal Swift Testing adapter attributed the captured issue to B when drained from B in a test-first control. In a separate probe, direct recording from A's inherited task retained A's completed case ID. The new adapter method `reportAtSwiftTestingRunLevel(_:)` detaches delivery and records the native event at the adapter's location. Its diagnostic includes the original generated source.
+
+On Apple Swift 6.4 with Swift Testing 2084, the verifier requires one failing native issue without a test or case ID, between A's end and B's end. It checks that the native run finishes and SwiftPM exits 1. The fixture uses Swift 6.0 language features. The native case-boundary check is enabled by the verifier on Swift 6.4 or newer. Native Swift 6.0 and other runner profiles, XCTest run-level delivery, and automatic run-scoped buffering and deduplication remain outstanding. DX-023 and RUN-038 remain partial.

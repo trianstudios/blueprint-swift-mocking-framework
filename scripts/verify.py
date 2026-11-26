@@ -89,6 +89,7 @@ def main():
     swift_environment = os.environ | {"SWIFT_EXEC": str(swiftc), "SDKROOT": sdk}
     swift_environment.pop("BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE", None)
     swift_environment.pop("BLUEPRINT_EXPECT_PARAMETERIZED_REPORTER_FAILURE", None)
+    swift_environment.pop("BLUEPRINT_CLOSED_OWNER_BRIDGE", None)
     swift_version = subprocess.check_output(
         [str(swift), "--version"], text=True, stderr=subprocess.STDOUT, env=swift_environment
     ).strip()
@@ -577,6 +578,14 @@ def main():
         peer_id, = re.findall(r"^BLUEPRINT_PARAM_PEER_ACTIVE id=(.+)$", attribution, re.MULTILINE)
         owner_id, = re.findall(r"^BLUEPRINT_PARAM_OWNER_ACTIVE id=(.+)$", attribution, re.MULTILINE)
         assert peer_id == owner_id and test in owner_id, f"{check} did not exercise one native function"
+    # The native case-boundary assertions use the event schema verified on Swift 6.4.
+    if release and tuple(map(int, release.groups())) >= (6, 4):
+        for context in ("inherited", "detached", "thread"):
+            run(f"swift-testing-finished-owner-{context}", [
+                sys.executable, "Fixtures/ProtocolConsumer/verify_closed_owner.py",
+                "--swift", swift, "--evidence-dir", EVIDENCE, "--skip-build", "--context", context],
+                env=swift_environment, timeout=180,
+                patterns=[rf"PASS: Swift Testing closed-owner {context} produced one run-level issue and no case issues"])
     run("xctest-consumer", [sys.executable, "Fixtures/XCTestConsumer/verify.py"],
         env=swift_environment, timeout=600,
         patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines",
