@@ -72,6 +72,8 @@ Use `try session.discardEvents(through: checkpoint)` to discard a current epoch'
 
 Use `try session.verifyNoInteractions(in: .session)` to check for admissions through the current snapshot, or pass `.mock(mockID)` to check one mock. Use `since:` to start after a checkpoint and `ignoring:` to exclude explicit mock-and-endpoint pairs. A retained admission disproves absence. A pruned prefix can leave the result unavailable.
 
+Create an epoch-scoped verification scope with `session.consumptionScope(named:)`. Use `try session.consume(.earliest(1), for: selector, in: scope)` to claim one matching admission, or `.all` to claim every match in the snapshot. A concurrent change to the same scope can cause a conflict. A failed claim leaves the scope unchanged.
+
 For live observation, retain `session.observeChanges()`, then use its notifications as wake-ups. Read `try session.replay(since: checkpoint)` after a wake and use the returned checkpoint for the next read. Replay returns all retained events through that position, so coalesced wakes preserve intermediate transitions. Cancel the observation when finished.
 
 Use `session.eventually(_:for:phase:until:clock:)` for a count of one mock endpoint's metadata events. It returns the first observed prefix that satisfies the count before the deadline, even if a later count changes. It throws when history is unavailable or an epoch changes.

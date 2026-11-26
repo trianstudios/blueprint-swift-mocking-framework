@@ -189,6 +189,7 @@ public final class MockSession: Sendable {
         private var nextInvocationNumber: UInt64 = 0
         private var lastEventOrdinal: UInt64 = 0
         private var histories: [SessionEpoch: EpochHistory]
+        private var claimsByScope: [String: SessionConsumptionClaims] = [:]
         private var active: [SessionInvocationID: SessionEvent] = [:]
         private var journals: [WeakSessionJournal] = []
         private var nextQuiescenceWaiter: UInt64 = 0
@@ -246,6 +247,26 @@ public final class MockSession: Sendable {
             histories[epoch]!.prunedThrough = events[firstRetained - 1].ordinal
             histories[epoch]!.events = Array(events[firstRetained...])
             return true
+        }
+
+        func captureConsumption(in scope: SessionConsumptionScope) throws(SessionConsumptionError)
+            -> (SessionSnapshot, SessionConsumptionClaims) {
+            try scope.validate(for: epoch)
+            return (snapshot(epoch: epoch)!, claimsByScope[scope.name] ?? SessionConsumptionClaims())
+        }
+
+        mutating func commitConsumption(_ prepared: PreparedSessionConsumption)
+            throws(SessionConsumptionError) {
+            let scope = prepared.result.scope
+            try scope.validate(for: epoch)
+            guard histories[epoch]!.prunedThrough == nil else { throw .historyUnavailable }
+            let revision = claimsByScope[scope.name]?.revision ?? 0
+            guard revision == prepared.scopeRevision else { throw .conflict }
+
+            let ids = prepared.result.invocationIDs
+            guard !ids.isEmpty else { return }
+            claimsByScope[scope.name, default: SessionConsumptionClaims()].invocationIDs.formUnion(ids)
+            claimsByScope[scope.name]!.revision += 1
         }
 
         fileprivate mutating func register(_ journal: any SessionJournalRegistration) {
@@ -354,6 +375,7 @@ public final class MockSession: Sendable {
             let retired = registered.map { $0.discardHistory() }
             epoch = SessionEpoch(sessionID: epoch.sessionID, rawValue: epoch.rawValue + 1)
             histories[epoch] = EpochHistory()
+            claimsByScope.removeAll()
             return SessionRetirement(epoch: epoch, journals: registered, history: retired)
         }
     }
