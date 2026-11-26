@@ -35,6 +35,36 @@ public final class VariadicSubscriptDirectoryMock: VariadicSubscriptDirectory {
         }
     }
 
+    public struct VariadicForwarding: Sendable {
+        public init(_ configure: (inout Self) -> Void = { _ in }) {
+            configure(&self)
+        }
+        fileprivate var __install0: (@Sendable (SyncStubbing<(String, [Int]), String>) -> Void)? = nil
+        public mutating func get_subscript(field _: (String).Type, _ _: ([Int]).Type, _ adapter: @escaping @Sendable (String, [Int]) -> String) {
+            __install0 = { setup in
+                setup.matching(.any).willAnswer { input in
+                    adapter(input.0, input.1)
+                }
+            }
+        }
+        fileprivate var __install1: (@Sendable (SyncStubbing<(String, [Int], String), Void>) -> Void)? = nil
+        public mutating func set_subscript(field _: (String).Type, _ _: ([Int]).Type, newValue _: (String).Type, _ adapter: @escaping @Sendable (String, [Int], String) -> Void) {
+            __install1 = { setup in
+                setup.matching(.any).willAnswer { input in
+                    adapter(input.0, input.1, input.2)
+                }
+            }
+        }
+        fileprivate var __install2: (@Sendable (AsyncThrowingStubbing<(String, [Int]), String, VariadicSubscriptFailure>) -> Void)? = nil
+        public mutating func get_subscript(remote _: (String).Type, _ _: ([Int]).Type, _ adapter: @escaping @Sendable (String, [Int]) async throws(VariadicSubscriptFailure) -> String) {
+            __install2 = { setup in
+                setup.matching(.any).willAnswer { input async throws(VariadicSubscriptFailure) in
+                    try await adapter(input.0, input.1)
+                }
+            }
+        }
+    }
+
     public struct Verification: Sendable {
         fileprivate let __endpoint0: SyncEndpoint<(String, [Int]), String>
         public func get_subscript(field matcher0: Matcher<String>, _ matcher1: Matcher<[Int]>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, [Int])> {
@@ -57,11 +87,15 @@ public final class VariadicSubscriptDirectoryMock: VariadicSubscriptDirectory {
     public init(failureReporter: FailureReporter,
                 session: MockSession = MockSession(),
                 failureMappings: FailureMappings = .init(),
+                forwarding: VariadicForwarding = .init(),
                 _ configure: (Stubs) -> Void) {
         let scope = session.makeMock()
         let setup0 = SyncStubbing<(String, [Int]), String>()
         let setup1 = SyncStubbing<(String, [Int], String), Void>()
         let setup2 = AsyncThrowingStubbing<(String, [Int]), String, VariadicSubscriptFailure>()
+        forwarding.__install0?(setup0)
+        forwarding.__install1?(setup1)
+        forwarding.__install2?(setup2)
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2))
         self.__endpoint0 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.VariadicSubscriptDirectory|subscript:(field:String,_:Int...).get->String|Sendable"),
             configuration: setup0.finish(), failureReporter: failureReporter, scope: scope)

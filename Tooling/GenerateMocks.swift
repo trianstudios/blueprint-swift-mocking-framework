@@ -404,14 +404,19 @@ func generate(
         if case .setter(let property) = m.kind { setterIndices[property] = i }
         if case .subscriptSetter(let indices) = m.kind { subscriptSetters[indices] = i }
     }
-    func selectMethod(_ selector: String, purpose: String) throws -> Int {
+    func selectMember(_ selector: String, purpose: String, includeSubscripts: Bool = false) throws -> Int {
         let matches = members.indices.filter {
             let member = members[$0]
-            guard case .method = member.kind else { return false }
-            return selector == member.selector || selector == member.identity
+            guard selector == member.selector || selector == member.identity else { return false }
+            switch member.kind {
+            case .method: return true
+            case .subscriptGetter, .subscriptSetter: return includeSubscripts
+            case .getter, .setter: return false
+            }
         }
         guard let index = matches.first else {
-            try reject(proto, "Unknown \(purpose) selector '\(selector)'; use an instance method with its argument labels")
+            let accessors = includeSubscripts ? " or subscript accessor" : ""
+            try reject(proto, "Unknown \(purpose) selector '\(selector)'; use an instance method\(accessors) with its argument labels")
         }
         guard matches.count == 1 else {
             let choices = matches.map { members[$0].identity }.joined(separator: ", ")
@@ -425,7 +430,7 @@ func generate(
         guard isolation == .sendable else {
             try reject(proto, "Generated projections require a Sendable protocol")
         }
-        let index = try selectMethod(selector, purpose: "projection")
+        let index = try selectMember(selector, purpose: "projection")
         let family = members[index].effect.family
         guard family == "Sync" || family == "AsyncThrowing" else {
             try reject(proto, "Projection selector '\(selector)' requires a synchronous nonthrowing or async-throwing method")
@@ -440,10 +445,10 @@ func generate(
         guard isolation == .sendable else {
             try reject(proto, "Generated variadic forwarding adapters require a Sendable protocol")
         }
-        let index = try selectMethod(selector, purpose: "variadic forwarding")
+        let index = try selectMember(selector, purpose: "variadic forwarding", includeSubscripts: true)
         let member = members[index]
         guard member.parameters.contains(where: \.isVariadic) else {
-            try reject(proto, "Variadic forwarding selector '\(selector)' requires a variadic instance method")
+            try reject(proto, "Variadic forwarding selector '\(selector)' requires a variadic instance method or subscript accessor")
         }
         guard forwardingIndices.insert(index).inserted else {
             try reject(proto, "Duplicate variadic forwarding selector for '\(member.selector)'")
@@ -663,7 +668,7 @@ do {
     guard arguments.count >= 8, arguments.count.isMultiple(of: 2), arguments[0] == "--input",
           arguments[2] == "--module", arguments[4] == "--protocol", arguments[6] == "--output",
           options.allSatisfy({ arguments[$0] == "--project" || arguments[$0] == "--forward-variadic" }) else {
-        throw GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'method(label:)']...")
+        throw GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']...")
     }
     let projections = options.filter { arguments[$0] == "--project" }.map { arguments[$0 + 1] }
     let variadicForwarding = options.filter { arguments[$0] == "--forward-variadic" }.map { arguments[$0 + 1] }

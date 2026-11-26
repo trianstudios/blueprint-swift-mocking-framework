@@ -146,8 +146,11 @@ def main():
         tool, effectful_subscript_source, effectful_subscript_generated, "EffectfulSubscriptDirectory"))
     variadic_subscript_source = source.with_name("VariadicSubscriptDirectory.swift")
     variadic_subscript_generated = generated.with_name("VariadicSubscriptDirectoryMock.swift")
+    variadic_subscript_forwarding = ("get_subscript(field:_:)", "set_subscript(field:_:newValue:)",
+                                    "get_subscript(remote:_:)")
     run("variadic-subscript-generation", generate(
-        tool, variadic_subscript_source, variadic_subscript_generated, "VariadicSubscriptDirectory"))
+        tool, variadic_subscript_source, variadic_subscript_generated, "VariadicSubscriptDirectory",
+        forwarding=variadic_subscript_forwarding))
     variadic_source = source.with_name("VariadicDirectory.swift")
     variadic_generated = generated.with_name("VariadicDirectoryMock.swift")
     variadic_forwarding = ("sample(_:)", "names(in:ids:fallback:)")
@@ -181,7 +184,8 @@ def main():
     assert subscript_generated.read_bytes() == repeated_subscript.read_bytes()
     repeated_variadic_subscript = temp / "RepeatedVariadicSubscript.swift"
     run("variadic-subscript-generation-repeat", generate(
-        tool, variadic_subscript_source, repeated_variadic_subscript, "VariadicSubscriptDirectory"))
+        tool, variadic_subscript_source, repeated_variadic_subscript, "VariadicSubscriptDirectory",
+        forwarding=reversed(variadic_subscript_forwarding)))
     assert variadic_subscript_generated.read_bytes() == repeated_variadic_subscript.read_bytes()
     repeated_variadic = temp / "RepeatedVariadic.swift"
     run("variadic-generation-repeat", generate(
@@ -242,6 +246,8 @@ def main():
     )
     forwarding_rejections = (
         ("nonvariadic", source, "UserRepository", ("greeting(for:)",), "requires a variadic instance method"),
+        ("nonvariadic-subscript", subscript_source, "SubscriptDirectory", ("get_subscript(slot:)",),
+         "requires a variadic instance method or subscript accessor"),
         ("unknown", variadic_source, "VariadicDirectory", ("missing(_:)",), "Unknown variadic forwarding selector"),
         ("duplicate", variadic_source, "VariadicDirectory", ("sample(_:)",) * 2,
          "Duplicate variadic forwarding selector"),
@@ -343,6 +349,7 @@ def main():
         "SubscriptThrowForSetter": r"has no member 'willThrow'",
         "SubscriptWrongTypedError": r"cannot convert value of type 'WrongSubscriptFailure' to expected argument type 'EffectfulSubscriptFailure'",
         "SubscriptWriteReadonly": r"subscript is get-only",
+        "VariadicSubscriptForwardingWrongValue": r"cannot convert value of type 'Int.Type' to expected argument type 'String.Type'",
         "VariadicSubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "VariadicSubscriptArraySplat": r"cannot pass array of type '\[Int\]' as variadic arguments of type 'Int'",
         "VariadicWrongElement": r"cannot convert value of type 'String' to expected argument type 'Int'",
