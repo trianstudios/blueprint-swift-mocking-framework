@@ -171,6 +171,16 @@ private func replaceGeneratedFile(at url: URL, with data: Data?) throws {
     }
 }
 
+// Only the separately built verification tool can terminate at these boundaries.
+private func publicationCheckpoint(_ checkpoint: String) {
+    #if BLUEPRINT_TEST_PUBLICATION && (canImport(Darwin) || canImport(Glibc))
+    if ProcessInfo.processInfo.environment["BLUEPRINT_TEST_PUBLICATION_CHECKPOINT"] == checkpoint {
+        FileHandle.standardError.write(Data("DX013 fixture: interrupted at \(checkpoint)\n".utf8))
+        _exit(93)
+    }
+    #endif
+}
+
 private struct BuildOutputPublication {
     let shard: URL
     let index: URL
@@ -203,10 +213,13 @@ private struct BuildOutputPublication {
         if current != record.previous && current != record.next {
             try replaceGeneratedFile(at: index, with: dirtyIndex)
             try replaceGeneratedFile(at: shard, with: record.previous.shard)
+            publicationCheckpoint("recovery-after-shard")
             try replaceGeneratedFile(at: index, with: record.previous.index)
+            publicationCheckpoint("recovery-after-index")
             guard try currentPair() == record.previous else { throw interruptedPublication }
         }
         try FileManager.default.removeItem(at: journal)
+        publicationCheckpoint("recovery-after-journal-removal")
     }
 
     func publish(shard newShard: Data, index newIndex: Data) throws {
@@ -216,21 +229,21 @@ private struct BuildOutputPublication {
         let next = BuildOutputPair(shard: newShard, index: newIndex)
         guard previous != next else { return }
         let record = PublicationJournal(schema: 1, previous: previous, next: next)
+        publicationCheckpoint("before-journal")
         try JSONEncoder().encode(record).write(to: journal, options: .atomic)
+        publicationCheckpoint("after-journal")
 
         // The index blocks compilation during the fixed-path transition until published last.
         try replaceGeneratedFile(at: index, with: dirtyIndex)
+        publicationCheckpoint("after-dirty-index")
         try replaceGeneratedFile(at: shard, with: newShard)
-        #if BLUEPRINT_TEST_PUBLICATION && (canImport(Darwin) || canImport(Glibc))
-        if ProcessInfo.processInfo.environment["BLUEPRINT_TEST_ABORT_AFTER_SHARD"] == "1" {
-            FileHandle.standardError.write(Data("DX013 fixture: interrupted after shard publication\n".utf8))
-            _exit(93)
-        }
-        #endif
+        publicationCheckpoint("after-shard")
         guard try regularData(at: shard) == newShard else { throw interruptedPublication }
         try replaceGeneratedFile(at: index, with: newIndex)
+        publicationCheckpoint("after-index")
         guard try currentPair() == next else { throw interruptedPublication }
         try FileManager.default.removeItem(at: journal)
+        publicationCheckpoint("after-journal-removal")
     }
 }
 

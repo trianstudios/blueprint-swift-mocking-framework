@@ -208,13 +208,15 @@ def main():
     ], env=swift_environment, timeout=180,
         patterns=[r"PASS: DX013 configured output generation preserves and recovers complete pairs",
                   r"EVIDENCE: generation-recovery-report\.json SHA-256 [0-9a-f]{64}"])
-    run("swiftpm-publication-recovery", [
-        sys.executable, "Fixtures/PluginConsumer/verify_associated_binding.py",
-        "--publication-recovery", "--swift", swift, "--host-tool", publication_fault_tool,
-        "--evidence-dir", EVIDENCE, "--jobs", "4",
-    ], env=swift_environment, timeout=300,
-        patterns=[r"PASS: DX013 SwiftPM rejected interrupted publication and ran the recovered pair",
-                  r"EVIDENCE: swiftpm-publication-recovery-report\.json SHA-256 [0-9a-f]{64}"])
+    for checkpoint, suffix in (("after-shard", ""), ("after-index", "-after-index")):
+        lane = "swiftpm-publication-recovery" + suffix
+        run(lane, [
+            sys.executable, "Fixtures/PluginConsumer/verify_associated_binding.py",
+            "--publication-recovery-checkpoint", checkpoint, "--swift", swift,
+            "--host-tool", publication_fault_tool, "--evidence-dir", EVIDENCE, "--jobs", "4",
+        ], env=swift_environment, timeout=300,
+            patterns=[r"PASS: DX013 SwiftPM rejected interrupted publication and ran the recovered pair",
+                      rf"EVIDENCE: {lane}-report\.json SHA-256 [0-9a-f]{{64}}"])
     with tempfile.TemporaryDirectory(prefix="Parser Parity Self Comparison ", dir=EVIDENCE) as directory:
         report = Path(directory) / "parser-parity-report.json"
         report.write_text('{"status":"passed","stale":true}\n')
