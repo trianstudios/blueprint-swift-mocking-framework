@@ -27,6 +27,29 @@ public struct SessionInvocationID: Hashable, Sendable {
 public struct MockScope: Sendable {
     public let id: MockID
     public let session: MockSession
+
+    /// Generated value witnesses record an unlisted specialization before applying the missing-value policy.
+    public func terminateMissingSpecialization<Argument>(
+        of declaration: String, for type: Argument.Type, reporter: FailureReporter, source: SourceLocation
+    ) -> Never {
+        let endpoint = EndpointID(declaration, specializedFor: type)
+        let (admission, delivery, wake) = session.withLock {
+            state -> (SessionEvent?, SessionQuiescenceDelivery?, SessionObservationDelivery?) in
+            guard !state.isFinished else { return (nil, nil, nil) }
+            let admission = state.admit(mockID: id, endpoint: endpoint,
+                                        configurationRevision: RuleRevision(rawValue: 0))
+            let (_, delivery) = state.complete(admission.invocationID, phase: .terminated)
+            return (admission, delivery, state.observationWake())
+        }
+        delivery?.publish()
+        wake?.publish()
+        let message = admission == nil
+            ? "Cannot call \(endpoint.diagnosticName) in a finished mock session"
+            : "No configured specialization for \(endpoint.diagnosticName)"
+        reporter.report(MockIssue(kind: .unexpectedCall, endpoint: endpoint, message: message,
+                                  source: source, watermark: admission?.ordinal ?? 0))
+        fatalError(message)
+    }
 }
 
 /// Metadata about an admission or terminal outcome. Arguments remain in the endpoint's typed history.

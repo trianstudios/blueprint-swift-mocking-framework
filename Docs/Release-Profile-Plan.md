@@ -32,7 +32,7 @@ Proposed minimal scope is the actual host that evaluates the release bundle. The
 
 The macOS verifier records `sourceRevision` only when it can identify the repository root and both endpoint checks of the working tree are clean at the same revision. It records the before and after checks even for a dirty checkout. Compare the results SHA-256 in `Evidence/profile.json` with `Evidence/results.json` and retain the per-check log hashes. This is provenance for a local run. The reviewed certification bundle still needs all required exact profiles and equivalent gates.
 
-Concrete instance subscripts support variadic indices (GEN-024). Generated Sendable variadic method and subscript accessor adapters take array-based providers (GEN-020). Generic and type-level subscripts remain implementation gaps. Separate native Apple execution, Ubuntu 22.04 and x86_64 runs, and Windows x64 runs are profile gaps. [Acceptance registry](Acceptance-Status.csv)
+Concrete instance subscripts support variadic indices (GEN-024). Generated Sendable variadic method and subscript accessor adapters take array-based providers (GEN-020). Read-only instance subscripts can select concrete types for one generic index (GEN-024). Additional generic shapes and type-level subscripts remain implementation gaps. Separate native Apple execution, Ubuntu 22.04 and x86_64 runs, and Windows x64 runs are profile gaps. [Acceptance registry](Acceptance-Status.csv)
 
 ## Evidence bundle and review
 

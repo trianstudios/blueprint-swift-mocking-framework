@@ -79,12 +79,34 @@ struct Parameter {
     var witnessType: String { isVariadic ? "\(type)..." : type }
     var runtimeType: String { isVariadic ? "[\(type)]" : type }
 }
+struct GenericSubscript {
+    let label: String
+    let constraints: [String]
+    let outputType: String
+    let usesGenericResult: Bool
+    let line: Int
+
+    var selector: String { "get_subscript(\(label):)" }
+
+    var genericClause: String {
+        constraints.isEmpty ? "<__BlueprintKey>" : "<__BlueprintKey: \(constraints.joined(separator: " & "))>"
+    }
+
+    var endpoint: String {
+        let constraintClause = constraints.isEmpty ? "T" : "T:" + constraints.joined(separator: "&")
+        return "subscript<\(constraintClause)>(\(label):T).get"
+    }
+
+    var resultIdentity: String { usesGenericResult ? "T" : outputType }
+}
+
 enum WitnessKind {
     case method
     case getter(String)
     case setter(String)
     case subscriptGetter(String)
     case subscriptSetter(String)
+    case specializedSubscriptGetter(GenericSubscript, String)
 }
 struct Member {
     let name: String
@@ -140,9 +162,13 @@ struct Member {
     }
 
     private var descriptorParameters: [String] {
-        parameters.enumerated().map { index, parameter in
+        var declarations = parameters.enumerated().map { index, parameter in
             "\(parameter.label) \(matcherName(index)): \(isolation.prefix)Matcher<\(parameter.runtimeType)>"
         }
+        if case .specializedSubscriptGetter(_, let type) = kind {
+            declarations.append("as _: (\(type)).Type")
+        }
+        return declarations
     }
 
     var descriptorSignature: String {
@@ -164,7 +190,8 @@ struct Member {
 }
 
 func generate(
-    input: String, module: String, selected: String, projections: [String], variadicForwarding: [String]
+    input: String, module: String, selected: String, projections: [String], variadicForwarding: [String],
+    subscriptSpecializations: [String]
 ) throws -> String {
     let source = try String(contentsOfFile: input, encoding: .utf8)
     let tree = Parser.parse(source: source)
@@ -264,7 +291,13 @@ func generate(
     ) throws {
         let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
         let matcherTypes = parameters.map { "\($0.label):\($0.runtimeType)" }.joined(separator: ",")
-        let descriptor = "\(name)(\(matcherTypes))"
+        let specialization: String
+        if case .specializedSubscriptGetter(_, let type) = kind {
+            specialization = ",as:\(type).Type"
+        } else {
+            specialization = ""
+        }
+        let descriptor = "\(name)(\(matcherTypes)\(specialization))"
         let isVariadic = parameters.contains { $0.isVariadic }
         if let previousVariadic = descriptors.updateValue(isVariadic, forKey: descriptor) {
             if isVariadic || previousVariadic {
@@ -273,14 +306,18 @@ func generate(
             try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names")
         }
         let endpoint: String
+        var resultIdentity = outputType
         switch kind {
         case .method: endpoint = "\(name)(\(parameterTypes))"
         case .getter(let property): endpoint = "property:\(property).get"
         case .setter(let property): endpoint = "property:\(property).set(\(parameterTypes))"
         case .subscriptGetter(let indices): endpoint = "subscript:\(indices).get"
         case .subscriptSetter(let indices): endpoint = "subscript:\(indices).set(\(parameterTypes))"
+        case .specializedSubscriptGetter(let declaration, _):
+            endpoint = declaration.endpoint
+            resultIdentity = declaration.resultIdentity
         }
-        let identity = "schema1|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(outputType)|\(isolation.identity)"
+        let identity = "schema1|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(resultIdentity)|\(isolation.identity)"
         members.append(Member(name: name, parameters: parameters, outputType: outputType,
                               effect: effect, identity: identity,
                               line: converter.location(for: node.positionAfterSkippingLeadingTrivia).line,
@@ -343,10 +380,52 @@ func generate(
         }
     }
 
-    func addSubscript(_ decl: SubscriptDeclSyntax) throws {
-        guard decl.genericParameterClause == nil, decl.genericWhereClause == nil else {
-            try reject(decl, "Generic subscripts require explicit specialization support")
+    var genericSubscripts: [(declaration: GenericSubscript, node: SubscriptDeclSyntax)] = []
+    func collectGenericSubscript(
+        _ decl: SubscriptDeclSyntax, indices: [Parameter], output: String,
+        effect: Effect, setter: AccessorDeclSyntax?, getter: AccessorDeclSyntax
+    ) throws {
+        guard isolation == .sendable, setter == nil, !effect.isAsync, effect.failure == nil,
+              decl.genericWhereClause == nil,
+              let genericClause = decl.genericParameterClause, genericClause.parameters.count == 1,
+              let key = genericClause.parameters.first, key.specifier == nil,
+              key.attributes.isEmpty, simple(key.name.text),
+              indices.count == 1, let index = indices.first,
+              !index.isVariadic, index.type == key.name.text else {
+            try reject(decl, "Generic specialization requires a synchronous read-only Sendable instance subscript with one generic index and inline constraints")
         }
+
+        let constraintTypes = key.inheritedType.map { constraint -> [TypeSyntax] in
+            if let composition = constraint.as(CompositionTypeSyntax.self) {
+                return composition.elements.map(\.type)
+            }
+            return [constraint]
+        } ?? []
+        let constraints = try constraintTypes.map { constraint in
+            guard let identifier = constraint.as(IdentifierTypeSyntax.self),
+                  identifier.genericArgumentClause == nil, simple(identifier.name.text),
+                  identifier.name.text != key.name.text else {
+                try reject(constraint, "Use simple named inline generic constraints")
+            }
+            return identifier.name.text
+        }.sorted()
+
+        let usesGenericResult = output == key.name.text
+        if !usesGenericResult && decl.returnClause.type.tokens(viewMode: .sourceAccurate)
+            .contains(where: { $0.text == key.name.text }) {
+            try reject(decl.returnClause, "Generic subscript results must be concrete or exactly the generic index type")
+        }
+        if output == "Void" {
+            try reject(decl.returnClause, "Specialized generic subscripts require a value result")
+        }
+        let declaration = GenericSubscript(
+            label: index.label, constraints: constraints, outputType: output, usesGenericResult: usesGenericResult,
+            line: converter.location(for: getter.positionAfterSkippingLeadingTrivia).line
+        )
+        genericSubscripts.append((declaration, decl))
+    }
+
+    func addSubscript(_ decl: SubscriptDeclSyntax) throws {
         guard !decl.modifiers.contains(where: { ["static", "class"].contains($0.name.text) }) else {
             try reject(decl, "Static and class subscripts require a scoped type-level adapter")
         }
@@ -359,6 +438,11 @@ func generate(
         let (getter, setter) = try getterAndSetter(accessors, at: decl)
         let effects = getter.effectSpecifiers
         let effect = try methodEffect(effects?.asyncSpecifier, effects?.throwsClause, at: getter)
+        if decl.genericParameterClause != nil || decl.genericWhereClause != nil {
+            try collectGenericSubscript(decl, indices: indices, output: output, effect: effect,
+                                        setter: setter, getter: getter)
+            return
+        }
         if let setter, effect.isAsync || effect.failure != nil || setter.effectSpecifiers != nil {
             try reject(setter, "Effectful subscript getters require read-only subscripts; setters must be synchronous and nonthrowing")
         }
@@ -396,8 +480,43 @@ func generate(
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
                       effect: effect, kind: .method, at: fn)
     }
+    var specializationTypes: [String: Set<String>] = [:]
+    for option in subscriptSpecializations {
+        let fields = option.split(separator: "=", maxSplits: 1)
+        guard fields.count == 2 else {
+            try reject(proto, "Use --specialize-subscript 'get_subscript(label:)=Type'")
+        }
+        let selector = fields[0].trimmingCharacters(in: .whitespaces)
+        let candidates = genericSubscripts.filter { $0.declaration.selector == selector }
+        guard let entry = candidates.first else {
+            try reject(proto, "Unknown generic subscript selector '\(selector)'")
+        }
+        guard candidates.count == 1 else {
+            try reject(entry.node, "Ambiguous generic subscript selector '\(selector)'; use distinct index labels")
+        }
+        let source = Parser.parse(source: "typealias BlueprintSpecialization = \(fields[1])")
+        guard !source.hasError, source.statements.count == 1,
+              let alias = source.statements.first?.item.as(TypeAliasDeclSyntax.self),
+              let type = supportedType(alias.initializer.value) else {
+            try reject(entry.node, "Unsupported generic subscript specialization type '\(fields[1])'")
+        }
+        guard specializationTypes[selector, default: []].insert(type).inserted else {
+            try reject(entry.node, "Duplicate generic subscript specialization '\(type)' for '\(selector)'")
+        }
+    }
+    for (declaration, node) in genericSubscripts {
+        guard let types = specializationTypes[declaration.selector] else {
+            try reject(node, "Generic subscripts require explicit specialization using --specialize-subscript '\(declaration.selector)=Type'")
+        }
+        for type in types.sorted() {
+            try addMember(name: "get_subscript", parameters: [Parameter(label: declaration.label, type: type)],
+                          outputType: declaration.usesGenericResult ? type : declaration.outputType,
+                          effect: Effect(isAsync: false, failure: nil),
+                          kind: .specializedSubscriptGetter(declaration, type), at: node)
+        }
+    }
     guard !members.isEmpty else { try reject(proto, "The selected protocol has no supported requirements") }
-    members.sort { $0.identity < $1.identity }
+    members.sort { ($0.identity, $0.inputType) < ($1.identity, $1.inputType) }
     var setterIndices: [String: Int] = [:]
     var subscriptSetters: [String: Int] = [:]
     for (i, m) in members.enumerated() {
@@ -411,7 +530,7 @@ func generate(
             switch member.kind {
             case .method: return true
             case .subscriptGetter, .subscriptSetter: return includeSubscripts
-            case .getter, .setter: return false
+            case .getter, .setter, .specializedSubscriptGetter: return false
             }
         }
         guard let index = matches.first else {
@@ -515,6 +634,13 @@ func generate(
         private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
 
     """
+    let specializedEndpoints = Dictionary(grouping: members.indices.filter {
+        if case .specializedSubscriptGetter = members[$0].kind { return true }
+        return false
+    }, by: { members[$0].identity })
+    if !specializedEndpoints.isEmpty {
+        output += "    private let __scope: MockScope\n    private let __failureReporter: FailureReporter\n"
+    }
     for i in members.indices {
         output += "    private let __endpoint\(i): \(endpointType(i))\n"
     }
@@ -609,6 +735,9 @@ func generate(
     }
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void) {\n"
     if isolation == .sendable { output += "        let scope = session.makeMock()\n" }
+    if !specializedEndpoints.isEmpty {
+        output += "        self.__scope = scope\n        self.__failureReporter = failureReporter\n"
+    }
     for (i,m) in members.enumerated() {
         output += "        let setup\(i) = \(m.family)Stubbing<\(m.genericArguments)>()\n"
     }
@@ -627,14 +756,25 @@ func generate(
             mapping += ", fallback: { _ in () }"
         }
         let projection = projectedIndices.contains(i) ? ", projection: projection\(i)" : ""
-        output += "        self.__endpoint\(i) = \(endpointFamily(i))Endpoint(id: EndpointID(\(String(reflecting: m.identity))),\n            configuration: setup\(i).finish()\(projection), failureReporter: failureReporter\(mapping))\n"
+        let identity = String(reflecting: m.identity)
+        var endpointID = "EndpointID(\(identity))"
+        if case .specializedSubscriptGetter(let declaration, let type) = m.kind {
+            endpointID = "EndpointID(\(identity), specializedFor: (\(type)).self)"
+            if !declaration.constraints.isEmpty, let first = specializedEndpoints[m.identity]?.first {
+                output += "        Self.__validateSpecialization\(first)((\(type)).self)\n"
+            }
+        }
+        output += "        self.__endpoint\(i) = \(endpointFamily(i))Endpoint(id: \(endpointID),\n            configuration: setup\(i).finish()\(projection), failureReporter: failureReporter\(mapping))\n"
     }
     output += "    }\n"
     let fileName = URL(fileURLWithPath: input).lastPathComponent
     let fileID = module + "/" + fileName
-    func call(_ index: Int, _ argument: String) -> String {
+    func location(_ line: Int) -> String {
+        "SourceLocation(fileID: \(String(reflecting: fileID)), filePath: \(String(reflecting: fileName)), line: \(line), column: 1)"
+    }
+    func call(_ index: Int, _ argument: String, line: Int? = nil) -> String {
         let member = members[index]
-        return "\(member.effect.callPrefix)__endpoint\(index).invoke(\(argument), source: SourceLocation(fileID: \(String(reflecting: fileID)), filePath: \(String(reflecting: fileName)), line: \(member.line), column: 1))"
+        return "\(member.effect.callPrefix)__endpoint\(index).invoke(\(argument), source: \(location(line ?? member.line)))"
     }
     for (i, m) in members.enumerated() {
         switch m.kind {
@@ -655,6 +795,28 @@ func generate(
                 output += "        set {\n            \(call(setter, arguments))\n        }\n"
             }
             output += "    }\n"
+        case .specializedSubscriptGetter(let declaration, _):
+            let indices = specializedEndpoints[m.identity]!
+            guard indices.first == i else { continue }
+            if !declaration.constraints.isEmpty {
+                output += "\n    private static func __validateSpecialization\(i)\(declaration.genericClause)(_: __BlueprintKey.Type) {}\n"
+            }
+            let result = declaration.usesGenericResult ? "__BlueprintKey" : declaration.outputType
+            output += "\n    public subscript\(declaration.genericClause)(\(declaration.label) input: __BlueprintKey) -> \(result) {\n"
+            for index in indices {
+                let type = members[index].inputType
+                output += "        if __BlueprintKey.self == (\(type)).self, let key = input as? \(type) {\n"
+                if declaration.usesGenericResult {
+                    output += "            let value = \(call(index, "key", line: declaration.line))\n"
+                    output += "            guard let result = value as? __BlueprintKey else { preconditionFailure(\"Mismatched subscript specialization result\") }\n"
+                    output += "            return result\n"
+                } else {
+                    output += "            return \(call(index, "key", line: declaration.line))\n"
+                }
+                output += "        }\n"
+            }
+            output += "        __scope.terminateMissingSpecialization(of: \(String(reflecting: m.identity)), for: __BlueprintKey.self,\n"
+            output += "            reporter: __failureReporter, source: \(location(declaration.line)))\n    }\n"
         case .setter, .subscriptSetter:
             continue
         }
@@ -667,13 +829,16 @@ do {
     let options = stride(from: 8, to: arguments.count, by: 2)
     guard arguments.count >= 8, arguments.count.isMultiple(of: 2), arguments[0] == "--input",
           arguments[2] == "--module", arguments[4] == "--protocol", arguments[6] == "--output",
-          options.allSatisfy({ arguments[$0] == "--project" || arguments[$0] == "--forward-variadic" }) else {
-        throw GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']...")
+          options.allSatisfy({ arguments[$0] == "--project" || arguments[$0] == "--forward-variadic" ||
+                               arguments[$0] == "--specialize-subscript" }) else {
+        throw GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']...")
     }
     let projections = options.filter { arguments[$0] == "--project" }.map { arguments[$0 + 1] }
     let variadicForwarding = options.filter { arguments[$0] == "--forward-variadic" }.map { arguments[$0 + 1] }
+    let subscriptSpecializations = options.filter { arguments[$0] == "--specialize-subscript" }.map { arguments[$0 + 1] }
     let output = try generate(input: arguments[1], module: arguments[3], selected: arguments[5],
-                              projections: projections, variadicForwarding: variadicForwarding)
+                              projections: projections, variadicForwarding: variadicForwarding,
+                              subscriptSpecializations: subscriptSpecializations)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.write(toFile: arguments[7], atomically: true, encoding: .utf8)
 } catch {

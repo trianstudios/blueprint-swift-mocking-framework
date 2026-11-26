@@ -8,6 +8,20 @@ import ConsumerDoubles
         let reporter = FailureReporter { issue in
             FileHandle.standardError.write(Data("MOCK ISSUE: \(issue.message)\n".utf8))
         }
+        if CommandLine.arguments.contains("--missing-generic-specialization") {
+            let session = MockSession()
+            let reporter = FailureReporter { issue in
+                let events = session.snapshot().events
+                precondition(events.count == 2 && events[0].phase == .admitted && events[1].phase == .terminated)
+                precondition(events[0].invocationID == events[1].invocationID)
+                precondition(events.allSatisfy { $0.endpoint == issue.endpoint })
+                precondition(issue.endpoint.specialization?.typeName == String(reflecting: Bool.self))
+                FileHandle.standardError.write(Data("MOCK ISSUE: \(issue.message)\n".utf8))
+            }
+            let mock = GenericSubscriptDirectoryMock(failureReporter: reporter, session: session) { _ in }
+            let service = GenericSubscriptClient(directory: mock)
+            _ = service.read(true)
+        }
         if CommandLine.arguments.contains("--missing-never") {
             let mock = EffectEdgesMock(failureReporter: reporter) { _ in }
             mock.stop(id: "unstubbed")

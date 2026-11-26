@@ -1,9 +1,36 @@
 // A compile-time generated-code/runtime schema marker. This is not a release version.
 public enum BlueprintRuntimeSchemaV1 {}
 
+/// The process-local identity and readable diagnostic name of a concrete type argument.
+public struct EndpointSpecialization: Sendable, Equatable {
+    public let typeName: String
+    private let typeIdentity: ObjectIdentifier
+
+    fileprivate init<Argument>(_ type: Argument.Type) {
+        self.typeName = String(reflecting: type)
+        self.typeIdentity = ObjectIdentifier(type)
+    }
+}
+
 public struct EndpointID: Sendable, Equatable {
+    /// The declaration identity shared by all of its specializations.
     public let rawValue: String
-    public init(_ rawValue: String) { self.rawValue = rawValue }
+    public let specialization: EndpointSpecialization?
+
+    public init(_ rawValue: String) {
+        self.rawValue = rawValue
+        self.specialization = nil
+    }
+
+    public init<Argument>(_ rawValue: String, specializedFor type: Argument.Type) {
+        self.rawValue = rawValue
+        self.specialization = EndpointSpecialization(type)
+    }
+
+    var diagnosticName: String {
+        guard let specialization else { return rawValue }
+        return "\(rawValue) [\(specialization.typeName)]"
+    }
 }
 
 public struct SourceLocation: Sendable, Equatable {
@@ -355,10 +382,10 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         switch reason {
         case .noMatchingStub:
             kind = .unexpectedCall
-            message = "No matching stub for \(endpoint.rawValue)"
+            message = "No matching stub for \(endpoint.diagnosticName)"
         case .exhaustedSequence:
             kind = .sequenceExhausted
-            message = "Stub answer sequence exhausted for \(endpoint.rawValue)"
+            message = "Stub answer sequence exhausted for \(endpoint.diagnosticName)"
         }
         let issue = MockIssue(kind: kind, endpoint: endpoint, message: message,
                               source: source, watermark: admission.id)
@@ -368,7 +395,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
 
     func reportFinishedCall(source: SourceLocation) -> MockIssue {
         let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
-                              message: "Cannot call \(endpoint.rawValue) in a finished mock session",
+                              message: "Cannot call \(endpoint.diagnosticName) in a finished mock session",
                               source: source, watermark: state.withLock { $0.nextID })
         report(issue)
         return issue

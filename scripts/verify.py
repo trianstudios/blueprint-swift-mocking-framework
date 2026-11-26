@@ -34,13 +34,15 @@ def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
     return output
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
-             module="ConsumerDomain", forwarding=()):
+             module="ConsumerDomain", forwarding=(), specializations=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
         arguments.extend(["--project", projection])
     for method in forwarding:
         arguments.extend(["--forward-variadic", method])
+    for specialization in specializations:
+        arguments.extend(["--specialize-subscript", specialization])
     return arguments
 
 def xcrun(*arguments):
@@ -144,6 +146,13 @@ def main():
     effectful_subscript_generated = generated.with_name("EffectfulSubscriptDirectoryMock.swift")
     run("effectful-subscript-generation", generate(
         tool, effectful_subscript_source, effectful_subscript_generated, "EffectfulSubscriptDirectory"))
+    generic_subscript_source = source.with_name("GenericSubscriptDirectory.swift")
+    generic_subscript_generated = generated.with_name("GenericSubscriptDirectoryMock.swift")
+    generic_subscript_specializations = ("get_subscript(_:)=Int", "get_subscript(_:)=String",
+                                         "get_subscript(_:)=Int?", "get_subscript(named:)=Int")
+    run("generic-subscript-generation", generate(
+        tool, generic_subscript_source, generic_subscript_generated, "GenericSubscriptDirectory",
+        specializations=generic_subscript_specializations))
     variadic_subscript_source = source.with_name("VariadicSubscriptDirectory.swift")
     variadic_subscript_generated = generated.with_name("VariadicSubscriptDirectoryMock.swift")
     variadic_subscript_forwarding = ("get_subscript(field:_:)", "set_subscript(field:_:newValue:)",
@@ -182,6 +191,28 @@ def main():
     run("subscript-label-normalization", generate(
         tool, relocated_subscript, repeated_subscript, "SubscriptDirectory"))
     assert subscript_generated.read_bytes() == repeated_subscript.read_bytes()
+    repeated_generic_subscript = temp / "RepeatedGenericSubscript.swift"
+    run("generic-subscript-generation-repeat", generate(
+        tool, generic_subscript_source, repeated_generic_subscript, "GenericSubscriptDirectory",
+        specializations=reversed(generic_subscript_specializations)))
+    assert generic_subscript_generated.read_bytes() == repeated_generic_subscript.read_bytes()
+    generic_rejections = (
+        ("unknown", ("get_subscript(wrong:)=Int",), "Unknown generic subscript selector"),
+        ("duplicate", ("get_subscript(_:)=Int?", "get_subscript(_:) = Int?"),
+         "Duplicate generic subscript specialization"),
+        ("unsupported-type", ("get_subscript(_:)=(Int, String)",),
+         "Unsupported generic subscript specialization type"),
+        ("missing-declaration", ("get_subscript(_:)=Int",),
+         "Generic subscripts require explicit specialization"),
+    )
+    for label, options, pattern in generic_rejections:
+        rejected = temp / "RejectedGenericSubscript.swift"
+        sentinel = "sentinel: preserve generated output\n"
+        rejected.write_text(sentinel)
+        run("generic-subscript-reject-" + label, generate(
+            tool, generic_subscript_source, rejected, "GenericSubscriptDirectory", specializations=options),
+            fails=True, patterns=[r"BPM001", r":\d+:\d+: error:", pattern])
+        assert rejected.read_text() == sentinel
     repeated_variadic_subscript = temp / "RepeatedVariadicSubscript.swift"
     run("variadic-subscript-generation-repeat", generate(
         tool, variadic_subscript_source, repeated_variadic_subscript, "VariadicSubscriptDirectory",
@@ -274,7 +305,9 @@ def main():
         "DescriptorCollision": r"Overloads that differ only by effects or result type",
         "UnsupportedEffect": r"Rethrows requires a callback-derived error",
         "EffectfulSetter": r"Effectful getters require read-only properties",
-        "GenericSubscript": r"Generic subscripts require explicit specialization support",
+        "GenericSubscript": r"Generic subscripts require explicit specialization",
+        "GenericSubscriptSetter": r"Generic specialization requires a synchronous read-only",
+        "GenericSubscriptNestedResult": r"Generic subscript results must be concrete or exactly the generic index type",
         "StaticSubscript": r"Static and class subscripts require a scoped type-level adapter",
         "EffectfulSubscriptSetter": r"Effectful subscript getters require read-only subscripts",
         "BorrowingSubscript": r"Subscript indices require.*without ownership",
@@ -343,6 +376,10 @@ def main():
         "ThrowForNever": r"has no member 'willThrow'",
         "ValueForNever": r"cannot convert value of type 'String'.*'Never'",
         "AsyncAnswerForSyncThrowing": r"to parameter expecting synchronous function type",
+        "GenericSubscriptWrongConstraint": r"requires that 'UnhashableKey' conform to 'Hashable'",
+        "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
+        "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
+        "GenericSubscriptWrongResult": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "SubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "SubscriptWrongNewValue": r"cannot convert value of type 'Int' to expected argument type 'String'",
         "SubscriptWrongGetterResult": r"cannot convert value of type 'Int' to expected argument type 'String'",
@@ -389,6 +426,11 @@ def main():
         fatal_log = run(label + "-missing-terminates", [modules / "consumer-demo", flag],
                         fails=True, patterns=[r"MOCK ISSUE: No matching stub", r"Fatal error: No matching stub"])
         assert fatal_log.index("MOCK ISSUE:") < fatal_log.index("Fatal error:")
+    unlisted = r"No configured specialization for schema1\|ConsumerDomain\.GenericSubscriptDirectory.*\[Swift.Bool\]"
+    fatal_log = run("generic-subscript-missing-terminates", [
+        modules / "consumer-demo", "--missing-generic-specialization"], fails=True,
+        patterns=[r"MOCK ISSUE: " + unlisted, r"Fatal error: " + unlisted])
+    assert fatal_log.index("MOCK ISSUE:") < fatal_log.index("Fatal error:")
     run_swift("runtime-only-consumer", [
         "run", "--package-path", "Fixtures/RuntimeOnly", "RuntimeOnly"],
         patterns=[r"PASS: runtime-only consumer"])
@@ -431,6 +473,7 @@ def main():
         "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
         "subscriptGeneratedSHA256": hashlib.sha256(subscript_generated.read_bytes()).hexdigest(),
         "effectfulSubscriptGeneratedSHA256": hashlib.sha256(effectful_subscript_generated.read_bytes()).hexdigest(),
+        "genericSubscriptGeneratedSHA256": hashlib.sha256(generic_subscript_generated.read_bytes()).hexdigest(),
         "variadicSubscriptGeneratedSHA256": hashlib.sha256(variadic_subscript_generated.read_bytes()).hexdigest(),
         "variadicGeneratedSHA256": hashlib.sha256(variadic_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
