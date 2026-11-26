@@ -9,7 +9,7 @@ public struct UnexpectedInvocationError: Error, CustomStringConvertible {
     public var description: String { issue.message }
 }
 
-private final class EffectRulesBuilder<Input: Sendable, Answer: Sendable> {
+final class EffectRulesBuilder<Input: Sendable, Answer: Sendable> {
     private var rules: [Rule<Input, Answer>] = []
     private var finished = false
 

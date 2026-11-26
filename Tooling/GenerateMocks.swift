@@ -69,14 +69,19 @@ struct Parameter {
     let label: String
     let type: String
     let isVariadic: Bool
+    let isInout: Bool
 
-    init(label: String, type: String, isVariadic: Bool = false) {
+    init(label: String, type: String, isVariadic: Bool = false, isInout: Bool = false) {
         self.label = label
         self.type = type
         self.isVariadic = isVariadic
+        self.isInout = isInout
     }
 
-    var witnessType: String { isVariadic ? "\(type)..." : type }
+    var witnessType: String {
+        if isInout { return "inout \(type)" }
+        return isVariadic ? "\(type)..." : type
+    }
     var runtimeType: String { isVariadic ? "[\(type)]" : type }
 }
 struct GenericSubscript {
@@ -120,7 +125,9 @@ struct Member {
     let isolation: Isolation
     let kind: WitnessKind
 
-    var family: String { isolation.prefix + effect.family }
+    var usesInout: Bool { parameters.contains(where: \.isInout) }
+    var family: String { (usesInout ? "Inout" : isolation.prefix) + effect.family }
+    var verificationInputType: String { usesInout ? "InoutValues<\(inputType)>" : inputType }
 
     var isTypeLevel: Bool {
         switch kind {
@@ -166,6 +173,7 @@ struct Member {
 
     var invocationInput: String {
         let arguments = invocationArguments
+        if usesInout { return "&" + arguments[0] }
         if arguments.count == 1 { return arguments[0] }
         return "(" + arguments.joined(separator: ", ") + ")"
     }
@@ -185,7 +193,9 @@ struct Member {
     }
 
     func verificationSignature(includeOrigin: Bool = false) -> String {
-        var descriptor = descriptorParameters + ["phase: CallPhase = .admitted"]
+        var descriptor = descriptorParameters
+        if usesInout { descriptor.append("after: Matcher<\(inputType)>? = nil") }
+        descriptor.append("phase: CallPhase = .admitted")
         if includeOrigin { descriptor.append("origin: CallOrigin? = nil") }
         return "\(name)(\(descriptor.joined(separator: ", ")))"
     }
@@ -300,13 +310,15 @@ func generate(
     }
 
     var members: [Member] = []
-    var descriptors: [String: Bool] = [:]
+    var descriptors: [String: (variadic: Bool, inoutValue: Bool)] = [:]
     func addMember(
         name: String, parameters: [Parameter], outputType: String,
         effect: Effect, kind: WitnessKind, at node: some SyntaxProtocol
     ) throws {
         let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
-        let matcherTypes = parameters.map { "\($0.label):\($0.runtimeType)" }.joined(separator: ",")
+        let matcherTypes = parameters.map {
+            "\($0.label):\($0.isInout ? "Int" : $0.runtimeType)"
+        }.joined(separator: ",")
         let specialization: String
         if case .specializedSubscriptGetter(_, let type) = kind {
             specialization = ",as:\(type).Type"
@@ -320,9 +332,13 @@ func generate(
         }
         let descriptor = "\(namespace)\(name)(\(matcherTypes)\(specialization))"
         let isVariadic = parameters.contains { $0.isVariadic }
-        if let previousVariadic = descriptors.updateValue(isVariadic, forKey: descriptor) {
-            if isVariadic || previousVariadic {
+        let isInout = parameters.contains(where: \.isInout)
+        if let previous = descriptors.updateValue((isVariadic, isInout), forKey: descriptor) {
+            if isVariadic || previous.variadic {
                 try reject(node, "Variadic overloads with identical lowered matcher signatures require distinct argument labels")
+            }
+            if isInout || previous.inoutValue {
+                try reject(node, "Inout overloads with identical matcher signatures require distinct argument labels")
             }
             try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names")
         }
@@ -354,18 +370,27 @@ func generate(
             // A single name on a subscript index is local. A method's is external.
             let label = forSubscript && parameter.secondName == nil ? "_" : parameter.firstName.text
             let isVariadic = parameter.ellipsis != nil
+            let unmodified = parameter.attributes.isEmpty && parameter.modifiers.isEmpty &&
+                parameter.defaultValue == nil && (simple(label) || label == "_")
             if spy {
                 if isVariadic {
                     try reject(parameter, "Direct spy call-through cannot splat a Swift variadic argument; use --forward-variadic with an array-taking provider")
                 }
-                if parameter.type.tokens(viewMode: .sourceAccurate).contains(where: { ["inout", "->"].contains($0.text) }) {
-                    try reject(parameter, "Direct spy call-through requires a call-scoped provider for inout and callback arguments")
+                let tokens = parameter.type.tokens(viewMode: .sourceAccurate).map(\.text)
+                if tokens.first == "inout" {
+                    guard isolation == .sendable, !forSubscript, parameters.count == 1, unmodified,
+                          let attributed = parameter.type.as(AttributedTypeSyntax.self),
+                          attributed.attributes.isEmpty, attributed.specifiers.map(\.trimmedDescription) == ["inout"],
+                          ["Int", "Swift.Int"].contains(attributed.baseType.trimmedDescription) else {
+                        try reject(parameter, "Direct spy inout forwarding requires a Sendable method with one inout Swift.Int parameter")
+                    }
+                    return Parameter(label: label, type: "Swift.Int", isInout: true)
+                }
+                if tokens.contains("->") {
+                    try reject(parameter, "Direct spy call-through requires a call-scoped provider for callback arguments")
                 }
             }
-            guard let type = supportedType(parameter.type),
-                  parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
-                  parameter.defaultValue == nil,
-                  simple(label) || label == "_" else {
+            guard let type = supportedType(parameter.type), unmodified else {
                 let subject = forSubscript ? "Subscript indices require" : "Use"
                 try reject(parameter, "\(subject) named, optional, array or dictionary parameter types without ownership or default values")
             }
@@ -532,6 +557,9 @@ func generate(
         let parameters = try parseParameters(fn.signature.parameterClause.parameters)
         let specifiers = fn.signature.effectSpecifiers
         let effect = try methodEffect(specifiers?.asyncSpecifier, specifiers?.throwsClause, at: fn)
+        if effect.isAsync && parameters.contains(where: \.isInout) {
+            try reject(fn, "Direct spy inout forwarding requires a synchronous method")
+        }
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
                       effect: effect, kind: .method, at: fn)
     }
@@ -783,8 +811,9 @@ func generate(
                 """
             }
         } else {
+            let after = m.usesInout ? ", after: after" : ""
             let origin = spy ? ", origin: origin" : ""
-            output += "        public func \(m.verificationSignature(includeOrigin: spy)) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.inputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression), phase: phase\(origin))\n        }\n"
+            output += "        public func \(m.verificationSignature(includeOrigin: spy)) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.verificationInputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression)\(after), phase: phase\(origin))\n        }\n"
         }
     }
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
@@ -823,7 +852,7 @@ func generate(
             member.parameters.count == 1 ? "input" : "input.\(index)"
         }
         let arguments = member.parameters.enumerated().map { index, parameter in
-            let value = inputExpression(index)
+            let value = (parameter.isInout ? "&" : "") + inputExpression(index)
             return parameter.label == "_" ? value : "\(parameter.label): \(value)"
         }
         let call: String
@@ -842,7 +871,12 @@ func generate(
         default:
             preconditionFailure("The spy profile filters unsupported witnesses before emission")
         }
-        let input = member.parameters.isEmpty ? "_" : "input"
+        let input: String
+        if member.usesInout {
+            input = "(input: inout \(member.inputType))"
+        } else {
+            input = member.parameters.isEmpty ? "_" : "input"
+        }
         let isolationAttribute = isolation == .sendable ? "@Sendable" : "@MainActor"
         let effects = (member.effect.isAsync ? " async" : "") +
             (member.effect.runtimeFailure.map { " throws(\($0.type))" } ?? "")

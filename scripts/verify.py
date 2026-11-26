@@ -154,11 +154,12 @@ def main():
     actor_spy_source = source.with_name("ActorSpyDirectory.swift")
     actor_spy_generated = generated.with_name("ActorSpyDirectoryMock.swift")
     run("actor-spy-generation", generate(tool, actor_spy_source, actor_spy_generated, "ActorSpyDirectory", spy=True))
-    writable_spies = [
+    additional_spies = [
         ("writable-spy", "WritableSpyDirectory"),
         ("actor-writable-spy", "ActorWritableSpyDirectory"),
+        ("inout-spy", "InoutSpyDirectory"),
     ]
-    for check, protocol in writable_spies:
+    for check, protocol in additional_spies:
         run(check + "-generation", generate(
             tool, source.with_name(protocol + ".swift"), generated.with_name(protocol + "Mock.swift"),
             protocol, spy=True))
@@ -217,7 +218,7 @@ def main():
     repeated_actor_spy = temp / "RepeatedActorSpy.swift"
     run("actor-spy-generation-repeat", generate(tool, actor_spy_source, repeated_actor_spy, "ActorSpyDirectory", spy=True))
     assert actor_spy_generated.read_bytes() == repeated_actor_spy.read_bytes()
-    for check, protocol in writable_spies:
+    for check, protocol in additional_spies:
         repeated = temp / ("Repeated" + protocol + ".swift")
         run(check + "-generation-repeat", generate(
             tool, source.with_name(protocol + ".swift"), repeated, protocol, spy=True))
@@ -306,7 +307,16 @@ def main():
         tool, ambiguous, disambiguated, "AmbiguousProjection", (canonical,)))
     assert "ProjectedSyncEndpoint<Int, String," in disambiguated.read_text()
     spy_inout = temp / "InoutSpy.swift"
-    spy_inout.write_text("public protocol InoutSpy: Sendable { func update(_ value: inout Int) }\n")
+    spy_inout.write_text("public protocol InoutSpy: Sendable { func update(_ value: inout String) }\n")
+    spy_async_inout = temp / "AsyncInoutSpy.swift"
+    spy_async_inout.write_text("public protocol AsyncInoutSpy: Sendable { func update(_ value: inout Int) async }\n")
+    spy_actor_inout = temp / "ActorInoutSpy.swift"
+    spy_actor_inout.write_text("@MainActor public protocol ActorInoutSpy { func update(_ value: inout Int) }\n")
+    spy_inout_collision = temp / "InoutSpyCollision.swift"
+    spy_inout_collision.write_text("public protocol InoutSpyCollision: Sendable {\n"
+                                   "    func update(_ value: Int)\n"
+                                   "    func update(_ value: inout Int)\n"
+                                   "}\n")
     spy_callback = temp / "CallbackSpy.swift"
     spy_callback.write_text("public protocol CallbackSpy: Sendable { func apply(_ block: (Int) -> Int) }\n")
     spy_rejections = (
@@ -316,8 +326,11 @@ def main():
         ("static", type_subscript_source, "TypeSubscriptDirectory", (), "use a metatype seam"),
         ("generic", generic_subscript_source, "GenericSubscriptDirectory", (), "requires a polymorphic provider"),
         ("projection", spy_source, "SpyDirectory", ("display(for:)",), "cannot be combined with projections"),
-        ("inout", spy_inout, "InoutSpy", (), "requires a call-scoped provider for inout and callback"),
-        ("callback", spy_callback, "CallbackSpy", (), "requires a call-scoped provider for inout and callback"),
+        ("inout-type", spy_inout, "InoutSpy", (), "requires a Sendable method with one inout Swift.Int"),
+        ("inout-async", spy_async_inout, "AsyncInoutSpy", (), "inout forwarding requires a synchronous method"),
+        ("inout-actor", spy_actor_inout, "ActorInoutSpy", (), "requires a Sendable method with one inout Swift.Int"),
+        ("inout-collision", spy_inout_collision, "InoutSpyCollision", (), "Inout overloads with identical matcher signatures"),
+        ("callback", spy_callback, "CallbackSpy", (), "requires a call-scoped provider for callback"),
     )
     for label, input_path, protocol, projections, pattern in spy_rejections:
         rejected = temp / "RejectedSpy.swift"
@@ -449,6 +462,7 @@ def main():
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
         "GenericSubscriptWrongResult": r"cannot convert value of type 'String' to expected argument type 'Int'",
+        "InoutSpyRetainsAccess": r"escaping closure captures 'inout' parameter 'value'",
         "SpyWrongTarget": r"argument type 'UnrelatedDependency' does not conform to expected type 'SpyDirectory'",
         "SubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "SubscriptWrongNewValue": r"cannot convert value of type 'Int' to expected argument type 'String'",
@@ -467,6 +481,8 @@ def main():
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
         compiler_stage = ["-typecheck"]
         diagnostic_patterns = [patterns[fixture.stem]]
+        if fixture.stem == "InoutSpyRetainsAccess":
+            compiler_stage = ["-emit-sil", "-o", os.devnull]
         if fixture.stem in {"MainActorAsyncTransport", "MainActorSpyAsyncTransport"}:
             # Swift checks unsafe region transfers during SIL generation.
             compiler_stage = ["-emit-sil", "-o", os.devnull]
