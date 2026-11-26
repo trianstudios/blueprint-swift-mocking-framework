@@ -1,7 +1,7 @@
 import Testing
 @testable import BlueprintMocking
 
-private final class QuiescenceTestClock: Clock, Sendable {
+final class SessionTestClock: Clock, Sendable {
     typealias Instant = ContinuousClock.Instant
     typealias Duration = Swift.Duration
 
@@ -68,7 +68,7 @@ private struct HeldSessionCall: Sendable {
 
 @Test func RUN035_idleSessionCapturesImmediateZeroSnapshotAndExpiredDeadlineFails() async throws {
     let session = MockSession()
-    let clock = QuiescenceTestClock()
+    let clock = SessionTestClock()
     let snapshot = try await session.waitForQuiescence(until: clock.now.advanced(by: .seconds(1)), clock: clock)
     #expect(snapshot == session.snapshot())
     #expect(session.withLock { $0.quiescenceWaiterCount } == 0)
@@ -90,7 +90,7 @@ private struct HeldSessionCall: Sendable {
     let current = try session.resetHistory(.detachActive)
     #expect(session.snapshot().activeInvocationCount == 0)
 
-    let clock = QuiescenceTestClock()
+    let clock = SessionTestClock()
     let deadline = clock.now.advanced(by: .seconds(1))
     let waiter = Task { try await session.waitForQuiescence(until: deadline, clock: clock) }
     await clock.waitUntilTimerRegistered()
@@ -113,12 +113,12 @@ private struct HeldSessionCall: Sendable {
     let invocation = Task { await held.endpoint.invoke("held") }
     await held.waitUntilAdmitted()
 
-    let timer = QuiescenceTestClock()
+    let timer = SessionTestClock()
     let timerEnd = timer.now.advanced(by: .seconds(1))
     let timingOut = Task { try await session.waitForQuiescence(until: timerEnd, clock: timer) }
     await timer.waitUntilTimerRegistered()
 
-    let clock = QuiescenceTestClock()
+    let clock = SessionTestClock()
     let deadline = clock.now.advanced(by: .seconds(1))
     let cancelling = Task { try await session.waitForQuiescence(until: deadline, clock: clock) }
     await clock.waitUntilTimerRegistered()
@@ -160,7 +160,7 @@ private struct HeldSessionCall: Sendable {
     let invocation = Task { await held.endpoint.invoke("held") }
     await held.waitUntilAdmitted()
 
-    let clock = QuiescenceTestClock()
+    let clock = SessionTestClock()
     let deadline = clock.now.advanced(by: .seconds(1))
     let waiter = Task { try await session.waitForQuiescence(until: deadline, clock: clock) }
     await clock.waitUntilTimerRegistered()
