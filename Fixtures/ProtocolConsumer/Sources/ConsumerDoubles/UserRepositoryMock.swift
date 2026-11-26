@@ -45,18 +45,20 @@ public final class UserRepositoryMock: UserRepository {
     }
 
     public init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
                 failureMapping0: (@Sendable (MockIssue) -> RepositoryError)? = nil,
                 _ configure: (Stubs) -> Void) {
+        let scope = session.makeMock()
         let setup0 = AsyncThrowingStubbing<String, String, RepositoryError>()
         let setup1 = SyncStubbing<String, String>()
         let setup2 = SyncStubbing<String, String>()
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2))
         self.__endpoint0 = AsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.UserRepository|fetchUser(id:String) async throws(RepositoryError)->String|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter, failureMapping: failureMapping0)
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping0)
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.UserRepository|greeting(_:String)->String|Sendable"),
-            configuration: setup1.finish(), failureReporter: failureReporter)
+            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint2 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.UserRepository|greeting(for:String)->String|Sendable"),
-            configuration: setup2.finish(), failureReporter: failureReporter)
+            configuration: setup2.finish(), failureReporter: failureReporter, scope: scope)
     }
 
     public func fetchUser(id input: String) async throws(RepositoryError) -> String {

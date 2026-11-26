@@ -45,17 +45,19 @@ public final class LookupParametersMock: LookupParameters {
     }
 
     public init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
                 _ configure: (Stubs) -> Void) {
+        let scope = session.makeMock()
         let setup0 = SyncStubbing<(String, String), String>()
         let setup1 = SyncStubbing<(String, Int), LookupRecord>()
         let setup2 = SyncStubbing<Void, String>()
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2))
         self.__endpoint0 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.LookupParameters|lookup(namespace:String,_:String)->String|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter)
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.LookupParameters|lookup(namespace:String,id:Int)->LookupRecord|Sendable"),
-            configuration: setup1.finish(), failureReporter: failureReporter)
+            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint2 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.LookupParameters|next()->String|Sendable"),
-            configuration: setup2.finish(), failureReporter: failureReporter)
+            configuration: setup2.finish(), failureReporter: failureReporter, scope: scope)
     }
 
     public func lookup(namespace input0: String, _ input1: String) -> String {

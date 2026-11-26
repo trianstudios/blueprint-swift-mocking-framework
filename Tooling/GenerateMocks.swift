@@ -361,25 +361,27 @@ func generate(input: String, module: String, selected: String) throws -> String 
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
         members.indices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
     output += "    public init(failureReporter: FailureReporter,\n"
+    if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
     let failureIsolation = isolation == .sendable ? "@Sendable" : "@MainActor"
     for (i,m) in members.enumerated() {
         guard let failure = m.effect.runtimeFailure else { continue }
         output += "                failureMapping\(i): (\(failureIsolation) (MockIssue) -> \(failure.type))? = nil,\n"
     }
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void) {\n"
+    if isolation == .sendable { output += "        let scope = session.makeMock()\n" }
     for (i,m) in members.enumerated() {
         output += "        let setup\(i) = \(m.family)Stubbing<\(m.genericArguments)>()\n"
     }
     output += "        configure(Stubs(" + members.indices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
     for (i,m) in members.enumerated() {
-        var mapping = ""
+        var mapping = isolation == .sendable ? ", scope: scope" : ""
         if let failure = m.effect.runtimeFailure {
-            mapping = ", failureMapping: failureMapping\(i)"
+            mapping += ", failureMapping: failureMapping\(i)"
             if failure.isOrdinary {
                 mapping += " ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) }"
             }
         } else if m.outputType == "Void" {
-            mapping = ", fallback: { _ in () }"
+            mapping += ", fallback: { _ in () }"
         }
         output += "        self.__endpoint\(i) = \(m.family)Endpoint(id: EndpointID(\(String(reflecting: m.identity))),\n            configuration: setup\(i).finish(), failureReporter: failureReporter\(mapping))\n"
     }

@@ -54,22 +54,24 @@ public final class EffectDirectoryMock: EffectDirectory {
     }
 
     public init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
                 failureMapping0: (@Sendable (MockIssue) -> any Error)? = nil,
                 failureMapping3: (@Sendable (MockIssue) -> any Error)? = nil,
                 _ configure: (Stubs) -> Void) {
+        let scope = session.makeMock()
         let setup0 = SyncThrowingStubbing<String, String, any Error>()
         let setup1 = SyncStubbing<String, String>()
         let setup2 = AsyncStubbing<String, String>()
         let setup3 = AsyncThrowingStubbing<String, String, any Error>()
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2, __setup3: setup3))
         self.__endpoint0 = SyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectDirectory|cachedName(id:String) throws->String|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter, failureMapping: failureMapping0 ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) })
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping0 ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) })
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectDirectory|localName(id:String)->String|Sendable"),
-            configuration: setup1.finish(), failureReporter: failureReporter)
+            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint2 = AsyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectDirectory|refreshedName(id:String) async->String|Sendable"),
-            configuration: setup2.finish(), failureReporter: failureReporter)
+            configuration: setup2.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint3 = AsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectDirectory|remoteName(id:String) async throws->String|Sendable"),
-            configuration: setup3.finish(), failureReporter: failureReporter, failureMapping: failureMapping3 ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) })
+            configuration: setup3.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping3 ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) })
     }
 
     public func cachedName(id input: String) throws -> String {

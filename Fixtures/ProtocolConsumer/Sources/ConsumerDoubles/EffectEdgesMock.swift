@@ -63,7 +63,9 @@ public final class EffectEdgesMock: EffectEdges {
     }
 
     public init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
                 _ configure: (Stubs) -> Void) {
+        let scope = session.makeMock()
         let setup0 = AsyncStubbing<String, Void>()
         let setup1 = SyncStubbing<String, String>()
         let setup2 = AsyncStubbing<String, String>()
@@ -71,15 +73,15 @@ public final class EffectEdgesMock: EffectEdges {
         let setup4 = SyncStubbing<String, Never>()
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2, __setup3: setup3, __setup4: setup4))
         self.__endpoint0 = AsyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectEdges|flush(id:String) async->Void|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter, fallback: { _ in () })
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, fallback: { _ in () })
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectEdges|read(id:String) throws(Never)->String|Sendable"),
-            configuration: setup1.finish(), failureReporter: failureReporter)
+            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint2 = AsyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectEdges|readAsync(id:String) async throws(Never)->String|Sendable"),
-            configuration: setup2.finish(), failureReporter: failureReporter)
+            configuration: setup2.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint3 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectEdges|record(id:String)->Void|Sendable"),
-            configuration: setup3.finish(), failureReporter: failureReporter, fallback: { _ in () })
+            configuration: setup3.finish(), failureReporter: failureReporter, scope: scope, fallback: { _ in () })
         self.__endpoint4 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectEdges|stop(id:String)->Never|Sendable"),
-            configuration: setup4.finish(), failureReporter: failureReporter)
+            configuration: setup4.finish(), failureReporter: failureReporter, scope: scope)
     }
 
     public func flush(id input: String) async -> Void {

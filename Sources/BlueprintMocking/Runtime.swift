@@ -69,11 +69,13 @@ public struct RuleRevision: Sendable, Equatable {
 }
 
 /// Admission queries include unfinished and throwing calls; terminal phases are explicit.
-public enum CallPhase: Sendable { case admitted, returned, threw, terminated }
+public enum CallPhase: Sendable, Equatable { case admitted, returned, threw, terminated }
 public struct Invocation<Input: Sendable>: Sendable {
     public let id: UInt64
     public let input: Input
     public let configurationRevision: RuleRevision
+    public let sessionInvocationID: SessionInvocationID
+    public let epoch: SessionEpoch
     public fileprivate(set) var phase: CallPhase
 }
 public struct VerificationResult: Sendable {
@@ -81,19 +83,47 @@ public struct VerificationResult: Sendable {
     public let observed: Int
     public let watermark: UInt64
     public let invocationIDs: [UInt64]
+
+    /// The epoch of a session-backed query. Actor-local queries currently have no session.
+    public let epoch: SessionEpoch?
+
+    /// The descriptor was created in an earlier epoch and was rejected without evaluating its matcher.
+    public let isStale: Bool
+
+    init(passed: Bool, observed: Int, watermark: UInt64, invocationIDs: [UInt64],
+         epoch: SessionEpoch? = nil, isStale: Bool = false) {
+        self.passed = passed
+        self.observed = observed
+        self.watermark = watermark
+        self.invocationIDs = invocationIDs
+        self.epoch = epoch
+        self.isStale = isStale
+    }
+}
+
+struct JournalSnapshot<Input: Sendable>: Sendable {
+    let calls: [Invocation<Input>]
+    let watermark: UInt64
+    let epoch: SessionEpoch
+    let isStale: Bool
+}
+
+struct JournalAdmission: Sendable {
+    let id: UInt64
+    let event: SessionEvent
 }
 
 private protocol VerificationJournal<Input>: Sendable {
     associatedtype Input: Sendable
 
     var endpoint: EndpointID { get }
-    func snapshot() -> (calls: [Invocation<Input>], watermark: UInt64)
+    func snapshot(validating expectedEpoch: SessionEpoch?) -> JournalSnapshot<Input>
     func report(_ issue: MockIssue)
 }
 
 typealias Journal<Input: Sendable> = ConfiguredJournal<Input, Void>
 
-final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: VerificationJournal {
+final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: VerificationJournal, SessionJournalRegistration {
     private struct State: Sendable {
         var configuration: Configuration
         var revision = RuleRevision(rawValue: 0)
@@ -103,22 +133,31 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     private let state: CriticalState<State>
+    private let scope: MockScope
     let endpoint: EndpointID
     private let reporter: FailureReporter
 
-    init(endpoint: EndpointID, reporter: FailureReporter, configuration: Configuration) {
+    init(endpoint: EndpointID, reporter: FailureReporter, scope: MockScope, configuration: Configuration) {
         self.state = CriticalState(State(configuration: configuration))
+        self.scope = scope
         self.endpoint = endpoint
         self.reporter = reporter
+        scope.session.register(self)
     }
 
-    func admit(_ input: Input) -> (id: UInt64, configuration: Configuration) {
-        state.withLock {
-            $0.nextID += 1
-            let id = $0.nextID
-            $0.calls.append(Invocation(id: id, input: input,
-                                      configurationRevision: $0.revision, phase: .admitted))
-            return (id, $0.configuration)
+    func admit(_ input: Input) -> (admission: JournalAdmission, configuration: Configuration) {
+        // Lock order is session, then this endpoint. No operation holds two endpoint locks.
+        scope.session.withLock { session in
+            state.withLock {
+                $0.nextID += 1
+                let id = $0.nextID
+                let event = session.admit(mockID: scope.id, endpoint: endpoint,
+                                          configurationRevision: $0.revision)
+                $0.calls.append(Invocation(id: id, input: input, configurationRevision: $0.revision,
+                                          sessionInvocationID: event.invocationID, epoch: event.epoch,
+                                          phase: .admitted))
+                return (JournalAdmission(id: id, event: event), $0.configuration)
+            }
         }
     }
 
@@ -135,17 +174,43 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         return revision
     }
 
-    func complete(_ id: UInt64, phase: CallPhase) {
-        state.withLock {
-            // IDs are one-based, append-only, and endpoint-local in this initial slice.
-            $0.calls[Int(id - 1)].phase = phase
+    func complete(_ admission: JournalAdmission, phase: CallPhase) {
+        scope.session.withLock { session in
+            session.complete(admission.event.invocationID, phase: phase)
+            guard admission.event.epoch == session.epoch else { return }
+            state.withLock { history in
+                guard let first = history.calls.first else {
+                    preconditionFailure("Current-epoch admission is missing from its endpoint")
+                }
+                let index = Int(admission.id - first.id)
+                history.calls[index].phase = phase
+            }
         }
     }
-    func snapshot() -> (calls: [Invocation<Input>], watermark: UInt64) {
-        state.withLock { ($0.calls, $0.nextID) }
+
+    func snapshot(validating expectedEpoch: SessionEpoch? = nil) -> JournalSnapshot<Input> {
+        scope.session.withLock { session in
+            let stale = expectedEpoch.map { $0 != session.epoch } ?? false
+            return state.withLock {
+                JournalSnapshot(calls: stale ? [] : $0.calls, watermark: $0.nextID,
+                                epoch: session.epoch, isStale: stale)
+            }
+        }
     }
+
+    // Called by the session under its lock, in the same order as admission.
+    // The session keeps the returned copy alive until both locks have been released.
+    func discardHistory() -> any Sendable {
+        state.withLock {
+            let retired = $0.calls
+            $0.calls = []
+            return retired
+        }
+    }
+
     func verification(matching matcher: Matcher<Input>, phase: CallPhase) -> Verification<Input> {
-        Verification(journal: self, matcher: matcher, phase: phase)
+        let epoch = scope.session.withLock { $0.epoch }
+        return Verification(journal: self, matcher: matcher, phase: phase, epoch: epoch)
     }
 
     func report(_ issue: MockIssue) {
@@ -153,43 +218,45 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         reporter.report(issue) // Consumer code must run after releasing synchronization.
     }
 
-    func reportMissingCall(_ id: UInt64, phase: CallPhase? = nil, source: SourceLocation) -> MockIssue {
-        if let phase { complete(id, phase: phase) }
+    func reportMissingCall(_ admission: JournalAdmission, phase: CallPhase? = nil, source: SourceLocation) -> MockIssue {
+        if let phase { complete(admission, phase: phase) }
         let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
                               message: "No matching stub for \(endpoint.rawValue)",
-                              source: source, watermark: id)
+                              source: source, watermark: admission.id)
         report(issue)
         return issue
     }
 
     func resolveMissingNonthrowingCall<Output: Sendable>(
-        _ id: UInt64,
+        _ admission: JournalAdmission,
         source: SourceLocation,
         fallback: (@Sendable (MockIssue) -> Output)?
     ) -> Output {
         guard let fallback else {
-            let issue = reportMissingCall(id, phase: .terminated, source: source)
+            let issue = reportMissingCall(admission, phase: .terminated, source: source)
             fatalError(issue.message)
         }
-        let issue = reportMissingCall(id, source: source)
+        let issue = reportMissingCall(admission, source: source)
         let result = fallback(issue)
-        complete(id, phase: .returned)
+        complete(admission, phase: .returned)
         return result
     }
 }
 
 extension ConfiguredJournal where Configuration == Void {
-    convenience init(endpoint: EndpointID, reporter: FailureReporter) {
-        self.init(endpoint: endpoint, reporter: reporter, configuration: ())
+    convenience init(endpoint: EndpointID, reporter: FailureReporter, scope: MockScope) {
+        self.init(endpoint: endpoint, reporter: reporter, scope: scope, configuration: ())
     }
 
-    func begin(_ input: Input) -> UInt64 { admit(input).id }
+    func begin(_ input: Input) -> JournalAdmission { admit(input).admission }
 }
 
 public struct Verification<Input: Sendable>: Sendable {
     fileprivate let journal: any VerificationJournal<Input>
     fileprivate let matcher: Matcher<Input>
     fileprivate let phase: CallPhase
+    fileprivate let epoch: SessionEpoch
+
     @discardableResult
     public func wasCalled(_ count: CallCount, fileID: String = #fileID,
                           staticFilePath: StaticString = #filePath, line: Int = #line,
@@ -206,7 +273,15 @@ public struct Verification<Input: Sendable>: Sendable {
     }
 
     private func verifyCount(_ count: CallCount, source: @autoclosure () -> SourceLocation) -> VerificationResult {
-        let prefix = journal.snapshot()
+        let prefix = journal.snapshot(validating: epoch)
+        if prefix.isStale {
+            journal.report(MockIssue(
+                kind: .verificationFailed, endpoint: journal.endpoint,
+                message: "Verification belongs to an earlier session epoch. Create a new descriptor after resetting history.",
+                source: source(), watermark: prefix.watermark))
+            return VerificationResult(passed: false, observed: 0, watermark: prefix.watermark,
+                                      invocationIDs: [], epoch: epoch, isStale: true)
+        }
         let matches = prefix.calls.filter {
             (phase == .admitted || $0.phase == phase) && matcher.matches($0.input)
         }
@@ -219,7 +294,7 @@ public struct Verification<Input: Sendable>: Sendable {
                 watermark: prefix.watermark))
         }
         return VerificationResult(passed: failure == nil, observed: matches.count,
-                                  watermark: prefix.watermark, invocationIDs: matches.map(\.id))
+                                  watermark: prefix.watermark, invocationIDs: matches.map(\.id), epoch: prefix.epoch)
     }
 }
 
@@ -264,23 +339,24 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
     public init(id: EndpointID, configuration: SyncConfiguration<Input, Output>,
                 failureReporter: FailureReporter,
+                scope: MockScope = MockSession().makeMock(),
                 fallback: (@Sendable (MockIssue) -> Output)? = nil) {
         self.configuration = configuration
-        self.journal = Journal(endpoint: id, reporter: failureReporter)
+        self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
         self.fallback = fallback
     }
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) -> Output {
-        let id = journal.begin(input)
+        let admission = journal.begin(input)
         // Last registration wins. Matching and answer execution are outside the journal lock.
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             let result = rule.answer(input)
-            journal.complete(id, phase: .returned)
+            journal.complete(admission, phase: .returned)
             return result
         }
-        return journal.resolveMissingNonthrowingCall(id, source: source, fallback: fallback)
+        return journal.resolveMissingNonthrowingCall(admission, source: source, fallback: fallback)
     }
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
-        Verification(journal: journal, matcher: matcher, phase: phase)
+        journal.verification(matching: matcher, phase: phase)
     }
     public var invocations: [Invocation<Input>] { journal.snapshot().calls }
 }
@@ -331,9 +407,10 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
     public init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
                 failureReporter: FailureReporter,
+                scope: MockScope = MockSession().makeMock(),
                 failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
         self.failureMapping = failureMapping
-        self.journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, configuration: configuration)
+        self.journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope, configuration: configuration)
     }
 
     /// Atomically replaces the plan for subsequent admissions. Existing invocations keep their admitted plan.
@@ -343,27 +420,29 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
-        let (id, configuration) = journal.admit(input)
+        let (admission, configuration) = journal.admit(input)
         defer { withExtendedLifetime(configuration) {} }
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             switch await rule.answer(input) {
             case .success(let result):
-                journal.complete(id, phase: .returned)
+                journal.complete(admission, phase: .returned)
                 return result
             case .failure(let error):
-                journal.complete(id, phase: .threw)
+                journal.complete(admission, phase: .threw)
                 throw error
             }
         }
         if let failureMapping {
-            let issue = journal.reportMissingCall(id, phase: .threw, source: source)
-            throw failureMapping(issue)
+            let issue = journal.reportMissingCall(admission, source: source)
+            let error = failureMapping(issue)
+            journal.complete(admission, phase: .threw)
+            throw error
         }
-        let issue = journal.reportMissingCall(id, phase: .terminated, source: source)
+        let issue = journal.reportMissingCall(admission, phase: .terminated, source: source)
         fatalError(issue.message)
     }
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
-        Verification(journal: journal, matcher: matcher, phase: phase)
+        journal.verification(matching: matcher, phase: phase)
     }
     public var invocations: [Invocation<Input>] { journal.snapshot().calls }
 }

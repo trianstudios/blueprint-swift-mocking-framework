@@ -74,29 +74,32 @@ public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failu
 
     public init(id: EndpointID, configuration: SyncThrowingConfiguration<Input, Output, Failure>,
                 failureReporter: FailureReporter,
+                scope: MockScope = MockSession().makeMock(),
                 failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
         self.configuration = configuration
-        self.journal = Journal(endpoint: id, reporter: failureReporter)
+        self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
         self.failureMapping = failureMapping
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) throws(Failure) -> Output {
-        let id = journal.begin(input)
+        let admission = journal.begin(input)
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             switch rule.answer(input) {
             case .success(let result):
-                journal.complete(id, phase: .returned)
+                journal.complete(admission, phase: .returned)
                 return result
             case .failure(let error):
-                journal.complete(id, phase: .threw)
+                journal.complete(admission, phase: .threw)
                 throw error
             }
         }
         if let failureMapping {
-            let issue = journal.reportMissingCall(id, phase: .threw, source: source)
-            throw failureMapping(issue)
+            let issue = journal.reportMissingCall(admission, source: source)
+            let error = failureMapping(issue)
+            journal.complete(admission, phase: .threw)
+            throw error
         }
-        let issue = journal.reportMissingCall(id, phase: .terminated, source: source)
+        let issue = journal.reportMissingCall(admission, phase: .terminated, source: source)
         fatalError(issue.message)
     }
 
@@ -110,8 +113,8 @@ public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failu
 extension SyncThrowingEndpoint where Failure == any Error {
     /// Uses a reported `UnexpectedInvocationError` for an unstubbed ordinary throwing call.
     public convenience init(id: EndpointID, configuration: SyncThrowingConfiguration<Input, Output, Failure>,
-                            failureReporter: FailureReporter) {
-        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                            failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock()) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter, scope: scope,
                   failureMapping: { UnexpectedInvocationError(issue: $0) })
     }
 }
@@ -119,8 +122,8 @@ extension SyncThrowingEndpoint where Failure == any Error {
 extension AsyncThrowingEndpoint where Failure == any Error {
     /// Uses a reported `UnexpectedInvocationError` for an unstubbed ordinary throwing call.
     public convenience init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
-                            failureReporter: FailureReporter) {
-        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                            failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock()) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter, scope: scope,
                   failureMapping: { UnexpectedInvocationError(issue: $0) })
     }
 }
@@ -166,20 +169,21 @@ public final class AsyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
     public init(id: EndpointID, configuration: AsyncConfiguration<Input, Output>,
                 failureReporter: FailureReporter,
+                scope: MockScope = MockSession().makeMock(),
                 fallback: (@Sendable (MockIssue) -> Output)? = nil) {
         self.configuration = configuration
-        self.journal = Journal(endpoint: id, reporter: failureReporter)
+        self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
         self.fallback = fallback
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async -> Output {
-        let id = journal.begin(input)
+        let admission = journal.begin(input)
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             let result = await rule.answer(input)
-            journal.complete(id, phase: .returned)
+            journal.complete(admission, phase: .returned)
             return result
         }
-        return journal.resolveMissingNonthrowingCall(id, source: source, fallback: fallback)
+        return journal.resolveMissingNonthrowingCall(admission, source: source, fallback: fallback)
     }
 
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {

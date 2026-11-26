@@ -36,15 +36,17 @@ public final class LookupMock: Lookup {
     }
 
     public init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
                 failureMapping1: (@Sendable (MockIssue) -> LookupFailure)? = nil,
                 _ configure: (Stubs) -> Void) {
+        let scope = session.makeMock()
         let setup0 = SyncStubbing<String, String>()
         let setup1 = AsyncThrowingStubbing<String, String, LookupFailure>()
         configure(Stubs(__setup0: setup0, __setup1: setup1))
         self.__endpoint0 = SyncEndpoint(id: EndpointID("schema1|LookupDomain.Lookup|name(for:String)->String|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter)
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint1 = AsyncThrowingEndpoint(id: EndpointID("schema1|LookupDomain.Lookup|refresh(id:String) async throws(LookupFailure)->String|Sendable"),
-            configuration: setup1.finish(), failureReporter: failureReporter, failureMapping: failureMapping1)
+            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping1)
     }
 
     public func name(for input: String) -> String {

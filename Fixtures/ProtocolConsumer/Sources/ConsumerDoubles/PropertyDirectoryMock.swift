@@ -51,18 +51,20 @@ public final class PropertyDirectoryMock: PropertyDirectory {
     }
 
     public init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
                 failureMapping0: (@Sendable (MockIssue) -> PropertyFailure)? = nil,
                 _ configure: (Stubs) -> Void) {
+        let scope = session.makeMock()
         let setup0 = AsyncThrowingStubbing<Void, String, PropertyFailure>()
         let setup1 = SyncStubbing<Void, String>()
         let setup2 = SyncStubbing<String, Void>()
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2))
         self.__endpoint0 = AsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.PropertyDirectory|property:summary.get async throws(PropertyFailure)->String|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter, failureMapping: failureMapping0)
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping0)
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.PropertyDirectory|property:title.get->String|Sendable"),
-            configuration: setup1.finish(), failureReporter: failureReporter)
+            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint2 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.PropertyDirectory|property:title.set(_:String)->Void|Sendable"),
-            configuration: setup2.finish(), failureReporter: failureReporter, fallback: { _ in () })
+            configuration: setup2.finish(), failureReporter: failureReporter, scope: scope, fallback: { _ in () })
     }
 
     public var summary: String {

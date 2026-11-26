@@ -36,14 +36,16 @@ public final class ValueDirectoryMock: ValueDirectory {
     }
 
     public init(failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
                 _ configure: (Stubs) -> Void) {
+        let scope = session.makeMock()
         let setup0 = SyncStubbing<Void, LookupRecord?>()
         let setup1 = SyncStubbing<[Int]?, [Int: LookupRecord]>()
         configure(Stubs(__setup0: setup0, __setup1: setup1))
         self.__endpoint0 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.ValueDirectory|current()->LookupRecord?|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter)
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.ValueDirectory|fetch(_:[Int]?)->[Int: LookupRecord]|Sendable"),
-            configuration: setup1.finish(), failureReporter: failureReporter)
+            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
     }
 
     public func current() -> LookupRecord? {
