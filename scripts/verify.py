@@ -101,6 +101,11 @@ def main():
     structural_generated = generated.with_name("ValueDirectoryMock.swift")
     run("structural-types-generation",
         generate(tool, parameter_source, structural_generated, "ValueDirectory"))
+
+    property_source = source.with_name("PropertyDirectory.swift")
+    property_generated = generated.with_name("PropertyDirectoryMock.swift")
+    run("property-accessors-generation",
+        generate(tool, property_source, property_generated, "PropertyDirectory"))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -119,6 +124,7 @@ def main():
     expected_rejections = {
         "DescriptorCollision": r"Overloads that differ only by effects or result type",
         "UnsupportedEffect": r"Rethrows requires a callback-derived error",
+        "EffectfulSetter": r"Effectful getters require read-only properties",
     }
     for rejection in sorted((ROOT / "Fixtures/GeneratorRejections").glob("*.swift")):
         output = temp / "Rejected.swift"
@@ -218,6 +224,7 @@ def main():
         "effectEdgesGeneratedSHA256": hashlib.sha256(edge_generated.read_bytes()).hexdigest(),
         "parameterListGeneratedSHA256": hashlib.sha256(parameter_generated.read_bytes()).hexdigest(),
         "structuralTypesGeneratedSHA256": hashlib.sha256(structural_generated.read_bytes()).hexdigest(),
+        "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")

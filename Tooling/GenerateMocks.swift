@@ -69,6 +69,11 @@ struct Parameter {
     let label: String
     let type: String
 }
+enum WitnessKind {
+    case method
+    case getter(String)
+    case setter(String)
+}
 struct Member {
     let name: String
     let parameters: [Parameter]
@@ -77,6 +82,7 @@ struct Member {
     let identity: String
     let line: Int
     let isolation: Isolation
+    let kind: WitnessKind
 
     var family: String { isolation.prefix + effect.family }
 
@@ -200,11 +206,96 @@ func generate(input: String, module: String, selected: String) throws -> String 
         if type.trimmedDescription == "Never" { return "Never" }
         return supportedType(type)
     }
+    func methodEffect(
+        _ asyncSpecifier: TokenSyntax?, _ throwsClause: ThrowsClauseSyntax?, at node: some SyntaxProtocol
+    ) throws -> Effect {
+        if let asyncSpecifier, asyncSpecifier.text != "async" {
+            try reject(node, "Only async method effects are supported")
+        }
+        let isAsync = asyncSpecifier != nil
+        var failure: FailureEffect?
+        if let clause = throwsClause {
+            guard clause.throwsSpecifier.text == "throws" else {
+                try reject(node, "Rethrows requires a callback-derived error and is not implemented")
+            }
+            if let failureType = clause.type {
+                guard let type = failureType.as(IdentifierTypeSyntax.self),
+                      type.genericArgumentClause == nil, simple(type.name.text),
+                      !["Self", "Stubs", "Verification"].contains(type.name.text) else {
+                    try reject(node, "Use a named error type; complex error types are not implemented")
+                }
+                failure = type.name.text == "Never" ? .never : .typed(type.name.text)
+            } else {
+                failure = .ordinary
+            }
+        }
+        return Effect(isAsync: isAsync, failure: failure)
+    }
+
     var members: [Member] = []
     var descriptors = Set<String>()
+    func addMember(
+        name: String, parameters: [Parameter], outputType: String,
+        effect: Effect, kind: WitnessKind, at node: some SyntaxProtocol
+    ) throws {
+        let parameterTypes = parameters.map { "\($0.label):\($0.type)" }.joined(separator: ",")
+        let descriptor = "\(name)(\(parameterTypes))"
+        guard descriptors.insert(descriptor).inserted else {
+            try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names")
+        }
+        let endpoint: String
+        switch kind {
+        case .method: endpoint = descriptor
+        case .getter(let property): endpoint = "property:\(property).get"
+        case .setter(let property): endpoint = "property:\(property).set(\(parameterTypes))"
+        }
+        let identity = "schema1|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(outputType)|\(isolation.identity)"
+        members.append(Member(name: name, parameters: parameters, outputType: outputType,
+                              effect: effect, identity: identity,
+                              line: converter.location(for: node.positionAfterSkippingLeadingTrivia).line,
+                              isolation: isolation, kind: kind))
+    }
+
+    func addProperty(_ property: VariableDeclSyntax) throws {
+        guard property.bindingSpecifier.text == "var", property.modifiers.isEmpty,
+              property.attributes.isEmpty, property.bindings.count == 1,
+              let binding = property.bindings.first, binding.initializer == nil,
+              let name = binding.pattern.as(IdentifierPatternSyntax.self)?.identifier.text,
+              simple(name), !["verify", "Stubs", "Verification"].contains(name),
+              let declaredType = binding.typeAnnotation?.type, let type = supportedResult(declaredType),
+              let accessorBlock = binding.accessorBlock,
+              case .accessors(let accessors) = accessorBlock.accessors else {
+            try reject(property, "Use a public protocol property with a supported type and explicit get and optional set accessors")
+        }
+        guard accessors.allSatisfy({ $0.body == nil && $0.attributes.isEmpty && $0.modifiers.isEmpty
+                                     && $0.parameters == nil }),
+              let getter = accessors.first(where: { $0.accessorSpecifier.text == "get" }),
+              accessors.count == 1 || (accessors.count == 2
+                  && accessors.contains(where: { $0.accessorSpecifier.text == "set" })) else {
+            try reject(property, "Only unmodified get and optional set accessors are supported")
+        }
+        let getterEffects = getter.effectSpecifiers
+        let effect = try methodEffect(getterEffects?.asyncSpecifier, getterEffects?.throwsClause, at: getter)
+        let setter = accessors.first(where: { $0.accessorSpecifier.text == "set" })
+        if let setter, effect.isAsync || effect.failure != nil || setter.effectSpecifiers != nil {
+            try reject(setter, "Effectful getters require read-only properties; setters must be synchronous and nonthrowing")
+        }
+        try addMember(name: "get_\(name)", parameters: [], outputType: type,
+                      effect: effect, kind: .getter(name), at: getter)
+        if let setter {
+            try addMember(name: "set_\(name)", parameters: [Parameter(label: "_", type: type)],
+                          outputType: "Void", effect: Effect(isAsync: false, failure: nil),
+                          kind: .setter(name), at: setter)
+        }
+    }
+
     for item in proto.memberBlock.members {
+        if let property = item.decl.as(VariableDeclSyntax.self) {
+            try addProperty(property)
+            continue
+        }
         guard let fn = item.decl.as(FunctionDeclSyntax.self) else {
-            try reject(item, "Only function requirements are supported in this slice")
+            try reject(item, "Only function and property requirements are supported in this slice")
         }
         guard fn.body == nil, fn.attributes.isEmpty, fn.modifiers.isEmpty,
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
@@ -223,38 +314,9 @@ func generate(input: String, module: String, selected: String) throws -> String 
             return Parameter(label: label, type: type)
         }
         let specifiers = fn.signature.effectSpecifiers
-        if let asyncSpecifier = specifiers?.asyncSpecifier, asyncSpecifier.text != "async" {
-            try reject(fn, "Only async method effects are supported")
-        }
-        let isAsync = specifiers?.asyncSpecifier != nil
-        var failure: FailureEffect?
-        if let clause = specifiers?.throwsClause {
-            guard clause.throwsSpecifier.text == "throws" else {
-                try reject(fn, "Rethrows requires a callback-derived error and is not implemented")
-            }
-            if let failureType = clause.type {
-                guard let type = failureType.as(IdentifierTypeSyntax.self),
-                      type.genericArgumentClause == nil, simple(type.name.text),
-                      !["Self", "Stubs", "Verification"].contains(type.name.text) else {
-                    try reject(fn, "Use a named error type; complex error types are not implemented")
-                }
-                failure = type.name.text == "Never" ? .never : .typed(type.name.text)
-            } else {
-                failure = .ordinary
-            }
-        }
-        let effect = Effect(isAsync: isAsync, failure: failure)
-        let name = fn.name.text
-        let parameterTypes = parameters.map { "\($0.label):\($0.type)" }.joined(separator: ",")
-        let descriptor = "\(name)(\(parameterTypes))"
-        guard descriptors.insert(descriptor).inserted else {
-            try reject(fn, "Overloads that differ only by effects or result type require separate descriptor names")
-        }
-        let identity = "schema1|\(module).\(selected)|\(descriptor)\(effect.declaration)->\(outputType)|\(isolation.identity)"
-        members.append(Member(name: name, parameters: parameters, outputType: outputType,
-                              effect: effect, identity: identity,
-                              line: converter.location(for: fn.positionAfterSkippingLeadingTrivia).line,
-                              isolation: isolation))
+        let effect = try methodEffect(specifiers?.asyncSpecifier, specifiers?.throwsClause, at: fn)
+        try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
+                      effect: effect, kind: .method, at: fn)
     }
     guard !members.isEmpty else { try reject(proto, "The selected protocol has no supported requirements") }
     members.sort { $0.identity < $1.identity }
@@ -310,9 +372,30 @@ func generate(input: String, module: String, selected: String) throws -> String 
         output += "        self.__endpoint\(i) = \(m.family)Endpoint(id: EndpointID(\(String(reflecting: m.identity))),\n            configuration: setup\(i).finish(), failureReporter: failureReporter\(mapping))\n"
     }
     output += "    }\n"
-    for (i,m) in members.enumerated() {
-        let file = module + "/" + URL(fileURLWithPath: input).lastPathComponent
-        output += "\n    public func \(m.signature) {\n        \(m.effect.callPrefix)__endpoint\(i).invoke(\(m.invocationInput), source: SourceLocation(fileID: \(String(reflecting: file)), filePath: \(String(reflecting: URL(fileURLWithPath: input).lastPathComponent)), line: \(m.line), column: 1))\n    }\n"
+    let fileName = URL(fileURLWithPath: input).lastPathComponent
+    let fileID = module + "/" + fileName
+    func call(_ index: Int, _ argument: String) -> String {
+        let member = members[index]
+        return "\(member.effect.callPrefix)__endpoint\(index).invoke(\(argument), source: SourceLocation(fileID: \(String(reflecting: fileID)), filePath: \(String(reflecting: fileName)), line: \(member.line), column: 1))"
+    }
+    var setterIndices: [String: Int] = [:]
+    for (i, m) in members.enumerated() {
+        if case .setter(let property) = m.kind { setterIndices[property] = i }
+    }
+    for (i, m) in members.enumerated() {
+        switch m.kind {
+        case .method:
+            output += "\n    public func \(m.signature) {\n        \(call(i, m.invocationInput))\n    }\n"
+        case .getter(let property):
+            output += "\n    public var \(property): \(m.outputType) {\n"
+            output += "        get\(m.effect.declaration) {\n            \(call(i, "()"))\n        }\n"
+            if let setter = setterIndices[property] {
+                output += "        set {\n            \(call(setter, "newValue"))\n        }\n"
+            }
+            output += "    }\n"
+        case .setter:
+            continue
+        }
     }
     return output + "}\n"
 }

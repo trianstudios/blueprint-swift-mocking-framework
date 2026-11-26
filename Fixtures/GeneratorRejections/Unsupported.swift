@@ -1,3 +1,3 @@
 public protocol Unsupported: Sendable {
-    var name: String { get }
+    subscript(index: Int) -> String { get }
 }
