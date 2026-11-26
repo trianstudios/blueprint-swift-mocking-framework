@@ -2,7 +2,7 @@
 import PackageDescription
 let package = Package(
     name: "RuntimeOnly",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v13)],
     dependencies: [.package(name: "BluepringMockingFramework", path: "../..")],
     targets: [.executableTarget(name: "RuntimeOnly", dependencies: [
         .product(name: "BluepringMockingFramework", package: "BluepringMockingFramework")

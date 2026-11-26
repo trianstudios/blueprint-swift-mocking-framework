@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "XCTestConsumer",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v13)],
     dependencies: [.package(name: "BluepringMockingFramework", path: "../..")],
     targets: [
         .target(name: "LookupDomain"),

@@ -126,8 +126,9 @@ private final class MainActorRuleBuilder<Input, Answer> {
 }
 
 private typealias MainActorSyncAnswer<Input, Output> = @MainActor (Input) -> Output
+// Store a Result to backdeploy the typed-throwing registration API.
 private typealias MainActorAsyncAnswer<Input, Output, Failure: Error> =
-    @MainActor (Input) async throws(Failure) -> Output
+    @MainActor (Input) async -> Result<Output, Failure>
 
 @MainActor
 public struct MainActorSyncConfiguration<Input, Output> {
@@ -212,7 +213,7 @@ public final class MainActorAsyncThrowingStubbing<Input, Output, Failure: Error>
     }
 
     fileprivate func add(_ matcher: MainActorMatcher<Input>,
-                         _ answer: @escaping @MainActor (Input) async throws(Failure) -> Output) {
+                         _ answer: @escaping MainActorAsyncAnswer<Input, Output, Failure>) {
         builder.add(matcher, answer: answer)
     }
 
@@ -226,14 +227,17 @@ public struct MainActorAsyncThrowingStub<Input, Output, Failure: Error> {
     fileprivate let owner: MainActorAsyncThrowingStubbing<Input, Output, Failure>
     fileprivate let matcher: MainActorMatcher<Input>
 
-    public func willReturn(_ output: Output) { owner.add(matcher) { _ in output } }
+    public func willReturn(_ output: Output) { owner.add(matcher) { _ in .success(output) } }
 
     public func willThrow(_ error: Failure) {
-        owner.add(matcher) { _ async throws(Failure) in throw error }
+        owner.add(matcher) { _ in .failure(error) }
     }
 
     public func willAnswer(_ answer: @escaping @MainActor (Input) async throws(Failure) -> Output) {
-        owner.add(matcher, answer)
+        owner.add(matcher) { input in
+            do throws(Failure) { return .success(try await answer(input)) }
+            catch { return .failure(error) }
+        }
     }
 }
 
@@ -254,11 +258,11 @@ public final class MainActorAsyncThrowingEndpoint<Input, Output, Failure: Error>
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
         let id = journal.begin(input)
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            do {
-                let result = try await rule.answer(input)
+            switch await rule.answer(input) {
+            case .success(let result):
                 journal.complete(id, phase: .returned)
                 return result
-            } catch {
+            case .failure(let error):
                 journal.complete(id, phase: .threw)
                 throw error
             }

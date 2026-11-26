@@ -157,6 +157,9 @@ def main():
         "--filter", "DX022_intentionalReporterFailure"], fails=True,
         extra_environment={"BLUEPRINT_EXPECT_FAILURE": "1"},
         patterns=[r"ConsumerTests.swift:\d+", r"Expected exactly 1 calls; observed 0"])
+    run("xctest-consumer", [sys.executable, "Fixtures/XCTestConsumer/verify.py"],
+        env=swift_environment, timeout=600,
+        patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines"])
     for label, flag in [("typed", "--missing"), ("sync", "--missing-sync")]:
         fatal_log = run(label + "-missing-terminates", [modules / "consumer-demo", flag],
                         fails=True, patterns=[r"MOCK ISSUE: No matching stub", r"Fatal error: No matching stub"])

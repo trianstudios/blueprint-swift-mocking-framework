@@ -1,5 +1,3 @@
-import Synchronization
-
 // A compile-time generated-code/runtime schema marker. This is not a release version.
 public enum BlueprintRuntimeSchemaV1 {}
 
@@ -118,7 +116,7 @@ private final class Journal<Input: Sendable>: Sendable {
         var calls: [Invocation<Input>] = []
         var issues: [MockIssue] = []
     }
-    private let state = Mutex(State())
+    private let state = CriticalState(State())
     let endpoint: EndpointID
     private let reporter: FailureReporter
     init(endpoint: EndpointID, reporter: FailureReporter) {
@@ -246,18 +244,23 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     public var invocations: [Invocation<Input>] { journal.snapshot().calls }
 }
 
+// Storing a typed-throwing function in a generic rule needs a newer OS runtime.
+// The stored Result preserves the public typed error on the original deployment floors.
+private typealias AsyncAnswer<Input, Output, Failure: Error> =
+    @Sendable (Input) async -> Result<Output, Failure>
+
 public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    fileprivate let rules: [Rule<Input, @Sendable (Input) async throws(Failure) -> Output>]
+    fileprivate let rules: [Rule<Input, AsyncAnswer<Input, Output, Failure>>]
 }
 public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Failure: Error> {
-    private var rules: [Rule<Input, @Sendable (Input) async throws(Failure) -> Output>] = []
+    private var rules: [Rule<Input, AsyncAnswer<Input, Output, Failure>>] = []
     private var finished = false
     public init() {}
     public func matching(_ matcher: Matcher<Input>) -> AsyncThrowingStub<Input, Output, Failure> {
         AsyncThrowingStub(owner: self, matcher: matcher)
     }
     fileprivate func add(_ matcher: Matcher<Input>,
-                         _ answer: @escaping @Sendable (Input) async throws(Failure) -> Output) {
+                         _ answer: @escaping AsyncAnswer<Input, Output, Failure>) {
         precondition(!finished, "Setup is already published; live reconfiguration is not implemented")
         rules.append(Rule(matcher: matcher, answer: answer))
     }
@@ -270,12 +273,15 @@ public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Fail
 public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Error> {
     fileprivate let owner: AsyncThrowingStubbing<Input, Output, Failure>
     fileprivate let matcher: Matcher<Input>
-    public func willReturn(_ output: Output) { owner.add(matcher) { _ in output } }
+    public func willReturn(_ output: Output) { owner.add(matcher) { _ in .success(output) } }
     public func willThrow(_ error: Failure) {
-        owner.add(matcher) { _ async throws(Failure) in throw error }
+        owner.add(matcher) { _ in .failure(error) }
     }
     public func willAnswer(_ answer: @escaping @Sendable (Input) async throws(Failure) -> Output) {
-        owner.add(matcher, answer)
+        owner.add(matcher) { input in
+            do throws(Failure) { return .success(try await answer(input)) }
+            catch { return .failure(error) }
+        }
     }
 }
 
@@ -292,11 +298,11 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
         let id = journal.begin(input)
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            do {
-                let result = try await rule.answer(input)
+            switch await rule.answer(input) {
+            case .success(let result):
                 journal.complete(id, phase: .returned)
                 return result
-            } catch {
+            case .failure(let error):
                 journal.complete(id, phase: .threw)
                 throw error
             }

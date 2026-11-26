@@ -1,11 +1,10 @@
 import Testing
-import Synchronization
 @testable import BlueprintMocking
 
 enum ServiceError: Error, Sendable { case offline }
 
 final class Issues: Sendable {
-    private let state = Mutex<[MockIssue]>([])
+    private let state = CriticalState<[MockIssue]>([])
     var values: [MockIssue] { state.withLock { $0 } }
     var reporter: FailureReporter {
         FailureReporter { [self] issue in state.withLock { $0.append(issue) } }
