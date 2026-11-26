@@ -373,14 +373,18 @@ func generate(
         }
     }
 
+    func isNonmutatingSetter(_ accessor: AccessorDeclSyntax) -> Bool {
+        accessor.accessorSpecifier.text == "set" && accessor.modifiers.map(\.name.text) == ["nonmutating"]
+    }
+
     func getterAndSetter(_ accessors: AccessorDeclListSyntax, at node: some SyntaxProtocol)
         throws -> (AccessorDeclSyntax, AccessorDeclSyntax?) {
         let setter = accessors.first(where: { $0.accessorSpecifier.text == "set" })
-        guard accessors.allSatisfy({ $0.body == nil && $0.attributes.isEmpty && $0.modifiers.isEmpty
-                                     && $0.parameters == nil }),
+        guard accessors.allSatisfy({ $0.body == nil && $0.attributes.isEmpty && $0.parameters == nil
+                                     && ($0.modifiers.isEmpty || isNonmutatingSetter($0)) }),
               let getter = accessors.first(where: { $0.accessorSpecifier.text == "get" }),
               accessors.count == (setter == nil ? 1 : 2) else {
-            try reject(node, "Only unmodified get and optional set accessors are supported")
+            try reject(node, "Use an unmodified getter and an optional unmodified or nonmutating setter")
         }
         return (getter, setter)
     }
@@ -397,8 +401,8 @@ func generate(
             try reject(property, "Use a public protocol property with a supported type and explicit get and optional set accessors")
         }
         let (getter, setter) = try getterAndSetter(accessors, at: property)
-        if spy, let setter {
-            try reject(setter, "Direct spy forwarding of a writable property requires a reference-constrained setter or an explicit adapter")
+        if spy, let setter, !isNonmutatingSetter(setter) {
+            try reject(setter, "Direct spy forwarding of a writable property requires a nonmutating setter or an explicit adapter")
         }
         let getterEffects = getter.effectSpecifiers
         let effect = try methodEffect(getterEffects?.asyncSpecifier, getterEffects?.throwsClause, at: getter)
@@ -475,8 +479,8 @@ func generate(
             guard decl.genericParameterClause == nil, decl.genericWhereClause == nil else {
                 try reject(decl, "Direct spy forwarding for a generic subscript requires a polymorphic provider")
             }
-            if let setter {
-                try reject(setter, "Direct spy forwarding of a writable subscript requires a reference-constrained setter or an explicit adapter")
+            if let setter, !isNonmutatingSetter(setter) {
+                try reject(setter, "Direct spy forwarding of a writable subscript requires a nonmutating setter or an explicit adapter")
             }
         }
         let effects = getter.effectSpecifiers
@@ -815,16 +819,28 @@ func generate(
     }
     output += "        configure(Stubs(" + instanceIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
     func spyForwardingArgument(_ member: Member) -> String {
+        func inputExpression(_ index: Int) -> String {
+            member.parameters.count == 1 ? "input" : "input.\(index)"
+        }
         let arguments = member.parameters.enumerated().map { index, parameter in
-            let value = member.parameters.count == 1 ? "input" : "input.\(index)"
+            let value = inputExpression(index)
             return parameter.label == "_" ? value : "\(parameter.label): \(value)"
-        }.joined(separator: ", ")
+        }
         let call: String
         switch member.kind {
-        case .method: call = "target.\(member.name)(\(arguments))"
-        case .getter(let property): call = "target.\(property)"
-        case .subscriptGetter: call = "target[\(arguments)]"
-        default: preconditionFailure("The spy profile filters unsupported witnesses before emission")
+        case .method:
+            call = "target.\(member.name)(\(arguments.joined(separator: ", ")))"
+        case .getter(let property):
+            call = "target.\(property)"
+        case .setter(let property):
+            call = "target.\(property) = input"
+        case .subscriptGetter:
+            call = "target[\(arguments.joined(separator: ", "))]"
+        case .subscriptSetter:
+            let indices = arguments.dropLast().joined(separator: ", ")
+            call = "target[\(indices)] = \(inputExpression(member.parameters.count - 1))"
+        default:
+            preconditionFailure("The spy profile filters unsupported witnesses before emission")
         }
         let input = member.parameters.isEmpty ? "_" : "input"
         let isolationAttribute = isolation == .sendable ? "@Sendable" : "@MainActor"

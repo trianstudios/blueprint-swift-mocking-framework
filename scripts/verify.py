@@ -154,6 +154,14 @@ def main():
     actor_spy_source = source.with_name("ActorSpyDirectory.swift")
     actor_spy_generated = generated.with_name("ActorSpyDirectoryMock.swift")
     run("actor-spy-generation", generate(tool, actor_spy_source, actor_spy_generated, "ActorSpyDirectory", spy=True))
+    writable_spies = [
+        ("writable-spy", "WritableSpyDirectory"),
+        ("actor-writable-spy", "ActorWritableSpyDirectory"),
+    ]
+    for check, protocol in writable_spies:
+        run(check + "-generation", generate(
+            tool, source.with_name(protocol + ".swift"), generated.with_name(protocol + "Mock.swift"),
+            protocol, spy=True))
     type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
     run("type-subscript-generation", generate(
@@ -209,6 +217,11 @@ def main():
     repeated_actor_spy = temp / "RepeatedActorSpy.swift"
     run("actor-spy-generation-repeat", generate(tool, actor_spy_source, repeated_actor_spy, "ActorSpyDirectory", spy=True))
     assert actor_spy_generated.read_bytes() == repeated_actor_spy.read_bytes()
+    for check, protocol in writable_spies:
+        repeated = temp / ("Repeated" + protocol + ".swift")
+        run(check + "-generation-repeat", generate(
+            tool, source.with_name(protocol + ".swift"), repeated, protocol, spy=True))
+        assert generated.with_name(protocol + "Mock.swift").read_bytes() == repeated.read_bytes()
     repeated_type_subscript = temp / "RepeatedTypeSubscript.swift"
     run("type-subscript-generation-repeat", generate(
         tool, type_subscript_source, repeated_type_subscript, "TypeSubscriptDirectory"))
@@ -298,8 +311,8 @@ def main():
     spy_callback.write_text("public protocol CallbackSpy: Sendable { func apply(_ block: (Int) -> Int) }\n")
     spy_rejections = (
         ("variadic", variadic_source, "VariadicDirectory", (), "cannot splat a Swift variadic argument"),
-        ("writable-property", property_source, "PropertyDirectory", (), "writable property requires a reference-constrained setter"),
-        ("writable-subscript", subscript_source, "SubscriptDirectory", (), "writable subscript requires a reference-constrained setter"),
+        ("writable-property", property_source, "PropertyDirectory", (), "writable property requires a nonmutating setter"),
+        ("writable-subscript", subscript_source, "SubscriptDirectory", (), "writable subscript requires a nonmutating setter"),
         ("static", type_subscript_source, "TypeSubscriptDirectory", (), "use a metatype seam"),
         ("generic", generic_subscript_source, "GenericSubscriptDirectory", (), "requires a polymorphic provider"),
         ("projection", spy_source, "SpyDirectory", ("display(for:)",), "cannot be combined with projections"),
