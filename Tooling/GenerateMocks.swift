@@ -296,11 +296,10 @@ func generate(
             let isVariadic = parameter.ellipsis != nil
             guard let type = supportedType(parameter.type),
                   parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
-                  !forSubscript || !isVariadic, parameter.defaultValue == nil,
+                  parameter.defaultValue == nil,
                   simple(label) || label == "_" else {
                 let subject = forSubscript ? "Subscript indices require" : "Use"
-                let exclusions = forSubscript ? "ownership, variadics or default values" : "ownership or default values"
-                try reject(parameter, "\(subject) named, optional, array or dictionary parameter types without \(exclusions)")
+                try reject(parameter, "\(subject) named, optional, array or dictionary parameter types without ownership or default values")
             }
             return Parameter(label: label, type: type, isVariadic: isVariadic)
         }
@@ -363,7 +362,7 @@ func generate(
         if let setter, effect.isAsync || effect.failure != nil || setter.effectSpecifiers != nil {
             try reject(setter, "Effectful subscript getters require read-only subscripts; setters must be synchronous and nonthrowing")
         }
-        let identity = "(" + indices.map { "\($0.label):\($0.type)" }.joined(separator: ",") + ")"
+        let identity = "(" + indices.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",") + ")"
         try addMember(name: "get_subscript", parameters: indices, outputType: output, effect: effect,
                       kind: .subscriptGetter(identity), at: getter)
         if let setter {

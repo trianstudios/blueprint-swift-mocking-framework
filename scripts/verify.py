@@ -144,6 +144,10 @@ def main():
     effectful_subscript_generated = generated.with_name("EffectfulSubscriptDirectoryMock.swift")
     run("effectful-subscript-generation", generate(
         tool, effectful_subscript_source, effectful_subscript_generated, "EffectfulSubscriptDirectory"))
+    variadic_subscript_source = source.with_name("VariadicSubscriptDirectory.swift")
+    variadic_subscript_generated = generated.with_name("VariadicSubscriptDirectoryMock.swift")
+    run("variadic-subscript-generation", generate(
+        tool, variadic_subscript_source, variadic_subscript_generated, "VariadicSubscriptDirectory"))
     variadic_source = source.with_name("VariadicDirectory.swift")
     variadic_generated = generated.with_name("VariadicDirectoryMock.swift")
     variadic_forwarding = ("sample(_:)", "names(in:ids:fallback:)")
@@ -175,6 +179,10 @@ def main():
     run("subscript-label-normalization", generate(
         tool, relocated_subscript, repeated_subscript, "SubscriptDirectory"))
     assert subscript_generated.read_bytes() == repeated_subscript.read_bytes()
+    repeated_variadic_subscript = temp / "RepeatedVariadicSubscript.swift"
+    run("variadic-subscript-generation-repeat", generate(
+        tool, variadic_subscript_source, repeated_variadic_subscript, "VariadicSubscriptDirectory"))
+    assert variadic_subscript_generated.read_bytes() == repeated_variadic_subscript.read_bytes()
     repeated_variadic = temp / "RepeatedVariadic.swift"
     run("variadic-generation-repeat", generate(
         tool, variadic_source, repeated_variadic, "VariadicDirectory",
@@ -264,7 +272,8 @@ def main():
         "StaticSubscript": r"Static and class subscripts require a scoped type-level adapter",
         "EffectfulSubscriptSetter": r"Effectful subscript getters require read-only subscripts",
         "BorrowingSubscript": r"Subscript indices require.*without ownership",
-        "VariadicSubscript": r"Subscript indices require.*without ownership, variadics",
+        "VariadicSubscript": r"Static and class subscripts require a scoped type-level adapter",
+        "VariadicSubscriptDescriptorCollision": r"Variadic overloads with identical lowered matcher signatures",
         "VariadicDescriptorCollision": r"Variadic overloads with identical lowered matcher signatures",
         "SubscriptDescriptorCollision": r"methods that collide with accessor descriptors",
     }
@@ -334,6 +343,8 @@ def main():
         "SubscriptThrowForSetter": r"has no member 'willThrow'",
         "SubscriptWrongTypedError": r"cannot convert value of type 'WrongSubscriptFailure' to expected argument type 'EffectfulSubscriptFailure'",
         "SubscriptWriteReadonly": r"subscript is get-only",
+        "VariadicSubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
+        "VariadicSubscriptArraySplat": r"cannot pass array of type '\[Int\]' as variadic arguments of type 'Int'",
         "VariadicWrongElement": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "VariadicForwardingWrongArray": r"cannot convert value of type 'Int.Type' to expected argument type '\[Int\].Type'",
         "VariadicForwardingWrongError": r"invalid conversion of thrown error type 'ForeignAdapterFailure' to 'VariadicFailure'",
@@ -413,6 +424,7 @@ def main():
         "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
         "subscriptGeneratedSHA256": hashlib.sha256(subscript_generated.read_bytes()).hexdigest(),
         "effectfulSubscriptGeneratedSHA256": hashlib.sha256(effectful_subscript_generated.read_bytes()).hexdigest(),
+        "variadicSubscriptGeneratedSHA256": hashlib.sha256(variadic_subscript_generated.read_bytes()).hexdigest(),
         "variadicGeneratedSHA256": hashlib.sha256(variadic_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }

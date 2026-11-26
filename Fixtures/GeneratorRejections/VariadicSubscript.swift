@@ -1,3 +1,3 @@
 public protocol VariadicSubscript: Sendable {
-    subscript(_ indices: Int...) -> String { get }
+    static subscript(_ indices: Int...) -> String { get }
 }
