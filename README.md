@@ -118,7 +118,7 @@ python3 scripts/verify_offline_runtime.py "$revision" \
   --evidence-dir "$artifact_dir/offline-runtime"
 ```
 
-The verifier isolates SwiftPM caches and mirror configuration, confirms OS-level network denial, then resolves, builds and runs the typed consumer. It checks Mach-O libraries and static link inputs for the runtime-only dependency boundary. Set `BLUEPRINT_VERIFY_OFFLINE_RUNTIME_MIRROR` to the same mirror path when running `scripts/verify.py` from a clean checkout to collect the named check with the rest of the prototype evidence.
+The verifier checks the bare Git mirror's object integrity before changing evidence or invoking SwiftPM. It isolates SwiftPM caches and mirror configuration, confirms OS-level network denial, then resolves, builds and runs the typed consumer. It checks Mach-O libraries and static link inputs for the runtime-only dependency boundary. Set `BLUEPRINT_VERIFY_OFFLINE_RUNTIME_MIRROR` to the same mirror path when running `scripts/verify.py` from a clean checkout to collect the offline install and corrupt-object rejection checks with the rest of the prototype evidence.
 
 ### Standalone generation
 

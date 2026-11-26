@@ -148,7 +148,15 @@ DX-001 and SYS-003 have native evidence for a clean SwiftPM runtime consumer at 
 
 Before resolving, the verifier connects to a local test listener and then requires a child-reported permission error under the same macOS policy used to resolve, build and run. The executable's Mach-O load commands identify macOS 13.0 as the deployment target. Dynamic library inspection excludes parser, generator and reporter libraries, and the native SwiftPM link-input file lists only the compiled core and consumer objects. The verifier selects the native build system to inspect these original link inputs. The runtime smoke fixture configures a typed stub, invokes it and verifies the call.
 
-The local evidence uses Apple Swift 6.4 on arm64 macOS. The report records the selected compiler, SDK, host build, Git revision, network probe, executable hash and evidence digests. The main verifier captures the report's SHA-256. Additional native profiles and maintainer review remain. The wider DX-020 contract still requires network-blocked generation, artifact-class corruption cases and trusted release provenance. The SwiftSyntax cache contains the pinned 600.0.1 source mirror. Packaged parser compilation and parity require a prepared compiled cache or a separate build host.
+The local evidence uses Apple Swift 6.4 on arm64 macOS. The report records the selected compiler, SDK, host build, Git revision, network probe, executable hash and evidence digests. The main verifier captures the report's SHA-256. Additional native profiles and maintainer review remain. The wider DX-020 contract still requires network-blocked generation, the remaining artifact-class corruption cases and trusted release provenance. The SwiftSyntax cache contains the pinned 600.0.1 source mirror. Packaged parser compilation and parity require a prepared compiled cache or a separate build host.
+
+## Git mirror integrity before SwiftPM consumption
+
+The offline runtime installer checks the prepared Git object store before choosing a Swift toolchain, probing the network, or changing evidence. Full strict Git verification checks object integrity and connectivity. Replacement refs and lazy fetches are disabled for the file-only lane. A valid mirror still resolves, builds and runs offline as described above. [Git object verification](https://git-scm.com/docs/git-fsck)
+
+The DX-020 corruption fixture copies the pinned commit graph into a disposable bare mirror and changes a readable `Package.swift` blob under its original object path. The commit and manifest object IDs seen from the commit remain unchanged. Before the integrity check, the real installer accepted this mirror and built the consumer. It now rejects the same mutation at the Git check and leaves the prior valid consumer report unchanged. The named `reject-runtime-mirror-corruption` result binds the rejection log and original and altered manifest digests to the exact input revision.
+
+This verifies a prepared local Git mirror against the expected commit. Publisher authentication, other artifact classes and cross-host qualification retain their own gates.
 
 ## Same-module protocol inheritance
 

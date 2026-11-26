@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import zlib
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -108,6 +109,29 @@ class MirrorRevisionTests(unittest.TestCase):
             with self.subTest(revision=revision), self.assertRaises(ValueError):
                 validate_mirror_revision(self.mirror, revision, self.environment)
 
+    def test_rejects_hash_mismatched_blob_under_a_present_commit(self):
+        with tempfile.TemporaryDirectory(prefix="Corrupted Runtime Mirror ") as directory:
+            mirror = Path(directory) / "Runtime.git"
+            self.git("clone", "--bare", "--local", "--no-hardlinks", "--quiet", str(self.source), str(mirror))
+            loose_blob = mirror / "objects" / self.blob[:2] / self.blob[2:]
+            header, payload = zlib.decompress(loose_blob.read_bytes()).split(b"\0", 1)
+            damaged_payload = b"modified source\n"
+            self.assertEqual(header, f"blob {len(damaged_payload)}".encode())
+            self.assertNotEqual(payload, damaged_payload)
+            replacement = mirror / "tampered-blob"
+            replacement.write_bytes(zlib.compress(header + b"\0" + damaged_payload))
+            replacement.replace(loose_blob)
+
+            git = ["git", "-C", str(mirror), "cat-file"]
+            self.assertEqual(subprocess.check_output(
+                [*git, "-t", self.revision], env=self.environment, timeout=10,
+            ), b"commit\n")
+            self.assertEqual(subprocess.check_output(
+                [*git, "blob", self.blob], env=self.environment, timeout=10,
+            ), damaged_payload)
+            with self.assertRaisesRegex(ValueError, r"^Runtime mirror failed Git object integrity check"):
+                validate_mirror_revision(mirror, self.revision, self.environment)
+
     def test_exact_fixture_reads_ignore_replacement_refs(self):
         (self.source / "fixture.txt").write_text("replacement source\n", encoding="utf-8")
         self.git("add", "fixture.txt")
@@ -130,6 +154,7 @@ class OfflineGitEnvironmentTests(unittest.TestCase):
             "GIT_ALLOW_PROTOCOL": "file",
             "GIT_PROTOCOL_FROM_USER": "0",
             "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_NO_LAZY_FETCH": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_TERMINAL_PROMPT": "0",

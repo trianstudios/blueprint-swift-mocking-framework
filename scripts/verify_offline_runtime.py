@@ -34,6 +34,7 @@ def offline_git_environment(environment):
         "GIT_ALLOW_PROTOCOL": "file",
         "GIT_PROTOCOL_FROM_USER": "0",
         "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_NO_LAZY_FETCH": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_TERMINAL_PROMPT": "0",
@@ -49,6 +50,14 @@ def validate_mirror_revision(mirror, revision, environment):
         raise ValueError("The prepared runtime mirror must contain the exact commit") from error
     if bare != "true" or kind != "commit":
         raise ValueError("The prepared runtime mirror must be bare and contain the exact commit")
+    integrity = subprocess.run(
+        ["git", "-C", str(mirror), "fsck", "--full", "--strict", "--no-reflogs", "--no-dangling",
+         "--no-progress", revision],
+        env=environment | {"LC_ALL": "C"}, capture_output=True, timeout=60,
+    )
+    if integrity.returncode:
+        detail = (integrity.stderr or integrity.stdout).decode(errors="replace").strip()[:4000]
+        raise ValueError(f"Runtime mirror failed Git object integrity check for {revision}: {detail}")
 
 
 def validate_network_probe(allowed, blocked):
@@ -114,12 +123,15 @@ def checked(command, environment, log):
 def verify(repository, revision, mirror, evidence):
     if sys.platform != "darwin":
         raise ValueError("This runtime qualification requires the macOS network sandbox and Mach-O tools")
+    validate_mirror_revision(mirror, revision, offline_git_environment(os.environ))
     swift, environment = swift_toolchain()
     environment = offline_git_environment(environment)
-    validate_mirror_revision(mirror, revision, environment)
     network = probe_network(environment)
 
     lane = "runtime-only-offline"
+    evidence.mkdir(parents=True, exist_ok=True)
+    report_path = evidence / f"{lane}-report.json"
+    report_path.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="Offline Runtime ", dir=evidence) as temporary:
         root = Path(temporary)
         alias = root / f"{PACKAGE_ID}.git"
@@ -186,16 +198,16 @@ def verify(repository, revision, mirror, evidence):
             "buildSystem": "native",
             "languageMode": "6",
             "gitTransport": "file-only",
+            "gitObjectIntegrity": "git fsck --full --strict",
             "networkPolicy": NETWORK_PROFILE,
             "networkProbe": network,
             "executableSHA256": hashlib.sha256(executable.read_bytes()).hexdigest(),
             "artifacts": hashes,
         }
-        path = evidence / f"{lane}-report.json"
-        path.write_text(json.dumps(report, indent=2) + "\n")
+        report_path.write_text(json.dumps(report, indent=2) + "\n")
     print("PASS: runtime-only consumer resolved, built and ran from its exact mirror with networking denied")
     print("PASS: runtime-only linkage contains only core and consumer objects")
-    print(f"EVIDENCE: {path.name} SHA-256 {hashlib.sha256(path.read_bytes()).hexdigest()}")
+    print(f"EVIDENCE: {report_path.name} SHA-256 {hashlib.sha256(report_path.read_bytes()).hexdigest()}")
 
 
 def main():
@@ -207,8 +219,6 @@ def main():
     args = parser.parse_args()
     try:
         evidence = args.evidence_dir.resolve()
-        evidence.mkdir(parents=True, exist_ok=True)
-        (evidence / "runtime-only-offline-report.json").unlink(missing_ok=True)
         verify(args.repository.resolve(strict=True), args.revision, args.runtime_mirror.resolve(strict=True), evidence)
         return 0
     except (OSError, KeyError, ValueError, RuntimeError, subprocess.SubprocessError) as error:

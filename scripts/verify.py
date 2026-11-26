@@ -1236,6 +1236,13 @@ def main():
             patterns=[r"PASS: runtime-only consumer resolved, built and ran from its exact mirror with networking denied",
                       r"PASS: runtime-only linkage contains only core and consumer objects",
                       r"EVIDENCE: runtime-only-offline-report\.json SHA-256 [0-9a-f]{64}"])
+        run("reject-runtime-mirror-corruption", [
+            sys.executable, "scripts/verify_runtime_mirror_integrity.py", source_before["revision"],
+            "--runtime-mirror", offline_runtime_mirror, "--evidence-dir", EVIDENCE,
+            "--valid-report", EVIDENCE / "runtime-only-offline-report.json",
+        ], env=swift_environment, timeout=240,
+            patterns=[r"PASS: pinned corrupt runtime mirror rejected before SwiftPM consumption and prior evidence preserved",
+                      r"EVIDENCE: runtime-mirror-corruption-report\.json SHA-256 [0-9a-f]{64}"])
 
     check_swiftpm_plugin = os.environ.get("BLUEPRINT_VERIFY_SWIFTPM_PLUGIN") == "1"
     if check_swiftpm_plugin:
