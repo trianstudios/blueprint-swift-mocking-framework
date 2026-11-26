@@ -109,6 +109,9 @@ def main():
     property_generated = generated.with_name("PropertyDirectoryMock.swift")
     run("property-accessors-generation",
         generate(tool, property_source, property_generated, "PropertyDirectory"))
+    subscript_source = source.with_name("SubscriptDirectory.swift")
+    subscript_generated = generated.with_name("SubscriptDirectoryMock.swift")
+    run("subscript-generation", generate(tool, subscript_source, subscript_generated, "SubscriptDirectory"))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -124,6 +127,13 @@ def main():
         "func greeting(for name: String)", "func   greeting( for name : String )"))
     run("generation-whitespace", generate(tool, relocated_source, temp / "Whitespace.swift"))
     assert baseline == (temp / "Whitespace.swift").read_bytes()
+    relocated_subscript = relocated / subscript_source.name
+    relocated_subscript.write_text(subscript_source.read_text().replace(
+        "subscript(row: Int, column: Int)", "subscript(_ renamedRow: Int, _ renamedColumn: Int)"))
+    repeated_subscript = temp / "RepeatedSubscript.swift"
+    run("subscript-label-normalization", generate(
+        tool, relocated_subscript, repeated_subscript, "SubscriptDirectory"))
+    assert subscript_generated.read_bytes() == repeated_subscript.read_bytes()
     projection_protocol = "GeneratedProjectionDirectory"
     projection_source = source.with_name(projection_protocol + ".swift")
     projection_output = generated.with_name(projection_protocol + "ProjectedMock.swift")
@@ -167,6 +177,12 @@ def main():
         "DescriptorCollision": r"Overloads that differ only by effects or result type",
         "UnsupportedEffect": r"Rethrows requires a callback-derived error",
         "EffectfulSetter": r"Effectful getters require read-only properties",
+        "GenericSubscript": r"Generic subscripts require explicit specialization support",
+        "StaticSubscript": r"Static and class subscripts require a scoped type-level adapter",
+        "EffectfulSubscriptSetter": r"Effectful subscript getters require read-only subscripts",
+        "BorrowingSubscript": r"Subscript indices require.*without ownership",
+        "VariadicSubscript": r"Subscript indices require.*without ownership, variadics",
+        "SubscriptDescriptorCollision": r"methods that collide with accessor descriptors",
     }
     for rejection in sorted((ROOT / "Fixtures/GeneratorRejections").glob("*.swift")):
         output = temp / "Rejected.swift"
@@ -203,6 +219,10 @@ def main():
         "ThrowForNever": r"has no member 'willThrow'",
         "ValueForNever": r"cannot convert value of type 'String'.*'Never'",
         "AsyncAnswerForSyncThrowing": r"to parameter expecting synchronous function type",
+        "SubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
+        "SubscriptWrongNewValue": r"cannot convert value of type 'Int' to expected argument type 'String'",
+        "SubscriptWrongGetterResult": r"cannot convert value of type 'Int' to expected argument type 'String'",
+        "SubscriptThrowForSetter": r"has no member 'willThrow'",
     }
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
         compiler_stage = ["-typecheck"]
@@ -267,6 +287,7 @@ def main():
         "parameterListGeneratedSHA256": hashlib.sha256(parameter_generated.read_bytes()).hexdigest(),
         "structuralTypesGeneratedSHA256": hashlib.sha256(structural_generated.read_bytes()).hexdigest(),
         "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
+        "subscriptGeneratedSHA256": hashlib.sha256(subscript_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")

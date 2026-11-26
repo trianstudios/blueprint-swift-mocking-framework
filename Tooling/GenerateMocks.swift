@@ -73,6 +73,8 @@ enum WitnessKind {
     case method
     case getter(String)
     case setter(String)
+    case subscriptGetter(String)
+    case subscriptSetter(String)
 }
 struct Member {
     let name: String
@@ -109,16 +111,22 @@ struct Member {
         parameters.count == 1 ? "matcher" : "matcher\(index)"
     }
 
-    var signature: String {
-        let declaration = parameters.enumerated().map { index, parameter in
+    var parameterDeclaration: String {
+        parameters.enumerated().map { index, parameter in
             "\(parameter.label) \(argumentName(index)): \(parameter.type)"
         }.joined(separator: ", ")
-        return "\(name)(\(declaration))\(effect.declaration) -> \(outputType)"
     }
 
+    var signature: String {
+        "\(name)(\(parameterDeclaration))\(effect.declaration) -> \(outputType)"
+    }
+
+    var invocationArguments: [String] { parameters.indices.map(argumentName) }
+
     var invocationInput: String {
-        if parameters.count == 1 { return argumentName(0) }
-        return "(" + parameters.indices.map(argumentName).joined(separator: ", ") + ")"
+        let arguments = invocationArguments
+        if arguments.count == 1 { return arguments[0] }
+        return "(" + arguments.joined(separator: ", ") + ")"
     }
 
     private var descriptorParameters: [String] {
@@ -252,12 +260,43 @@ func generate(input: String, module: String, selected: String, projections: [Str
         case .method: endpoint = descriptor
         case .getter(let property): endpoint = "property:\(property).get"
         case .setter(let property): endpoint = "property:\(property).set(\(parameterTypes))"
+        case .subscriptGetter(let indices): endpoint = "subscript:\(indices).get"
+        case .subscriptSetter(let indices): endpoint = "subscript:\(indices).set(\(parameterTypes))"
         }
         let identity = "schema1|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(outputType)|\(isolation.identity)"
         members.append(Member(name: name, parameters: parameters, outputType: outputType,
                               effect: effect, identity: identity,
                               line: converter.location(for: node.positionAfterSkippingLeadingTrivia).line,
                               isolation: isolation, kind: kind))
+    }
+
+    func parseParameters(
+        _ parameters: FunctionParameterListSyntax, forSubscript: Bool = false
+    ) throws -> [Parameter] {
+        try parameters.map { parameter in
+            // A single name on a subscript index is local. A method's is external.
+            let label = forSubscript && parameter.secondName == nil ? "_" : parameter.firstName.text
+            guard let type = supportedType(parameter.type),
+                  parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+                  parameter.ellipsis == nil, parameter.defaultValue == nil,
+                  simple(label) || label == "_" else {
+                let subject = forSubscript ? "Subscript indices require" : "Use"
+                try reject(parameter, "\(subject) named, optional, array or dictionary parameter types without ownership, variadics or default values")
+            }
+            return Parameter(label: label, type: type)
+        }
+    }
+
+    func getterAndSetter(_ accessors: AccessorDeclListSyntax, at node: some SyntaxProtocol)
+        throws -> (AccessorDeclSyntax, AccessorDeclSyntax?) {
+        let setter = accessors.first(where: { $0.accessorSpecifier.text == "set" })
+        guard accessors.allSatisfy({ $0.body == nil && $0.attributes.isEmpty && $0.modifiers.isEmpty
+                                     && $0.parameters == nil }),
+              let getter = accessors.first(where: { $0.accessorSpecifier.text == "get" }),
+              accessors.count == (setter == nil ? 1 : 2) else {
+            try reject(node, "Only unmodified get and optional set accessors are supported")
+        }
+        return (getter, setter)
     }
 
     func addProperty(_ property: VariableDeclSyntax) throws {
@@ -271,16 +310,9 @@ func generate(input: String, module: String, selected: String, projections: [Str
               case .accessors(let accessors) = accessorBlock.accessors else {
             try reject(property, "Use a public protocol property with a supported type and explicit get and optional set accessors")
         }
-        guard accessors.allSatisfy({ $0.body == nil && $0.attributes.isEmpty && $0.modifiers.isEmpty
-                                     && $0.parameters == nil }),
-              let getter = accessors.first(where: { $0.accessorSpecifier.text == "get" }),
-              accessors.count == 1 || (accessors.count == 2
-                  && accessors.contains(where: { $0.accessorSpecifier.text == "set" })) else {
-            try reject(property, "Only unmodified get and optional set accessors are supported")
-        }
+        let (getter, setter) = try getterAndSetter(accessors, at: property)
         let getterEffects = getter.effectSpecifiers
         let effect = try methodEffect(getterEffects?.asyncSpecifier, getterEffects?.throwsClause, at: getter)
-        let setter = accessors.first(where: { $0.accessorSpecifier.text == "set" })
         if let setter, effect.isAsync || effect.failure != nil || setter.effectSpecifiers != nil {
             try reject(setter, "Effectful getters require read-only properties; setters must be synchronous and nonthrowing")
         }
@@ -293,13 +325,49 @@ func generate(input: String, module: String, selected: String, projections: [Str
         }
     }
 
+    func addSubscript(_ decl: SubscriptDeclSyntax) throws {
+        guard decl.genericParameterClause == nil, decl.genericWhereClause == nil else {
+            try reject(decl, "Generic subscripts require explicit specialization support")
+        }
+        guard !decl.modifiers.contains(where: { ["static", "class"].contains($0.name.text) }) else {
+            try reject(decl, "Static and class subscripts require a scoped type-level adapter")
+        }
+        guard decl.modifiers.isEmpty, decl.attributes.isEmpty,
+              let output = supportedResult(decl.returnClause.type),
+              let accessorBlock = decl.accessorBlock, case .accessors(let accessors) = accessorBlock.accessors else {
+            try reject(decl, "Use an unmodified instance subscript with a supported result and explicit get and optional set accessors")
+        }
+        let indices = try parseParameters(decl.parameterClause.parameters, forSubscript: true)
+        let (getter, setter) = try getterAndSetter(accessors, at: decl)
+        let effects = getter.effectSpecifiers
+        let effect = try methodEffect(effects?.asyncSpecifier, effects?.throwsClause, at: getter)
+        if let setter, effect.isAsync || effect.failure != nil || setter.effectSpecifiers != nil {
+            try reject(setter, "Effectful subscript getters require read-only subscripts; setters must be synchronous and nonthrowing")
+        }
+        if effect.isAsync || effect.failure != nil {
+            try reject(getter, "Effectful subscript getters are not implemented in the synchronous subscript profile")
+        }
+        let identity = "(" + indices.map { "\($0.label):\($0.type)" }.joined(separator: ",") + ")"
+        try addMember(name: "get_subscript", parameters: indices, outputType: output, effect: effect,
+                      kind: .subscriptGetter(identity), at: getter)
+        if let setter {
+            let parameters = indices + [Parameter(label: "newValue", type: output)]
+            try addMember(name: "set_subscript", parameters: parameters, outputType: "Void",
+                          effect: Effect(isAsync: false, failure: nil), kind: .subscriptSetter(identity), at: setter)
+        }
+    }
+
     for item in proto.memberBlock.members {
+        if let decl = item.decl.as(SubscriptDeclSyntax.self) {
+            try addSubscript(decl)
+            continue
+        }
         if let property = item.decl.as(VariableDeclSyntax.self) {
             try addProperty(property)
             continue
         }
         guard let fn = item.decl.as(FunctionDeclSyntax.self) else {
-            try reject(item, "Only function and property requirements are supported in this slice")
+            try reject(item, "Only function, property and instance subscript requirements are supported in this slice")
         }
         guard fn.body == nil, fn.attributes.isEmpty, fn.modifiers.isEmpty,
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
@@ -307,16 +375,7 @@ func generate(input: String, module: String, selected: String, projections: [Str
               let outputType = supportedResult(fn.signature.returnClause?.type) else {
             try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
         }
-        let parameters = try fn.signature.parameterClause.parameters.map { parameter in
-            let label = parameter.firstName.text
-            guard let type = supportedType(parameter.type),
-                  parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
-                  parameter.ellipsis == nil, parameter.defaultValue == nil,
-                  simple(label) || label == "_" else {
-                try reject(parameter, "Use named, optional, array or dictionary parameter types without ownership, variadics or default values")
-            }
-            return Parameter(label: label, type: type)
-        }
+        let parameters = try parseParameters(fn.signature.parameterClause.parameters)
         let specifiers = fn.signature.effectSpecifiers
         let effect = try methodEffect(specifiers?.asyncSpecifier, specifiers?.throwsClause, at: fn)
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
@@ -325,8 +384,10 @@ func generate(input: String, module: String, selected: String, projections: [Str
     guard !members.isEmpty else { try reject(proto, "The selected protocol has no supported requirements") }
     members.sort { $0.identity < $1.identity }
     var setterIndices: [String: Int] = [:]
+    var subscriptSetters: [String: Int] = [:]
     for (i, m) in members.enumerated() {
         if case .setter(let property) = m.kind { setterIndices[property] = i }
+        if case .subscriptSetter(let indices) = m.kind { subscriptSetters[indices] = i }
     }
     var projectedIndices = Set<Int>()
     for selector in projections {
@@ -494,7 +555,15 @@ func generate(input: String, module: String, selected: String, projections: [Str
                 output += "        set {\n            \(call(setter, "newValue"))\n        }\n"
             }
             output += "    }\n"
-        case .setter:
+        case .subscriptGetter(let indices):
+            output += "\n    public subscript(\(m.parameterDeclaration)) -> \(m.outputType) {\n"
+            output += "        get\(m.effect.declaration) {\n            \(call(i, m.invocationInput))\n        }\n"
+            if let setter = subscriptSetters[indices] {
+                let arguments = "(" + (m.invocationArguments + ["newValue"]).joined(separator: ", ") + ")"
+                output += "        set {\n            \(call(setter, arguments))\n        }\n"
+            }
+            output += "    }\n"
+        case .setter, .subscriptSetter:
             continue
         }
     }
