@@ -31,8 +31,8 @@ def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
         raise RuntimeError(name)
     return output
 
-def generate(tool, source, output, selected="UserRepository", projections=()):
-    arguments = [tool, "--input", source, "--module", "ConsumerDomain",
+def generate(tool, source, output, selected="UserRepository", projections=(), *, module="ConsumerDomain"):
+    arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
         arguments.extend(["--project", projection])
@@ -197,6 +197,29 @@ def main():
         run("reject-" + rejection.stem, generate(tool, rejection, output, rejection.stem),
             fails=True, patterns=rejection_patterns)
         assert output.read_text() == "sentinel: preserve the previous generation\n"
+    mapper_fixture = ROOT / "Fixtures/FailureMappingConsumer"
+    mapper_tests = "Tests/FailureMappingProbeTests/FailureMappingTests.swift"
+    baseline_probe = (mapper_fixture / "Variants/A/Probe.swift").read_text()
+    updated_probe = (mapper_fixture / "Variants/B/Probe.swift").read_text()
+    inserted_member = "    func alpha() throws(ProbeFailure) -> String\n"
+    assert updated_probe.count(inserted_member) == 1
+    assert updated_probe.replace(inserted_member, "", 1) == baseline_probe
+    for label in ("A", "B"):
+        package = temp / ("failure-mapping-" + label)
+        probe = package / "Sources/ProbeDomain/Probe.swift"
+        double = package / "Sources/ProbeDoubles/ProbeMock.swift"
+        test_code = package / mapper_tests
+        for path in (probe, double, test_code):
+            path.parent.mkdir(parents=True, exist_ok=True)
+        (package / "Package.swift").write_bytes((mapper_fixture / "Package.swift").read_bytes())
+        probe.write_bytes((mapper_fixture / "Variants" / label / "Probe.swift").read_bytes())
+        test_code.write_bytes((mapper_fixture / mapper_tests).read_bytes())
+        run("failure-mapping-generation-" + label, generate(tool, probe, double, "Probe", module="ProbeDomain"))
+        assert not re.search(r"failureMapping[0-9]+:", double.read_text())
+        run_swift("failure-mapping-consumer-" + label, ["test", "--jobs", "4", "--package-path", package],
+                  extra_environment={"BLUEPRINT_FAILURE_MAPPING_FRAMEWORK_PATH": str(ROOT)},
+                  patterns=[r"GEN007_namedFailureMappingKeepsTheOriginalEndpointAcrossRegeneration\(\) passed",
+                            r"GEN007_failureMappingsSelectOverloadsByArgumentType\(\) passed"])
     run_swift("runtime-tests", ["test"], patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
     run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
@@ -213,6 +236,8 @@ def main():
         "WrongResult": r"cannot convert value of type 'Int'",
         "WrongError": r"cannot convert value of type 'Other'",
         "GeneratedWrongError": r"cannot convert value of type 'UnrelatedError'",
+        "GeneratedOrdinalFailureMapping": r"incorrect argument label.*failureMapping0.*failureMappings",
+        "GeneratedWrongFailureMappingResult": r"'WrongFailureMappingError'.*'RepositoryError'",
         "AsyncAnswerForSync": r"cannot pass function of type.*async",
         "InvalidSendablePayload": r"type 'DirectoryEntry' does not conform to the 'Sendable' protocol",
         "NonSendableCapture": r"capture of 'box'.*non-[Ss]endable",

@@ -10,9 +10,11 @@ import ConsumerDoubles
     let shadowed = ArgumentCaptor<String>(session: session)
     let mock = UserRepositoryMock(
         failureReporter: .swiftTesting, session: session,
-        failureMapping0: { issue in
-            #expect(issue.kind == .sequenceExhausted)
-            return .offline
+        failureMappings: .init { mappings in
+            mappings.fetchUser(id: String.self) { issue in
+                #expect(issue.kind == .sequenceExhausted)
+                return .offline
+            }
         }
     ) { stubs in
         stubs.fetchUser(id: .any).capturing(into: shadowed, projecting: { $0 })

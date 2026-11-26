@@ -25,6 +25,16 @@ public final class UserRepositoryMock: UserRepository {
         }
     }
 
+    public struct FailureMappings: Sendable {
+        public init(_ configure: (inout Self) -> Void = { _ in }) {
+            configure(&self)
+        }
+        fileprivate var __mapping0: (@Sendable (MockIssue) -> RepositoryError)? = nil
+        public mutating func fetchUser(id _: (String).Type, _ mapping: @escaping @Sendable (MockIssue) -> RepositoryError) {
+            __mapping0 = mapping
+        }
+    }
+
     public struct Verification: Sendable {
         fileprivate let __endpoint0: AsyncThrowingEndpoint<String, String, RepositoryError>
         public func fetchUser(id matcher: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<String> {
@@ -46,7 +56,7 @@ public final class UserRepositoryMock: UserRepository {
 
     public init(failureReporter: FailureReporter,
                 session: MockSession = MockSession(),
-                failureMapping0: (@Sendable (MockIssue) -> RepositoryError)? = nil,
+                failureMappings: FailureMappings = .init(),
                 _ configure: (Stubs) -> Void) {
         let scope = session.makeMock()
         let setup0 = AsyncThrowingStubbing<String, String, RepositoryError>()
@@ -54,7 +64,7 @@ public final class UserRepositoryMock: UserRepository {
         let setup2 = SyncStubbing<String, String>()
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2))
         self.__endpoint0 = AsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.UserRepository|fetchUser(id:String) async throws(RepositoryError)->String|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping0)
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMappings.__mapping0)
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.UserRepository|greeting(_:String)->String|Sendable"),
             configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint2 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.UserRepository|greeting(for:String)->String|Sendable"),

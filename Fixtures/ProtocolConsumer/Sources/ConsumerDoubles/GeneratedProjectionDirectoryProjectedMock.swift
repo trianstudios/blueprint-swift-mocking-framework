@@ -25,6 +25,16 @@ public final class GeneratedProjectionDirectoryProjectedMock<ProjectionArgument0
         }
     }
 
+    public struct FailureMappings: Sendable {
+        public init(_ configure: (inout Self) -> Void = { _ in }) {
+            configure(&self)
+        }
+        fileprivate var __mapping0: (@Sendable (MockIssue) -> GeneratedProjectionFailure)? = nil
+        public mutating func fetch(id _: (GeneratedProjectionPayload).Type, _ mapping: @escaping @Sendable (MockIssue) -> GeneratedProjectionFailure) {
+            __mapping0 = mapping
+        }
+    }
+
     public struct Verification: Sendable {
         fileprivate let __endpoint0: ProjectedAsyncThrowingEndpoint<GeneratedProjectionPayload, GeneratedProjectionPayload, GeneratedProjectionFailure, ProjectionArgument0, ProjectionResult0>
         public var history0: ProjectedInvocationHistory<ProjectionArgument0, ProjectionResult0> {
@@ -70,7 +80,7 @@ public final class GeneratedProjectionDirectoryProjectedMock<ProjectionArgument0
 
     public init(failureReporter: FailureReporter,
                 session: MockSession = MockSession(),
-                failureMapping0: (@Sendable (MockIssue) -> GeneratedProjectionFailure)? = nil,
+                failureMappings: FailureMappings = .init(),
                 projection0: InvocationProjection<GeneratedProjectionPayload, GeneratedProjectionPayload, ProjectionArgument0, ProjectionResult0>,
                 projection2: InvocationProjection<GeneratedProjectionPayload, GeneratedProjectionPayload, ProjectionArgument2, ProjectionResult2>,
                 _ configure: (Stubs) -> Void) {
@@ -80,7 +90,7 @@ public final class GeneratedProjectionDirectoryProjectedMock<ProjectionArgument0
         let setup2 = SyncStubbing<GeneratedProjectionPayload, GeneratedProjectionPayload>()
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2))
         self.__endpoint0 = ProjectedAsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.GeneratedProjectionDirectory|fetch(id:GeneratedProjectionPayload) async throws(GeneratedProjectionFailure)->GeneratedProjectionPayload|Sendable"),
-            configuration: setup0.finish(), projection: projection0, failureReporter: failureReporter, scope: scope, failureMapping: failureMapping0)
+            configuration: setup0.finish(), projection: projection0, failureReporter: failureReporter, scope: scope, failureMapping: failureMappings.__mapping0)
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.GeneratedProjectionDirectory|ping()->String|Sendable"),
             configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint2 = ProjectedSyncEndpoint(id: EndpointID("schema1|ConsumerDomain.GeneratedProjectionDirectory|read(id:GeneratedProjectionPayload)->GeneratedProjectionPayload|Sendable"),

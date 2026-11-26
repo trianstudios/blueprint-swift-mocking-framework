@@ -20,6 +20,16 @@ public final class LookupMock: Lookup {
         }
     }
 
+    public struct FailureMappings: Sendable {
+        public init(_ configure: (inout Self) -> Void = { _ in }) {
+            configure(&self)
+        }
+        fileprivate var __mapping1: (@Sendable (MockIssue) -> LookupFailure)? = nil
+        public mutating func refresh(id _: (String).Type, _ mapping: @escaping @Sendable (MockIssue) -> LookupFailure) {
+            __mapping1 = mapping
+        }
+    }
+
     public struct Verification: Sendable {
         fileprivate let __endpoint0: SyncEndpoint<String, String>
         public func name(for matcher: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<String> {
@@ -37,7 +47,7 @@ public final class LookupMock: Lookup {
 
     public init(failureReporter: FailureReporter,
                 session: MockSession = MockSession(),
-                failureMapping1: (@Sendable (MockIssue) -> LookupFailure)? = nil,
+                failureMappings: FailureMappings = .init(),
                 _ configure: (Stubs) -> Void) {
         let scope = session.makeMock()
         let setup0 = SyncStubbing<String, String>()
@@ -46,7 +56,7 @@ public final class LookupMock: Lookup {
         self.__endpoint0 = SyncEndpoint(id: EndpointID("schema1|LookupDomain.Lookup|name(for:String)->String|Sendable"),
             configuration: setup0.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint1 = AsyncThrowingEndpoint(id: EndpointID("schema1|LookupDomain.Lookup|refresh(id:String) async throws(LookupFailure)->String|Sendable"),
-            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping1)
+            configuration: setup1.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMappings.__mapping1)
     }
 
     public func name(for input: String) -> String {

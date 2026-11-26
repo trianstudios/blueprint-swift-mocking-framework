@@ -30,6 +30,20 @@ public final class EffectDirectoryMock: EffectDirectory {
         }
     }
 
+    public struct FailureMappings: Sendable {
+        public init(_ configure: (inout Self) -> Void = { _ in }) {
+            configure(&self)
+        }
+        fileprivate var __mapping0: (@Sendable (MockIssue) -> any Error)? = nil
+        public mutating func cachedName(id _: (String).Type, _ mapping: @escaping @Sendable (MockIssue) -> any Error) {
+            __mapping0 = mapping
+        }
+        fileprivate var __mapping3: (@Sendable (MockIssue) -> any Error)? = nil
+        public mutating func remoteName(id _: (String).Type, _ mapping: @escaping @Sendable (MockIssue) -> any Error) {
+            __mapping3 = mapping
+        }
+    }
+
     public struct Verification: Sendable {
         fileprivate let __endpoint0: SyncThrowingEndpoint<String, String, any Error>
         public func cachedName(id matcher: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<String> {
@@ -55,8 +69,7 @@ public final class EffectDirectoryMock: EffectDirectory {
 
     public init(failureReporter: FailureReporter,
                 session: MockSession = MockSession(),
-                failureMapping0: (@Sendable (MockIssue) -> any Error)? = nil,
-                failureMapping3: (@Sendable (MockIssue) -> any Error)? = nil,
+                failureMappings: FailureMappings = .init(),
                 _ configure: (Stubs) -> Void) {
         let scope = session.makeMock()
         let setup0 = SyncThrowingStubbing<String, String, any Error>()
@@ -65,13 +78,13 @@ public final class EffectDirectoryMock: EffectDirectory {
         let setup3 = AsyncThrowingStubbing<String, String, any Error>()
         configure(Stubs(__setup0: setup0, __setup1: setup1, __setup2: setup2, __setup3: setup3))
         self.__endpoint0 = SyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectDirectory|cachedName(id:String) throws->String|Sendable"),
-            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping0 ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) })
+            configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMappings.__mapping0 ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) })
         self.__endpoint1 = SyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectDirectory|localName(id:String)->String|Sendable"),
             configuration: setup1.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint2 = AsyncEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectDirectory|refreshedName(id:String) async->String|Sendable"),
             configuration: setup2.finish(), failureReporter: failureReporter, scope: scope)
         self.__endpoint3 = AsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.EffectDirectory|remoteName(id:String) async throws->String|Sendable"),
-            configuration: setup3.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMapping3 ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) })
+            configuration: setup3.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMappings.__mapping3 ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) })
     }
 
     public func cachedName(id input: String) throws -> String {

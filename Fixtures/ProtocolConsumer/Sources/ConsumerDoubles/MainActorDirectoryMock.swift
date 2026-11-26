@@ -40,6 +40,20 @@ import ConsumerDomain
         }
     }
 
+    @MainActor public struct FailureMappings {
+        public init(_ configure: @MainActor (inout Self) -> Void = { _ in }) {
+            configure(&self)
+        }
+        fileprivate var __mapping4: (@MainActor (MockIssue) -> DirectoryFailure)? = nil
+        public mutating func refresh(_ _: (DirectoryEntry).Type, _ mapping: @escaping @MainActor (MockIssue) -> DirectoryFailure) {
+            __mapping4 = mapping
+        }
+        fileprivate var __mapping5: (@MainActor (MockIssue) -> DirectoryFailure)? = nil
+        public mutating func require(_ _: (DirectoryEntry).Type, _ mapping: @escaping @MainActor (MockIssue) -> DirectoryFailure) {
+            __mapping5 = mapping
+        }
+    }
+
     @MainActor public struct Verification {
         fileprivate let __endpoint0: MainActorSyncEndpoint<DirectoryEntry, Void>
         public func audit(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {
@@ -72,8 +86,7 @@ import ConsumerDomain
     }
 
     public init(failureReporter: FailureReporter,
-                failureMapping4: (@MainActor (MockIssue) -> DirectoryFailure)? = nil,
-                failureMapping5: (@MainActor (MockIssue) -> DirectoryFailure)? = nil,
+                failureMappings: FailureMappings = .init(),
                 _ configure: @MainActor (Stubs) -> Void) {
         let setup0 = MainActorSyncStubbing<DirectoryEntry, Void>()
         let setup1 = MainActorSyncStubbing<DirectoryEntry, DirectoryEntry>()
@@ -91,9 +104,9 @@ import ConsumerDomain
         self.__endpoint3 = MainActorAsyncEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|read(_:DirectoryEntry) async->DirectoryEntry|MainActor"),
             configuration: setup3.finish(), failureReporter: failureReporter)
         self.__endpoint4 = MainActorAsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|refresh(_:DirectoryEntry) async throws(DirectoryFailure)->DirectoryEntry|MainActor"),
-            configuration: setup4.finish(), failureReporter: failureReporter, failureMapping: failureMapping4)
+            configuration: setup4.finish(), failureReporter: failureReporter, failureMapping: failureMappings.__mapping4)
         self.__endpoint5 = MainActorSyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.MainActorDirectory|require(_:DirectoryEntry) throws(DirectoryFailure)->DirectoryEntry|MainActor"),
-            configuration: setup5.finish(), failureReporter: failureReporter, failureMapping: failureMapping5)
+            configuration: setup5.finish(), failureReporter: failureReporter, failureMapping: failureMappings.__mapping5)
     }
 
     public func audit(_ input: DirectoryEntry) -> Void {

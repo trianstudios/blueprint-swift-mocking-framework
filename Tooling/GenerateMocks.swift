@@ -413,9 +413,14 @@ func generate(input: String, module: String, selected: String, projections: [Str
     }
 
     let name = selected + (projectedIndices.isEmpty ? "Mock" : "ProjectedMock")
-    let usedNames = Set(members.flatMap {
+    let memberTypeNames = Set(members.flatMap {
         $0.genericArguments.split { !$0.isLetter && !$0.isNumber && $0 != "_" }.map(String.init)
-    } + [selected])
+    })
+    let usedNames = memberTypeNames.union([selected])
+    let failureIndices = members.indices.filter { members[$0].effect.runtimeFailure != nil }
+    if !failureIndices.isEmpty, memberTypeNames.contains("FailureMappings") {
+        try reject(proto, "A requirement type collides with the generated 'FailureMappings' setup type")
+    }
     if !projectedIndices.isEmpty, usedNames.contains(name) {
         try reject(proto, "A method type collides with the generated projected mock name '\(name)'")
     }
@@ -480,8 +485,25 @@ func generate(input: String, module: String, selected: String, projections: [Str
         output += "            __setup\(setter).matching(.any).willAnswer { cell.set($0) }\n"
         output += "        }\n"
     }
-    let verificationConformance = isolation == .sendable ? ": Sendable" : ""
-    output += "    }\n\n    \(isolation.annotation)public struct Verification\(verificationConformance) {\n"
+    let isolationConformance = isolation == .sendable ? ": Sendable" : ""
+    let failureIsolation = isolation == .sendable ? "@Sendable" : "@MainActor"
+    output += "    }\n\n"
+    if !failureIndices.isEmpty {
+        output += "    \(isolation.annotation)public struct FailureMappings\(isolationConformance) {\n"
+        output += "        public init(_ configure: \(isolation.annotation)(inout Self) -> Void = { _ in }) {\n"
+        output += "            configure(&self)\n        }\n"
+        for index in failureIndices {
+            let member = members[index]
+            let mapper = "\(failureIsolation) (MockIssue) -> \(member.effect.runtimeFailure!.type)"
+            let selector = member.parameters.map { "\($0.label) _: (\($0.type)).Type" }
+            let signature = (selector + ["_ mapping: @escaping \(mapper)"]).joined(separator: ", ")
+            output += "        fileprivate var __mapping\(index): (\(mapper))? = nil\n"
+            output += "        public mutating func \(member.name)(\(signature)) {\n"
+            output += "            __mapping\(index) = mapping\n        }\n"
+        }
+        output += "    }\n\n"
+    }
+    output += "    \(isolation.annotation)public struct Verification\(isolationConformance) {\n"
     for (i,m) in members.enumerated() {
         output += "        fileprivate let __endpoint\(i): \(endpointType(i))\n"
         if let types = projectionTypes[i] {
@@ -505,10 +527,8 @@ func generate(input: String, module: String, selected: String, projections: [Str
         members.indices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
     output += "    public init(failureReporter: FailureReporter,\n"
     if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
-    let failureIsolation = isolation == .sendable ? "@Sendable" : "@MainActor"
-    for (i,m) in members.enumerated() {
-        guard let failure = m.effect.runtimeFailure else { continue }
-        output += "                failureMapping\(i): (\(failureIsolation) (MockIssue) -> \(failure.type))? = nil,\n"
+    if !failureIndices.isEmpty {
+        output += "                failureMappings: FailureMappings = .init(),\n"
     }
     for i in projectedIndices.sorted() {
         let member = members[i]
@@ -524,7 +544,7 @@ func generate(input: String, module: String, selected: String, projections: [Str
     for (i,m) in members.enumerated() {
         var mapping = isolation == .sendable ? ", scope: scope" : ""
         if let failure = m.effect.runtimeFailure {
-            mapping += ", failureMapping: failureMapping\(i)"
+            mapping += ", failureMapping: failureMappings.__mapping\(i)"
             if failure.isOrdinary {
                 mapping += " ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) }"
             }
