@@ -51,7 +51,9 @@ Create `blueprint-mocking.json` at the consumer package root. Use the Swift modu
 
 An ordinary `swift test` or `swift build` builds the generator and compiles the generated mock with the attached target. Source membership comes from direct Swift targets in the consumer package. The current profile emits a single Swift shard and its index in SwiftPM’s plugin work directory.
 
-Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsumer PluginProbe`. Use `BLUEPRINT_VERIFY_SWIFTPM_PLUGIN=1 python3 scripts/verify.py` for clean-build, incremental and rejection checks. The opt-in tooling package resolves pinned SwiftSyntax 600.0.1. Local checkout installation is verified on Apple Swift 6.4. Separate remote tooling distribution and other native profiles remain open.
+Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsumer PluginProbe`. Use `BLUEPRINT_VERIFY_SWIFTPM_PLUGIN=1 python3 scripts/verify.py` for clean-build, incremental and rejection checks. Local checkout installation is verified on Apple Swift 6.4. Separate remote tooling distribution and other native profiles remain open.
+
+The source-built plugin shares the consumer’s SwiftPM graph and requires SwiftSyntax exactly `600.0.1`. If your consumer pins a different SwiftSyntax version, run [standalone generation](#standalone-generation) from the authoring checkout and include the emitted Swift in your test target. The standalone script uses the selected Xcode toolchain’s bundled parser, so the consumer can resolve the runtime and its own SwiftSyntax pin independently.
 
 ### Local tooling source export
 

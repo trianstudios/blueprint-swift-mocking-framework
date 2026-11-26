@@ -124,6 +124,16 @@ The clean fixture compiles and runs a typed generated mock, proves an unchanged 
 
 The checked profile is Apple Swift 6.4 on arm64 macOS. Separately hosted tooling distribution, complete compiler context, configurable sharding, prepared offline and other native profiles remain open.
 
+## SwiftSyntax resolution in a consumer package
+
+The SwiftPM plugin pulls the tooling package into the consumer's dependency graph. `scripts/verify_swiftpm_compatibility.py` runs isolated, file-only SwiftPM resolution using the checked-in runtime, tooling and consumer manifests. The disposable SwiftSyntax mirror supplies version and product metadata for `600.0.1` and `601.0.0`. A runtime-only consumer can resolve its own exact `601.0.0` pin. A consumer using the source-built plugin resolves with `600.0.1`, and SwiftPM reports conflicting requirements when that consumer pins `601.0.0`.
+
+Run the solver fixture with `python3 scripts/verify_swiftpm_compatibility.py --evidence-dir "$artifact_dir/compatibility"`. The report records the manifests, resolved graphs, lockfiles, and rejection log by SHA-256. The run resolves packages without compiling parser or plugin targets.
+
+Consumers with a different SwiftSyntax pin can run the standalone generator from the authoring checkout and add the emitted Swift to their test target. The standalone script uses the selected Xcode toolchain’s bundled parser.
+
+Parser parity needs a prepared build of the pinned package executable. Run both front ends at the same authoring revision against a basic typed protocol, the inherited diamond consumer, and an unresolved-parent rejection. Record both parser identities and compare generated witnesses, endpoint and index identities, source locations, and the `BPM001` rejection after normalizing checkout paths. Exported tooling compilation, hosted distribution, and native-profile qualification are tracked separately.
+
 ## Reproducible local tooling source exports
 
 The checked-in `Packages/Tooling/ExportManifest.json` specifies the standalone payload and compatibility. The exporter flattens the tooling package to the archive root, adds the repository’s MIT license, and records the authoring revision, the SwiftSyntax pin, and the SHA-256 of each shipped file. Sorted regular-file entries and fixed tar metadata make the archive repeatable. Verification rebuilds the expected archive from raw Git blobs before extraction.
