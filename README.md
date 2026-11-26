@@ -55,6 +55,21 @@ Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsum
 
 The source-built plugin shares the consumer’s SwiftPM graph and requires SwiftSyntax exactly `600.0.1`. If your consumer pins a different SwiftSyntax version, run [standalone generation](#standalone-generation) from the authoring checkout and include the emitted Swift in your test target. The standalone script uses the selected Xcode toolchain’s bundled parser, so the consumer can resolve the runtime and its own SwiftSyntax pin independently.
 
+### Inspect a generation request
+
+Use `inspect` to review a SwiftPM-style request before generating its mock shard and index. Pass the same configuration, source input set and output directory you would give generation.
+
+```sh
+bash scripts/generate.sh inspect \
+  --config Fixtures/PluginConsumer/blueprint-mocking.json \
+  --output Fixtures/PluginConsumer/.build/inspection-example \
+  --input-set-id 1 \
+  --source PluginDomain Fixtures/PluginConsumer/Sources/PluginDomain/Lookup.swift \
+  --format json
+```
+
+The report includes the resolved selections and declaration locations, supplied sources, planned output files and supported analysis. Paths under the configuration directory appear relative to it. The command runs generation validation and leaves the project sources and generation output directory untouched.
+
 ### Local tooling source export
 
 The authoring repository can produce a standalone `blueprint-swift-mocking-tools` source archive. Use the full SHA of a commit that includes the tooling export manifest.

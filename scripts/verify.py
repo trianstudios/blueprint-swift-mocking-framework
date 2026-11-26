@@ -124,6 +124,9 @@ def main():
         "bash", "scripts/generate.sh", "--input", source, "--module", "ConsumerDomain",
         "--protocol", "UserRepository", "--output", generated], env=generation_environment)
     tool = ROOT / ".build/prototype-tooling/generate"
+    run("declaration-inspection", [sys.executable, ROOT / "scripts/verify_inspection.py",
+                                  "--tool", tool, "--evidence-dir", EVIDENCE],
+        patterns=[r"PASS: DX003 read-only inspection"])
     baseline = generated.read_bytes()
     inherited_source = source.with_name("InheritedDirectory.swift")
     inherited_generated = generated.with_name("InheritedDirectoryMock.swift")

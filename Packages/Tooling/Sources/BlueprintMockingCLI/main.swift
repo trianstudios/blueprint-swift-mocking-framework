@@ -229,10 +229,15 @@ struct Member {
     }
 }
 
+struct GeneratedProtocolMock {
+    let typeName: String
+    let source: String
+}
+
 func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
     subscriptSpecializations: [String], spy: Bool
-) throws -> String {
+) throws -> GeneratedProtocolMock {
     let input = root.origin.path
     let module = root.origin.module
     let selected = root.name
@@ -1171,10 +1176,14 @@ func generate(
             continue
         }
     }
-    return output + "}\n"
+    return GeneratedProtocolMock(typeName: name, source: output + "}\n")
 }
 
 private func run(_ arguments: [String]) throws {
+    if arguments.first == "inspect" {
+        try inspectBuildOutputs(arguments: arguments.dropFirst())
+        return
+    }
     if arguments.first == "generate" && arguments.dropFirst().first == "--config" {
         try generateBuildOutputs(arguments: arguments.dropFirst())
         return
@@ -1220,7 +1229,7 @@ private func run(_ arguments: [String]) throws {
                               variadicForwarding: variadicForwarding,
                               subscriptSpecializations: subscriptSpecializations, spy: spy)
     // Parsing and validation finish before publication. No partial output on unsupported input.
-    try output.write(toFile: arguments[7], atomically: true, encoding: .utf8)
+    try output.source.write(toFile: arguments[7], atomically: true, encoding: .utf8)
 }
 
 do {

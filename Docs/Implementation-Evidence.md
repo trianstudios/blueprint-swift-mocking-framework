@@ -151,3 +151,10 @@ The compiled consumer calls the common witness through both parent existential v
 Missing, ambiguous, foreign and cyclic parents stop generation with `BPM001`. Return-only and effect conflicts name both declaration sites. Failed requests preserve prior output. Cross-module parent resolution, independent equivalent signatures, imported interfaces and inherited actor isolation remain open.
 
 The verification profile uses the installed Xcode parser and the existing SwiftPM consumer caches. Compilation of the exported tooling package, hosted distribution, and additional native qualification remain separate release gates.
+
+
+## Read-only generation inspection
+
+DX-003 adds `inspect` for the explicit source inputs and schema-1 configuration used by the SwiftPM generation entry. Generation and inspection resolve the same plan, including declaration validation and fixed output names. Inspection prints sorted schema-1 JSON with normalized inputs, selected declarations, planned ownership and the supplied-source feature gates. It preserves the selected sources and any existing generation outputs.
+
+The CLI fixture compares the JSON before generation and after both files exist, with reordered sources and unchanged sources and outputs. Invalid configuration and unresolved inheritance fail with the same diagnostic families as generation. Full compiler context, includes, configured roots and native plugin profile qualification remain open.
