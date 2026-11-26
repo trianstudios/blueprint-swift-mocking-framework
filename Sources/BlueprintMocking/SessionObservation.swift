@@ -80,3 +80,32 @@ extension MockSession {
         withExtendedLifetime(retired) {}
     }
 }
+
+/// Schedules the next continuous-clock wake on an existing observation.
+struct SessionObservationTimer {
+    private var scheduledDeadline: Duration?
+    private var task: Task<Void, Never>?
+
+    mutating func schedule(
+        at deadline: Duration, session: MockSession, observation: SessionObservation
+    ) {
+        guard scheduledDeadline != deadline else { return }
+        task?.cancel()
+        scheduledDeadline = deadline
+        guard let instant = session.continuousInstant(at: deadline) else {
+            task = nil
+            return
+        }
+        task = Task { [observation] in
+            do {
+                try await ContinuousClock().sleep(until: instant, tolerance: .zero)
+                try Task.checkCancellation()
+                observation.wake()
+            } catch {
+                // The observer canceled the timer or moved to another deadline.
+            }
+        }
+    }
+
+    func cancel() { task?.cancel() }
+}

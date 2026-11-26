@@ -54,20 +54,11 @@ func RUN009_generatedProjectionPreservesTypedEffectsAndDetachedHistory() async t
     #expect(readCaptor.captures.map(\.invocation.invocationID) == [read.sessionInvocationID])
     #expect(read.result == .value(FrozenGeneratedResult(value: "read returned")))
     #expect(mock.verify.history2.verify(.once, matchingArgument: .equal("before read")).passed)
+    let interval = Duration.milliseconds(5)
+    _ = try await mock.verify.stableHistory2(
+        .once, matchingArgument: "before read", for: interval, within: .seconds(1))
     #expect(directory.ping() == "pong")
     #expect(mock.verify.ping().wasCalled(.once).passed)
-
-    do throws(GeneratedProjectionFailure) {
-        _ = try await directory.fetch(id: GeneratedProjectionPayload("offline", value: "before failure"))
-        Issue.record("Expected the generated witness to throw the configured typed error")
-    } catch {
-        #expect(error == .offline)
-    }
-    let failed = try #require(mock.verify.history0.calls.first)
-    #expect(failed.phase == .threw)
-    #expect(failed.argument == .value("before failure"))
-    #expect(failed.result == .unavailable)
-    #expect(mock.verify.history0.verify(.once, matchingArgument: .equal("before failure"), phase: .threw).passed)
 
     let pendingInput = GeneratedProjectionPayload("pending", value: "before suspension")
     let old = Task { try await directory.fetch(id: pendingInput) }
@@ -78,6 +69,26 @@ func RUN009_generatedProjectionPreservesTypedEffectsAndDetachedHistory() async t
     #expect(pending.argument == .value("before suspension"))
     #expect(pending.result == .pending)
     #expect(pendingInput.snapshot() == "changed in fetch")
+
+    do {
+        _ = try await mock.verify.stableHistory0(
+            .never, matchingResult: "returned pending", for: interval, within: .milliseconds(25))
+        Issue.record("An admitted call with a pending result cannot prove absence")
+    } catch ProjectedTimedObservationError.incompleteHistory {
+        // Expected while this is the only admitted fetch in the epoch.
+    }
+
+    do throws(GeneratedProjectionFailure) {
+        _ = try await directory.fetch(id: GeneratedProjectionPayload("offline", value: "before failure"))
+        Issue.record("Expected the generated witness to throw the configured typed error")
+    } catch {
+        #expect(error == .offline)
+    }
+    let failed = try #require(mock.verify.history0.calls.first { $0.phase == .threw })
+    #expect(failed.phase == .threw)
+    #expect(failed.argument == .value("before failure"))
+    #expect(failed.result == .unavailable)
+    #expect(mock.verify.history0.verify(.once, matchingArgument: .equal("before failure"), phase: .threw).passed)
 
     let epoch = try session.resetHistory(.detachActive)
     #expect(epoch != pending.epoch)
@@ -101,6 +112,8 @@ func RUN009_generatedProjectionPreservesTypedEffectsAndDetachedHistory() async t
     #expect(retained.argument == .value("before fresh fetch"))
     #expect(retained.result == .value("returned fresh"))
     #expect(current.verify(.once, matchingResult: .equal("returned fresh")).passed)
+    _ = try await mock.verify.stableHistory0(
+        .once, matchingResult: "returned fresh", for: interval, within: .seconds(1))
     #expect(beforeReset.calls.last?.result == .pending)
     let archived = try #require(session.snapshot(epoch: pending.epoch))
     let oldEvents = archived.events.filter { $0.invocationID == pending.sessionInvocationID }

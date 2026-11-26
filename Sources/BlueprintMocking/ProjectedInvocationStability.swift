@@ -116,9 +116,9 @@ struct ProjectedStabilityWait<History: Sendable>: Sendable {
     let deadline: Duration
 
     func value() async throws -> SessionTimedCountObservation {
-        var timer: Task<Void, Never>?
+        var timer = SessionObservationTimer()
         defer {
-            timer?.cancel()
+            timer.cancel()
             observation.cancel()
         }
 
@@ -138,7 +138,6 @@ struct ProjectedStabilityWait<History: Sendable>: Sendable {
         }
 
         var notifications = observation.notifications.makeAsyncIterator()
-        var scheduledDeadline: Duration?
         var streamOpen = true
         while true {
             try Task.checkCancellation()
@@ -158,21 +157,7 @@ struct ProjectedStabilityWait<History: Sendable>: Sendable {
             cursor = SessionCheckpoint(snapshot: cut.snapshot)
 
             let boundary = min(progress.satisfyingSince.map { $0 + duration } ?? deadline, deadline)
-            if scheduledDeadline != boundary {
-                timer?.cancel()
-                scheduledDeadline = boundary
-                if let instant = session.continuousInstant(at: boundary) {
-                    timer = Task { [observation] in
-                        do {
-                            try await ContinuousClock().sleep(until: instant, tolerance: .zero)
-                            try Task.checkCancellation()
-                            observation.wake()
-                        } catch {
-                            // The reader either moved to another candidate or canceled.
-                        }
-                    }
-                }
-            }
+            timer.schedule(at: boundary, session: session, observation: observation)
             streamOpen = await notifications.next() != nil
             cut = read()
         }

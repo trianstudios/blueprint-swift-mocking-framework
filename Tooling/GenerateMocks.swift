@@ -369,9 +369,11 @@ func generate(input: String, module: String, selected: String, projections: [Str
 
     var projectionTypes: [Int: (argument: String, result: String)] = [:]
     for index in projectedIndices.sorted() {
-        let historyName = "history\(index)"
-        if members.indices.contains(where: { !projectedIndices.contains($0) && members[$0].name == historyName }) {
-            try reject(proto, "An existing verification member collides with generated '\(historyName)'")
+        let historyNames = ["history\(index)", "stableHistory\(index)"]
+        if let collision = members.indices.first(where: {
+            !projectedIndices.contains($0) && historyNames.contains(members[$0].name)
+        }) {
+            try reject(proto, "An existing verification member collides with generated '\(members[collision].name)'")
         }
         projectionTypes[index] = (
             projectionType("ProjectionArgument\(index)"), projectionType("ProjectionResult\(index)")
@@ -426,6 +428,17 @@ func generate(input: String, module: String, selected: String, projections: [Str
         output += "        fileprivate let __endpoint\(i): \(endpointType(i))\n"
         if let types = projectionTypes[i] {
             output += "        public var history\(i): ProjectedInvocationHistory<\(types.argument), \(types.result)> {\n            __endpoint\(i).projectedHistory()\n        }\n"
+            for (label, type) in [("matchingArgument", types.argument), ("matchingResult", types.result)] {
+                output += """
+                        public func stableHistory\(i)(
+                            _ count: BlueprintMocking.CallCount, \(label) value: Swift.String,
+                            for duration: Swift.Duration, within timeout: Swift.Duration
+                        ) async throws -> BlueprintMocking.SessionTimedCountObservation where \(type) == Swift.String {
+                            try await __endpoint\(i).stable(count, \(label): value, for: duration, within: timeout)
+                        }
+
+                """
+            }
         } else {
             output += "        public func \(m.verificationSignature) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.inputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression), phase: phase)\n        }\n"
         }

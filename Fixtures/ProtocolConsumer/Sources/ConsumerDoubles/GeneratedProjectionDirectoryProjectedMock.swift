@@ -30,6 +30,18 @@ public final class GeneratedProjectionDirectoryProjectedMock<ProjectionArgument0
         public var history0: ProjectedInvocationHistory<ProjectionArgument0, ProjectionResult0> {
             __endpoint0.projectedHistory()
         }
+        public func stableHistory0(
+            _ count: BlueprintMocking.CallCount, matchingArgument value: Swift.String,
+            for duration: Swift.Duration, within timeout: Swift.Duration
+        ) async throws -> BlueprintMocking.SessionTimedCountObservation where ProjectionArgument0 == Swift.String {
+            try await __endpoint0.stable(count, matchingArgument: value, for: duration, within: timeout)
+        }
+        public func stableHistory0(
+            _ count: BlueprintMocking.CallCount, matchingResult value: Swift.String,
+            for duration: Swift.Duration, within timeout: Swift.Duration
+        ) async throws -> BlueprintMocking.SessionTimedCountObservation where ProjectionResult0 == Swift.String {
+            try await __endpoint0.stable(count, matchingResult: value, for: duration, within: timeout)
+        }
         fileprivate let __endpoint1: SyncEndpoint<Void, String>
         public func ping(phase: CallPhase = .admitted) -> BlueprintMocking.Verification<Void> {
             __endpoint1.verification(matching: .any, phase: phase)
@@ -37,6 +49,18 @@ public final class GeneratedProjectionDirectoryProjectedMock<ProjectionArgument0
         fileprivate let __endpoint2: ProjectedSyncEndpoint<GeneratedProjectionPayload, GeneratedProjectionPayload, ProjectionArgument2, ProjectionResult2>
         public var history2: ProjectedInvocationHistory<ProjectionArgument2, ProjectionResult2> {
             __endpoint2.projectedHistory()
+        }
+        public func stableHistory2(
+            _ count: BlueprintMocking.CallCount, matchingArgument value: Swift.String,
+            for duration: Swift.Duration, within timeout: Swift.Duration
+        ) async throws -> BlueprintMocking.SessionTimedCountObservation where ProjectionArgument2 == Swift.String {
+            try await __endpoint2.stable(count, matchingArgument: value, for: duration, within: timeout)
+        }
+        public func stableHistory2(
+            _ count: BlueprintMocking.CallCount, matchingResult value: Swift.String,
+            for duration: Swift.Duration, within timeout: Swift.Duration
+        ) async throws -> BlueprintMocking.SessionTimedCountObservation where ProjectionResult2 == Swift.String {
+            try await __endpoint2.stable(count, matchingResult: value, for: duration, within: timeout)
         }
     }
 

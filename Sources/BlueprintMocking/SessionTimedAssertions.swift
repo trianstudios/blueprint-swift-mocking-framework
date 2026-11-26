@@ -106,9 +106,9 @@ struct TimedCountWait: Sendable {
     let window: TimedCountWindow
 
     func value() async throws -> SessionTimedCountObservation {
-        var timer: Task<Void, Never>?
+        var timer = SessionObservationTimer()
         defer {
-            timer?.cancel()
+            timer.cancel()
             observation.cancel()
         }
 
@@ -129,7 +129,6 @@ struct TimedCountWait: Sendable {
 
         var cursor = observation.checkpoint
         var notifications = observation.notifications.makeAsyncIterator()
-        var scheduledDeadline: Duration?
         var streamOpen = true
 
         while true {
@@ -166,21 +165,7 @@ struct TimedCountWait: Sendable {
             cursor = SessionCheckpoint(snapshot: cut.snapshot)
 
             let nextDeadline = min(progress.satisfyingSince.flatMap(stableEnd) ?? deadline, deadline)
-            if scheduledDeadline != nextDeadline {
-                timer?.cancel()
-                scheduledDeadline = nextDeadline
-                if let instant = session.continuousInstant(at: nextDeadline) {
-                    timer = Task { [observation] in
-                        do {
-                            try await ContinuousClock().sleep(until: instant, tolerance: .zero)
-                            try Task.checkCancellation()
-                            observation.wake()
-                        } catch {
-                            // The reader canceled the timer or moved to another deadline.
-                        }
-                    }
-                }
-            }
+            timer.schedule(at: nextDeadline, session: session, observation: observation)
             streamOpen = await notifications.next() != nil
         }
     }
