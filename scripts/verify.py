@@ -241,6 +241,17 @@ def main():
     run("iterator-binding-generation", generate(
         tool, iterator_source, iterator_generated, "IntSequence",
         sources=iterator_sources, associated_bindings=iterator_binding))
+    availability_source = source.with_name("AvailabilityDirectory.swift")
+    availability_generated = generated.with_name("AvailabilityDirectoryMock.swift")
+    run("availability-guarded-member-generation", generate(
+        tool, availability_source, availability_generated, "AvailabilityDirectory"))
+    availability_mock = availability_generated.read_text()
+    availability_gate = re.search(
+        r"(?m)^@available\(macOS 14(?:\.0)?, \*\)\n(?=public final class AvailabilityDirectoryMock\b)",
+        availability_mock,
+    )
+    assert availability_gate
+    availability_syntax = r"Only @available\(macOS VERSION, \*\) is supported on generated protocol methods"
     actor_source = source.with_name("MainActorDirectory.swift")
     actor_generated = generated.with_name("MainActorDirectoryMock.swift")
     run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
@@ -322,6 +333,55 @@ def main():
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     verify_conditional_generation(tool, temp)
+    availability_config_source = temp / availability_source.name
+    authored_availability = availability_source.read_text()
+    availability_config_source.write_text(authored_availability)
+    availability_config = temp / "availability-blueprint-mocking.json"
+    availability_config.write_text(json.dumps({
+        "schemaVersion": 1,
+        "selections": [{"module": "ConsumerDomain", "type": "AvailabilityDirectory", "kind": "protocol"}],
+    }))
+    availability_batch = temp / "availability-batch"
+    availability_config_command = [
+        tool, "generate", "--config", availability_config, "--output", availability_batch, "--input-set-id", "7",
+        "--source", "ConsumerDomain", availability_config_source,
+    ]
+    run("availability-config-generation", availability_config_command,
+        patterns=[r"Blueprint Mocking: generated 1 protocol mock"])
+    availability_outputs = [
+        availability_batch / "BlueprintMocks.generated.swift", availability_batch / "BlueprintMockingIndex.generated.swift",
+    ]
+    assert availability_generated.read_bytes() in availability_outputs[0].read_bytes()
+    original_availability_outputs = [(file.read_bytes(), file.stat().st_mtime_ns) for file in availability_outputs]
+    supported_receipt = "@available(macOS 14.0, *)\n    func receipt() -> NewReceipt"
+    assert authored_availability.count(supported_receipt) == 1
+    availability_config_source.write_text(authored_availability.replace(
+        supported_receipt, "@available(macOS 14.0, iOS 17.0, *)\n    func receipt() -> NewReceipt",
+    ))
+    run("reject-availability-config-method-syntax", availability_config_command,
+        fails=True, patterns=[r"BPM001: " + availability_syntax])
+    assert [(file.read_bytes(), file.stat().st_mtime_ns) for file in availability_outputs] == original_availability_outputs
+
+    availability_order_source = temp / "OrderedAvailability.swift"
+    availability_order_output = temp / "OrderedAvailabilityMock.swift"
+    availability_members = [("EarlyReceipt", "early", "14.0"), ("LateReceipt", "late", "15.0.2")]
+    availability_payloads = [
+        f"@available(macOS {version}, *) public struct {payload}: Swift.Sendable {{}}"
+        for payload, _, version in availability_members
+    ]
+    for label, members in (("later-last", availability_members), ("later-first", reversed(availability_members))):
+        availability_methods = [
+            f"    @available(macOS {version}, *) func {name}() -> {payload}"
+            for payload, name, version in members
+        ]
+        availability_order_source.write_text("\n".join([
+            *availability_payloads, "public protocol OrderedAvailability: Swift.Sendable {",
+            *availability_methods, "}", "",
+        ]))
+        run("availability-max-introduction-" + label, generate(
+            tool, availability_order_source, availability_order_output, "OrderedAvailability"))
+        assert re.search(r"(?m)^@available\(macOS 15\.0\.2, \*\)\npublic final class OrderedAvailabilityMock\b",
+                         availability_order_output.read_text())
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
 
     repeated_inheritance = temp / "RepeatedInherited.swift"
@@ -695,6 +755,9 @@ def main():
     assert "@escaping @Sendable ([Int]) -> String" in disambiguated_forward.read_text()
     assert "@escaping @Sendable ([String]) -> String" not in disambiguated_forward.read_text()
     expected_rejections = {
+        "AvailabilityDeprecatedRequirement": availability_syntax,
+        "AvailabilityMultiplePlatforms": availability_syntax,
+        "AvailabilityUnresolvedReceipt": r"Use an unconditional public, nongeneric struct declared in this module",
         "DescriptorCollision": r"Overloads that differ only by effects or result type",
         "UnsupportedEffect": r"Rethrows requires a callback-derived error",
         "EffectfulSetter": r"Effectful getters require read-only properties",
@@ -925,12 +988,50 @@ def main():
                   r"GEN008_inheritedAssociatedRequirementKeepsItsDeclarationSource\(\) passed",
                   r"GEN008_qualifiedParentBindsAssociatedTypeAcrossTargets\(\) passed",
                   r"GEN008_parameterizedParentInfersConcreteWitnessAcrossTargets\(\) passed",
-                  r"GEN008_iteratorEqualitySurvivesInheritedPrimaryNormalization\(\) passed"])
+                  r"GEN008_iteratorEqualitySurvivesInheritedPrimaryNormalization\(\) passed",
+                  r"GEN004B_protocolBaselineRemainsAvailableAtPackageFloor\(\) passed",
+                  r"GEN004B_guardedMockKeepsReceiptStorageAndSurfacesAvailable\(\) passed",
+                  r"BLUEPRINT_AVAILABILITY_GUARDED_RECEIPT Swift\.Int 47"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [
         "build", "--package-path", "Fixtures/ProtocolConsumer", "--show-bin-path"]).strip())
+    compiler_floor = [
+        swiftc, "-swift-version", "6", "-target",
+        f"{platform.machine()}-apple-macos{deployment_target}", "-sdk", sdk,
+    ]
+    run("availability-generated-macos-floor", [
+        *compiler_floor, "-typecheck", "-module-name", "ConsumerDoubles", "-I", modules, availability_generated,
+    ], env=swift_environment)
+    member_only_mock = temp / "AvailabilityMemberOnlyMock.swift"
+    receipt_witness = "    public func receipt() -> NewReceipt {"
+    assert availability_mock.count(receipt_witness) == 1
+    available_annotation = availability_gate.group(0)
+    unguarded_mock_storage = availability_mock.replace(available_annotation, "", 1).replace(
+        receipt_witness, "    " + available_annotation + receipt_witness, 1,
+    )
+    member_only_mock.write_text(unguarded_mock_storage)
+    storage_line, = [
+        number for number, line in enumerate(unguarded_mock_storage.splitlines(), 1)
+        if re.fullmatch(r"    private let __endpoint\d+: SyncEndpoint<Void, NewReceipt>", line)
+    ]
+    run("compile-reject-availability-member-only-storage", [
+        *compiler_floor, "-typecheck", "-module-name", "ConsumerDoubles", "-I", modules, member_only_mock,
+    ], env=swift_environment, fails=True, patterns=[
+        rf"AvailabilityMemberOnlyMock\.swift:{storage_line}:\d+: error: "
+        r"'NewReceipt' is only available in macOS 14\.0 or newer",
+    ])
+    unavailable_mock = r"'AvailabilityDirectoryMock' is only available in macOS 14\.0 or newer"
     patterns = {
+        "AvailabilityUnguardedWitness": r"'receipt\(\)' is only available in macOS 14\.0 or newer",
+        "AvailabilityUnguardedMock": (
+            rf"(?s)(?=.*AvailabilityUnguardedMock\.swift:5:\d+: error: {unavailable_mock})"
+            rf"(?=.*AvailabilityUnguardedMock\.swift:8:\d+: error: {unavailable_mock})"
+        ),
+        "AvailabilityUnguardedHelpers": (
+            rf"(?s)(?=.*AvailabilityUnguardedHelpers\.swift:3:\d+: error: {unavailable_mock})"
+            rf"(?=.*AvailabilityUnguardedHelpers\.swift:7:\d+: error: {unavailable_mock})"
+        ),
         "MainActorAssertionAccess": r"main actor-isolated.*'wasCalled",
         "MainActorAsyncTransport": r"sending 'entry' risks causing data races",
         "MainActorSpyAsyncTransport": r"sending 'entry' risks causing data races",
@@ -990,11 +1091,7 @@ def main():
             compiler_stage = ["-emit-sil", "-o", os.devnull]
             payload = "DirectoryEntry" if fixture.stem == "MainActorAsyncTransport" else "ActorSpyEntry"
             diagnostic_patterns.append(rf"non-Sendable '{payload}'-typed result.*main actor-isolated")
-        compiler_command = [
-            swiftc, "-swift-version", "6", "-target",
-            f"{platform.machine()}-apple-macos{deployment_target}", "-sdk", sdk, *compiler_stage,
-            "-I", modules,
-        ]
+        compiler_command = [*compiler_floor, *compiler_stage, "-I", modules]
         check_name = "compile-reject-" + fixture.stem
         run(check_name, [*compiler_command, fixture], env=swift_environment,
             fails=True, patterns=diagnostic_patterns)

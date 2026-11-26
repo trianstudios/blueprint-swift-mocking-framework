@@ -248,6 +248,22 @@ final class ProtocolSourceIndex {
             + Self.candidateLocations(competitors)
     }
 
+    /// Resolves a lexical nominal used by the restricted availability profile.
+    func requireAvailabilityStruct(named name: String, at reference: some SyntaxProtocol) throws -> StructDeclSyntax {
+        let site = origin(of: reference)
+        let declarations = try load(site.module)
+        let candidates = Self.shadows(named: name, in: declarations)
+        guard Self.isSimple(name), candidates.count == 1, let candidate = candidates.first,
+              !candidate.isConditional, let concrete = candidate.declaration.as(StructDeclSyntax.self),
+              concrete.name.text == name, concrete.modifiers.map(\.name.text) == ["public"],
+              concrete.genericParameterClause == nil, concrete.genericWhereClause == nil else {
+            let details = candidates.isEmpty ? "" : " Candidates: " + Self.candidateLocations(candidates) + "."
+            throw Self.error(at: site, "Cannot verify macOS availability of '\(site.module).\(name)' from supplied source. "
+                             + "Use an unconditional public, nongeneric struct declared in this module." + details)
+        }
+        return concrete
+    }
+
     func iteratorElementWitness(
         named name: String, in module: String, at constraint: some SyntaxProtocol
     ) throws -> IteratorElementWitness {

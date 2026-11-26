@@ -22,6 +22,45 @@ struct ExplicitSourceConditions {
         values[module, default: [:]][flag] = value == "true"
     }
 }
+private struct MacOSIntroduction: Comparable {
+    let major: Int
+    let minor: Int
+    let patch: Int
+
+    init?(attributes: AttributeListSyntax) {
+        guard attributes.count == 1,
+              let attribute = attributes.first?.as(AttributeSyntax.self),
+              attribute.attributeName.trimmedDescription == "available",
+              case .availability(let arguments)? = attribute.arguments,
+              arguments.count == 2,
+              case .availabilityVersionRestriction(let restriction)? = arguments.first?.argument,
+              restriction.platform.text == "macOS", let version = restriction.version,
+              case .token(let wildcard)? = arguments.last?.argument, wildcard.text == "*" else {
+            return nil
+        }
+        let components = version.trimmedDescription.split(separator: ".", omittingEmptySubsequences: false)
+        let numbers = components.compactMap { component -> Int? in
+            guard !component.isEmpty, component.allSatisfy({ $0.isASCII && $0.isNumber }) else {
+                return nil
+            }
+            return Int(component)
+        }
+        guard (1...3).contains(components.count), numbers.count == components.count else { return nil }
+        major = numbers[0]
+        minor = numbers.count > 1 ? numbers[1] : 0
+        patch = numbers.count > 2 ? numbers[2] : 0
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        (lhs.major, lhs.minor, lhs.patch) < (rhs.major, rhs.minor, rhs.patch)
+    }
+
+    var annotation: String {
+        let version = patch == 0 ? "\(major).\(minor)" : "\(major).\(minor).\(patch)"
+        return "@available(macOS \(version), *)\n"
+    }
+}
+
 enum Isolation {
     case sendable
     case mainActor
@@ -377,6 +416,7 @@ func generate(
     }
 
     var members: [Member] = []
+    var mockAvailability: MacOSIntroduction?
     var descriptors: [String: Member] = [:]
     var witnessesByName: [String: Member] = [:]
     var boundSelectors: [String: Member] = [:]
@@ -675,7 +715,7 @@ func generate(
         guard let fn = item.decl.as(FunctionDeclSyntax.self) else {
             try reject(item, "Only function, property and instance subscript requirements are supported in this slice")
         }
-        guard fn.body == nil, fn.attributes.isEmpty, fn.modifiers.isEmpty,
+        guard fn.body == nil, fn.modifiers.isEmpty,
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
               simple(fn.name.text), !["init", "verify", "Stubs", "Verification"].contains(fn.name.text) else {
             try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
@@ -689,6 +729,35 @@ func generate(
             }
         }
         let returnType = fn.signature.returnClause?.type
+        if !fn.attributes.isEmpty {
+            let hasAvailability = fn.attributes.contains {
+                $0.as(AttributeSyntax.self)?.attributeName.trimmedDescription == "available"
+            }
+            guard hasAvailability else {
+                try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
+            }
+            guard let introduction = MacOSIntroduction(attributes: fn.attributes) else {
+                try reject(fn, "Only @available(macOS VERSION, *) is supported on generated protocol methods")
+            }
+            guard isolation == .sendable, !imported, !hasBindings,
+                  fn.signature.parameterClause.parameters.isEmpty, fn.signature.effectSpecifiers == nil,
+                  let returnType, let identifier = returnType.as(IdentifierTypeSyntax.self),
+                  supportedType(returnType) != nil else {
+                try reject(fn, "A macOS availability requirement needs a synchronous, nonthrowing, parameterless Sendable"
+                           + " instance method returning a same-module public struct")
+            }
+            let payload = try index.requireAvailabilityStruct(named: identifier.name.text, at: returnType)
+            if !payload.attributes.isEmpty {
+                guard let payloadIntroduction = MacOSIntroduction(attributes: payload.attributes) else {
+                    try reject(payload, "Only @available(macOS VERSION, *) is supported on the result struct")
+                }
+                guard payloadIntroduction <= introduction else {
+                    try reject(returnType, "The result struct is introduced after the protocol requirement")
+                }
+            }
+            // Every generated signature and storage slot referring to the result lives in the class.
+            mockAvailability = mockAvailability.map { max($0, introduction) } ?? introduction
+        }
         let outputType: String
         if imported {
             try index.requireUnshadowedQualifier("Swift", at: fn)
@@ -907,7 +976,7 @@ func generate(
     import BlueprintMocking
     import \(module)
 
-    \(isolation.annotation)public final class \(declaration): \(selected) {
+    \(mockAvailability?.annotation ?? "")\(isolation.annotation)public final class \(declaration): \(selected) {
         private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
 
     """
