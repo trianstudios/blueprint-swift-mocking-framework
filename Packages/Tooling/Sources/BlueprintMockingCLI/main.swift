@@ -289,7 +289,10 @@ func generate(
         try reject(proto, "Supplied cross-module inheritance supports ordinary witnesses without forwarding, projections or generic specializations")
     }
 
-    func importedScalar(_ type: TypeSyntax) -> String? {
+    func importedType(_ type: TypeSyntax) -> String? {
+        if let identifier = type.as(IdentifierTypeSyntax.self) {
+            return bindings.boundType(for: identifier)
+        }
         guard let qualified = type.as(MemberTypeSyntax.self), qualified.genericArgumentClause == nil,
               let qualifier = qualified.baseType.as(IdentifierTypeSyntax.self), qualifier.genericArgumentClause == nil,
               qualifier.name.text == "Swift", ["Bool", "Int", "String"].contains(qualified.name.text) else {
@@ -472,8 +475,8 @@ func generate(
                 }
             }
             if imported {
-                guard let type = importedScalar(parameter.type), unmodified, !isVariadic else {
-                    try reject(parameter, "Cross-module inherited parameters require an unmodified Swift.Bool, Swift.Int or Swift.String type")
+                guard let type = importedType(parameter.type), unmodified, !isVariadic else {
+                    try reject(parameter, "Cross-module inherited parameters require an unmodified Swift.Bool, Swift.Int or Swift.String type, or a visible bound associated type")
                 }
                 return Parameter(label: label, type: type)
             }
@@ -678,10 +681,10 @@ func generate(
                 }
             }
             if let returnType {
-                guard let scalar = importedScalar(returnType) else {
-                    try reject(fn, "Cross-module inherited results require an explicit Swift.Bool, Swift.Int or Swift.String type")
+                guard let resolved = importedType(returnType) else {
+                    try reject(fn, "Cross-module inherited results require an explicit Swift.Bool, Swift.Int or Swift.String type, or a visible bound associated type")
                 }
-                outputType = scalar
+                outputType = resolved
             } else {
                 outputType = "Void"
             }

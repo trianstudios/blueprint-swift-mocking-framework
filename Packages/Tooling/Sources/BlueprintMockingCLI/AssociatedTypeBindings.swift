@@ -41,9 +41,6 @@ struct ConcreteAssociatedTypeBindings {
             return
         }
 
-        if declarations.contains(where: { $0.origin.module != root.origin.module }) {
-            try reject(root.declaration, "Cross-module associated-type bindings require compiler-backed type resolution")
-        }
         guard root.declaration.attributes.isEmpty else {
             try reject(root.declaration, "Concrete associated-type bindings require a Sendable protocol")
         }
@@ -129,10 +126,15 @@ struct ConcreteAssociatedTypeBindings {
 
     func resolve(_ identifier: IdentifierTypeSyntax) -> String? {
         let name = identifier.name.text
-        guard let bound = types[name] else { return name }
+        return types[name] == nil ? name : boundType(for: identifier)
+    }
 
-        // A declaration on a separate inheritance branch cannot see a child's associated type.
-        // Emitting that bare name would also capture it with the generated typealias.
+    func boundType(for identifier: IdentifierTypeSyntax) -> String? {
+        let name = identifier.name.text
+        guard identifier.genericArgumentClause == nil, let bound = types[name] else { return nil }
+
+        // Only declarations that inherit or declare this associated type can use its binding.
+        // Emitting a bare nominal name from another branch could capture the mock's typealias.
         var ancestor = identifier.parent
         while let syntax = ancestor {
             if syntax.is(ProtocolDeclSyntax.self) {

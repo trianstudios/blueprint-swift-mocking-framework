@@ -131,9 +131,9 @@ bash scripts/generate.sh \
 
 The generator follows transitive parents in the supplied sources and emits a shared diamond requirement once. Same-module parents may use their bare names. For a parent in another module, add an unconditional plain import in the declaring file, spell the parent as `ParentModule.ParentProtocol` and supply its files under `--source ParentModule`. The resolver diagnoses module qualifiers shadowed by supplied imports. Inherited call reports retain the declaring module, file and line.
 
-Parents must be public, top-level, nongeneric protocols. Across modules, ordinary instance methods may use explicitly qualified `Swift.Bool`, `Swift.Int` and `Swift.String` parameters and results or omit the return type. Inherited methods from other modules need distinct member names. These requests use ordinary mocks. Forwarding, projections and generic specializations are outside the cross-module profile. The SwiftPM configuration entry uses the same resolver with both modules supplied as source inputs. In the build plugin, the attached target must directly depend on all participating source targets. Conditional and actor-isolated parents, imported module interfaces, qualified nominal payloads and typed errors in foreign requirements are outside this profile.
+Parents must be public, top-level, nongeneric protocols. Across modules, ordinary instance methods may use explicitly qualified `Swift.Bool`, `Swift.Int` and `Swift.String`, or an explicitly bound associated type visible to the declaring protocol. Methods may omit the return type. Inherited methods from other modules need distinct member names. These requests use ordinary mocks. Forwarding, projections and generic specializations are outside the cross-module profile. The SwiftPM configuration entry uses the same resolver with both modules supplied as source inputs. In the build plugin, the attached target must directly depend on all participating source targets. Conditional and actor-isolated parents, imported module interfaces, qualified nominal payloads and typed errors in foreign requirements are outside this profile.
 
-To bind a primary or ordinary associated type, pass `--bind-associated-type Name=Type` to standalone generation. The generated mock exposes the bound name as a public type alias and uses the concrete type in its stubs and verification API. Supply inherited declarations from the same module as usual.
+To bind a primary or ordinary associated type, pass `--bind-associated-type Name=Type` to standalone generation. The generated mock exposes the bound name as a public type alias and uses the concrete type in its stubs and verification API. Supply each inherited declaration's source under its declaring module. The [qualified-parent fixture](Fixtures/ProtocolConsumer/Sources/ConsumerDomain/AssociatedDirectoryFromDependency.swift) binds a primary associated type declared in a dependency.
 
 ```sh
 bash scripts/generate.sh \
@@ -144,7 +144,7 @@ bash scripts/generate.sh \
   --bind-associated-type Element=String
 ```
 
-This profile supports ordinary instance methods on `Sendable` protocols, with `Swift.Bool`, `Swift.Int`, or `Swift.String` bindings and optional `Sendable` constraints. Bind each associated type once. Overloads need distinct argument labels. Dependent constraints, defaults, and cross-module associated types remain open.
+This profile supports ordinary instance methods on `Sendable` protocols, with `Swift.Bool`, `Swift.Int`, or `Swift.String` bindings and optional `Sendable` constraints. Bind each associated type once. Overloads need distinct argument labels. Dependent constraints, defaults and associated types from compiler-provided interfaces remain open.
 
 For supported Sendable methods, add `--project 'fetch(id:)'` and any other `--project` selectors to generate a separate `<Protocol>ProjectedMock`. Synchronous nonthrowing and async-throwing methods can opt in. A selector uses the declaration's argument labels, including `_:` for unlabeled arguments. If overloads share the same labels, use the canonical endpoint ID listed in the diagnostic.
 

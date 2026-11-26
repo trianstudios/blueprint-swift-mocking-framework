@@ -154,6 +154,13 @@ def main():
     run("associated-binding-generation", generate(
         tool, associated_source, associated_generated, "AssociatedDirectory",
         sources=associated_parents, associated_bindings=("Element=String",)))
+    dependency_associated_source = source.with_name("AssociatedDirectoryFromDependency.swift")
+    dependency_associated_generated = generated.with_name("AssociatedDirectoryFromDependencyMock.swift")
+    bound_parent = source.parent.parent / "ParentDomain/BoundParent.swift"
+    dependency_associated_parents = (("ParentDomain", bound_parent),)
+    run("qualified-associated-binding-generation", generate(
+        tool, dependency_associated_source, dependency_associated_generated, "AssociatedDirectoryFromDependency",
+        sources=dependency_associated_parents, associated_bindings=("Element=String",)))
     actor_source = source.with_name("MainActorDirectory.swift")
     actor_generated = generated.with_name("MainActorDirectoryMock.swift")
     run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
@@ -322,6 +329,21 @@ def main():
     assert {file.name: file.read_bytes() for file in associated_batch.glob("*.generated.swift")} == (
         last_valid_associated_outputs
     )
+    dependency_config = temp / "qualified-associated-blueprint-mocking.json"
+    dependency_selection = associated_selection | {"type": "AssociatedDirectoryFromDependency"}
+    dependency_config.write_text(json.dumps({"schemaVersion": 1, "selections": [dependency_selection]}))
+    dependency_batch = temp / "qualified-associated-config-batch"
+    dependency_config_args = [
+        "--config", dependency_config, "--output", dependency_batch, "--input-set-id", "4",
+        "--source", "ConsumerDomain", dependency_associated_source, "--source", "ParentDomain", bound_parent,
+    ]
+    run("qualified-associated-config-generation", [tool, "generate", *dependency_config_args],
+        patterns=[r"Blueprint Mocking: generated 1 protocol mock"])
+    assert dependency_associated_generated.read_bytes() in (
+        dependency_batch / "BlueprintMocks.generated.swift"
+    ).read_bytes()
+    run("qualified-associated-config-verify-generated", [tool, "verify-generated", *dependency_config_args],
+        patterns=[r"Blueprint Mocking: verified 2 generated file"])
     assert baseline == (temp / "Repeated.swift").read_bytes()
     actor_repeated = temp / "RepeatedMainActor.swift"
     run("main-actor-generation-repeat",
@@ -636,9 +658,15 @@ def main():
          r"Unsupported concrete associated type binding for 'Element'"),
         ("constraint", inheritance_rejections / "AssociatedUnsupportedConstraint.swift", (), ("Element=String",),
          r"Concrete associated-type bindings support only an optional Sendable constraint"),
-        ("imported", inheritance_rejections / "ImportedAssociatedDirectory.swift",
-         (("ParentDomain", inheritance_rejections / "ForeignAssociatedDirectory.swift"),), ("Element=String",),
-         r"Cross-module associated-type bindings require compiler-backed type resolution"),
+        ("qualified-missing", dependency_associated_source, dependency_associated_parents, (),
+         r"Missing explicit binding for associated type 'Element'"),
+        ("qualified-conflicting", dependency_associated_source, dependency_associated_parents,
+         ("Element=String", "Element=Int"), r"Conflicting explicit bindings for associated type 'Element'"),
+        ("imported-nominal", inheritance_rejections / "ImportedAssociatedDirectory.swift",
+         tuple(("ParentDomain", inheritance_rejections / name) for name in (
+             "ForeignAssociatedDirectory.swift", "ForeignNominalElementBranch.swift",
+         )), ("Element=String",),
+         r"Cross-module inherited results require an explicit Swift.*or a visible bound associated type"),
         ("nominal-collision", inheritance_rejections / "AssociatedNominalCollision.swift",
          (*associated_parents, ("ConsumerDomain", inheritance_rejections / "NominalElementBranch.swift")),
          ("Element=String",), r"Use a supported result type"),
@@ -646,7 +674,11 @@ def main():
          ("Element=String",),
          r"Concrete associated-type bindings need distinct argument labels for overloaded requirement 'put\(_:\)'"),
     ]
+    bound_parent_origin = [r"BoundParent\.swift:2:\d+: error:"]
     associated_origins = {
+        "qualified-missing": bound_parent_origin,
+        "qualified-conflicting": bound_parent_origin,
+        "imported-nominal": [r"ForeignNominalElementBranch\.swift:4:\d+: error:"],
         "nominal-collision": [r"NominalElementBranch\.swift:4:\d+: error:"],
         "overload-collision": [r"AssociatedOverloadCollision\.swift:3:\d+",
                                r"AssociatedOverloadCollision\.swift:4:\d+"],
@@ -690,7 +722,8 @@ def main():
                   r"GEN002_unstubbedSharedWitnessReportsItsOriginalDeclarationFile\(\) passed",
                   r"GEN002_qualifiedParentsKeepModuleIdentityAndForeignDeclarationProvenance\(\) passed",
                   r"GEN008_concretePrimaryAssociatedTypeBindingSurvivesConsumerCalls\(\) passed",
-                  r"GEN008_inheritedAssociatedRequirementKeepsItsDeclarationSource\(\) passed"])
+                  r"GEN008_inheritedAssociatedRequirementKeepsItsDeclarationSource\(\) passed",
+                  r"GEN008_qualifiedParentBindsAssociatedTypeAcrossTargets\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [
