@@ -64,7 +64,7 @@ Use `session.checkpoint()` and `try session.events(since: checkpoint)` to read t
 
 Use `session.withContext { ... }` to bind an epoch to the current lexical scope. Structured child tasks inherit the token. Detached work and callbacks can capture `session.contextHandle` and rebind it explicitly with `session.withContext(handle) { ... }`. Validation rejects missing, foreign and stale context. Keep passing `session:` explicitly when constructing instance mocks.
 
-Call `session.snapshot().matchOrder(_:mode:phase:)` to read cross-mock order by mock and endpoint IDs. Relative mode allows intervening events. Strict mode requires consecutive matches in the selected phase. A selector from a different session is rejected.
+Call `session.snapshot().matchOrder(_:mode:phase:)` to read cross-mock order by mock and endpoint IDs. Relative mode allows intervening events. Strict mode requires consecutive matches in the selected phase. A selector from a different session is rejected. Use `session.snapshot().matchCompletion(of:beforeStartOf:phase:)` to find a completed invocation followed by a distinct invocation's admission in the same epoch.
 
 Await `session.waitForQuiescence(until: deadline, clock: clock)` to observe a snapshot with no active calls, including calls in detached epochs. Waiting is cancellable, and the deadline is exclusive. Producers can admit new calls after the snapshot.
 
