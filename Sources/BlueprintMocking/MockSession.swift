@@ -222,8 +222,15 @@ public final class MockSession: Sendable {
             )
         }
 
-        fileprivate func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
+        func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
             (snapshot(epoch: epoch)!, finishedElapsed ?? clock.elapsed)
+        }
+
+        // Projected publications share the session ordering, but carry no public
+        // metadata event. Metadata replay already permits these ordinal gaps.
+        mutating func recordProjectionPosition() -> (ordinal: UInt64, elapsed: Duration) {
+            lastEventOrdinal += 1
+            return (lastEventOrdinal, clock.elapsed)
         }
 
         fileprivate func continuousInstant(at elapsed: Duration) -> ContinuousClock.Instant? {

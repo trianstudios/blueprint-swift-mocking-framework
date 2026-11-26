@@ -81,7 +81,8 @@ public final class ProjectedSyncEndpoint<Input: Sendable, Output: Sendable,
         self.configuration = configuration
         self.projection = projection
         self.fallback = fallback
-        projectedJournal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
+        projectedJournal = Journal(endpoint: id, reporter: failureReporter, scope: scope,
+                                   tracksProjectionTimeline: Argument.self == String.self)
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) -> Output {

@@ -14,7 +14,8 @@ public final class ProjectedAsyncThrowingEndpoint<
         failureMapping: (@Sendable (MockIssue) -> Failure)? = nil
     ) {
         dispatch = AsyncThrowingDispatch(id: id, configuration: configuration, failureReporter: failureReporter,
-                                         scope: scope, failureMapping: failureMapping)
+                                         scope: scope, failureMapping: failureMapping,
+                                         tracksProjectionTimeline: Argument.self == String.self)
         self.projection = projection
     }
 
@@ -60,5 +61,23 @@ public extension ProjectedAsyncThrowingEndpoint where Failure == any Error {
         self.init(id: id, configuration: configuration, projection: projection,
                   failureReporter: failureReporter, scope: scope,
                   failureMapping: { UnexpectedInvocationError(issue: $0) })
+    }
+}
+
+public extension ProjectedAsyncThrowingEndpoint where Argument == String {
+    /// Proves a count of the given projected string for a continuous session-clock interval.
+    /// Pending argument projections interrupt the interval.
+    func stable(
+        _ count: CallCount, matchingArgument argument: String, for duration: Duration, within timeout: Duration
+    ) async throws -> SessionTimedCountObservation {
+        try await prepareArgumentStability(count, matchingArgument: argument, for: duration, within: timeout).value()
+    }
+}
+
+extension ProjectedAsyncThrowingEndpoint where Argument == String {
+    func prepareArgumentStability(
+        _ count: CallCount, matchingArgument argument: String, for duration: Duration, within timeout: Duration
+    ) throws -> ProjectedArgumentStabilityWait<Result> {
+        try dispatch.prepareArgumentStability(count, matchingArgument: argument, for: duration, within: timeout)
     }
 }
