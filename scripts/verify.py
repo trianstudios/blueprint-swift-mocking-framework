@@ -158,6 +158,7 @@ def main():
         ("writable-spy", "WritableSpyDirectory"),
         ("actor-writable-spy", "ActorWritableSpyDirectory"),
         ("inout-spy", "InoutSpyDirectory"),
+        ("callback-spy", "CallbackSpyDirectory"),
     ]
     for check, protocol in additional_spies:
         run(check + "-generation", generate(
@@ -318,7 +319,18 @@ def main():
                                    "    func update(_ value: inout Int)\n"
                                    "}\n")
     spy_callback = temp / "CallbackSpy.swift"
-    spy_callback.write_text("public protocol CallbackSpy: Sendable { func apply(_ block: (Int) -> Int) }\n")
+    spy_callback.write_text("public protocol CallbackSpy: Sendable { func apply(_ block: @escaping (Int) -> Int) }\n")
+    spy_actor_callback = temp / "MainActorCallbackSpy.swift"
+    spy_actor_callback.write_text("public protocol MainActorCallbackSpy: Sendable {\n"
+                                  "    func apply(_ block: @MainActor (Int) -> Int)\n"
+                                  "}\n")
+    spy_async_callback = temp / "AsyncCallbackSpy.swift"
+    spy_async_callback.write_text("public protocol AsyncCallbackSpy: Sendable { func apply(_ block: (Int) -> Int) async }\n")
+    spy_callback_collision = temp / "CallbackSpyCollision.swift"
+    spy_callback_collision.write_text("public protocol CallbackSpyCollision: Sendable {\n"
+                                      "    func apply(id: Int, using block: (Int) -> Int) -> Int\n"
+                                      "    func apply(id: Int) -> Int\n"
+                                      "}\n")
     spy_rejections = (
         ("variadic", variadic_source, "VariadicDirectory", (), "cannot splat a Swift variadic argument"),
         ("writable-property", property_source, "PropertyDirectory", (), "writable property requires a nonmutating setter"),
@@ -330,7 +342,10 @@ def main():
         ("inout-async", spy_async_inout, "AsyncInoutSpy", (), "inout forwarding requires a synchronous method"),
         ("inout-actor", spy_actor_inout, "ActorInoutSpy", (), "requires a Sendable method with one inout Swift.Int"),
         ("inout-collision", spy_inout_collision, "InoutSpyCollision", (), "Inout overloads with identical matcher signatures"),
-        ("callback", spy_callback, "CallbackSpy", (), "requires a call-scoped provider for callback"),
+        ("callback-escaping", spy_callback, "CallbackSpy", (), "require one unannotated, nonescaping"),
+        ("callback-isolated", spy_actor_callback, "MainActorCallbackSpy", (), "require one unannotated, nonescaping"),
+        ("callback-async", spy_async_callback, "AsyncCallbackSpy", (), "require a synchronous nonthrowing method"),
+        ("callback-collision", spy_callback_collision, "CallbackSpyCollision", (), "identical ordinary-argument matcher signatures"),
     )
     for label, input_path, protocol, projections, pattern in spy_rejections:
         rejected = temp / "RejectedSpy.swift"
@@ -462,6 +477,8 @@ def main():
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
         "GenericSubscriptWrongResult": r"cannot convert value of type 'String' to expected argument type 'Int'",
+        "CallbackSpyDeferredCapture": r"passing non-escaping parameter 'callback'.*'@escaping'",
+        "CallbackSpyDetachedCapture": r"escaping closure captures non-escaping value",
         "InoutSpyRetainsAccess": r"escaping closure captures 'inout' parameter 'value'",
         "SpyWrongTarget": r"argument type 'UnrelatedDependency' does not conform to expected type 'SpyDirectory'",
         "SubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
@@ -481,8 +498,10 @@ def main():
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
         compiler_stage = ["-typecheck"]
         diagnostic_patterns = [patterns[fixture.stem]]
-        if fixture.stem == "InoutSpyRetainsAccess":
+        if fixture.stem in {"InoutSpyRetainsAccess", "CallbackSpyDetachedCapture"}:
             compiler_stage = ["-emit-sil", "-o", os.devnull]
+        if fixture.stem == "CallbackSpyDetachedCapture":
+            diagnostic_patterns.append(r"passing closure as a 'sending' parameter risks causing data races")
         if fixture.stem in {"MainActorAsyncTransport", "MainActorSpyAsyncTransport"}:
             # Swift checks unsafe region transfers during SIL generation.
             compiler_stage = ["-emit-sil", "-o", os.devnull]
@@ -497,7 +516,7 @@ def main():
         run(check_name, [*compiler_command, fixture], env=swift_environment,
             fails=True, patterns=diagnostic_patterns)
         if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess", "MainActorVerificationAccess",
-                            "MainActorSpyWitnessAccess", "MainActorSpyAsyncTransport"}:
+                            "MainActorSpyWitnessAccess", "MainActorSpyAsyncTransport", "CallbackSpyDetachedCapture"}:
             run(check_name + "-DefaultIsolation",
                 [*compiler_command, "-default-isolation", "MainActor", fixture],
                 env=swift_environment, fails=True, patterns=diagnostic_patterns)

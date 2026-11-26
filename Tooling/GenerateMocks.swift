@@ -65,17 +65,27 @@ struct Effect {
         (runtimeFailure != nil ? "try " : "") + (isAsync ? "await " : "")
     }
 }
+struct CallbackType {
+    let input: String
+    let output: String
+
+    var declaration: String { "(\(input)) -> \(output)" }
+}
+
 struct Parameter {
     let label: String
     let type: String
     let isVariadic: Bool
     let isInout: Bool
+    let callback: CallbackType?
 
-    init(label: String, type: String, isVariadic: Bool = false, isInout: Bool = false) {
+    init(label: String, type: String, isVariadic: Bool = false, isInout: Bool = false,
+         callback: CallbackType? = nil) {
         self.label = label
         self.type = type
         self.isVariadic = isVariadic
         self.isInout = isInout
+        self.callback = callback
     }
 
     var witnessType: String {
@@ -126,7 +136,12 @@ struct Member {
     let kind: WitnessKind
 
     var usesInout: Bool { parameters.contains(where: \.isInout) }
-    var family: String { (usesInout ? "Inout" : isolation.prefix) + effect.family }
+    var callback: CallbackType? { parameters.last?.callback }
+    var metadataParameters: [Parameter] { callback == nil ? parameters : Array(parameters.dropLast()) }
+    var family: String {
+        if callback != nil { return "SyncCallback" }
+        return (usesInout ? "Inout" : isolation.prefix) + effect.family
+    }
     var verificationInputType: String { usesInout ? "InoutValues<\(inputType)>" : inputType }
 
     var isTypeLevel: Bool {
@@ -141,12 +156,14 @@ struct Member {
     }
 
     var inputType: String {
-        if parameters.isEmpty { return "Void" }
-        if parameters.count == 1 { return parameters[0].runtimeType }
-        return "(" + parameters.map(\.runtimeType).joined(separator: ", ") + ")"
+        let metadata = metadataParameters
+        if metadata.isEmpty { return "Void" }
+        if metadata.count == 1 { return metadata[0].runtimeType }
+        return "(" + metadata.map(\.runtimeType).joined(separator: ", ") + ")"
     }
 
     var genericArguments: String {
+        if let callback { return "\(inputType), \(callback.input), \(callback.output), \(outputType)" }
         let types = "\(inputType), \(outputType)"
         return effect.runtimeFailure.map { "\(types), \($0.type)" } ?? types
     }
@@ -156,7 +173,7 @@ struct Member {
     }
 
     private func matcherName(_ index: Int) -> String {
-        parameters.count == 1 ? "matcher" : "matcher\(index)"
+        metadataParameters.count == 1 ? "matcher" : "matcher\(index)"
     }
 
     var parameterDeclaration: String {
@@ -174,12 +191,14 @@ struct Member {
     var invocationInput: String {
         let arguments = invocationArguments
         if usesInout { return "&" + arguments[0] }
-        if arguments.count == 1 { return arguments[0] }
-        return "(" + arguments.joined(separator: ", ") + ")"
+        let metadata = callback == nil ? arguments[...] : arguments.dropLast()
+        let inputs = metadata.count == 1 ? metadata[metadata.startIndex] : "(" + metadata.joined(separator: ", ") + ")"
+        if callback != nil, let scoped = arguments.last { return "\(inputs), \(scoped)" }
+        return inputs
     }
 
     private var descriptorParameters: [String] {
-        var declarations = parameters.enumerated().map { index, parameter in
+        var declarations = metadataParameters.enumerated().map { index, parameter in
             "\(parameter.label) \(matcherName(index)): \(isolation.prefix)Matcher<\(parameter.runtimeType)>"
         }
         if case .specializedSubscriptGetter(_, let type) = kind {
@@ -201,9 +220,10 @@ struct Member {
     }
 
     var matcherExpression: String {
-        if parameters.isEmpty { return ".any" }
-        if parameters.count == 1 { return matcherName(0) }
-        let matches = parameters.indices.map { "\(matcherName($0)).matches(input.\($0))" }
+        let metadata = metadataParameters
+        if metadata.isEmpty { return ".any" }
+        if metadata.count == 1 { return matcherName(0) }
+        let matches = metadata.indices.map { "\(matcherName($0)).matches(input.\($0))" }
             .joined(separator: " && ")
         return "\(isolation.prefix)Matcher<\(inputType)> { input in \(matches) }"
     }
@@ -310,13 +330,13 @@ func generate(
     }
 
     var members: [Member] = []
-    var descriptors: [String: (variadic: Bool, inoutValue: Bool)] = [:]
+    var descriptors: [String: (variadic: Bool, inoutValue: Bool, callback: Bool)] = [:]
     func addMember(
         name: String, parameters: [Parameter], outputType: String,
         effect: Effect, kind: WitnessKind, at node: some SyntaxProtocol
     ) throws {
         let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
-        let matcherTypes = parameters.map {
+        let matcherTypes = parameters.filter { $0.callback == nil }.map {
             "\($0.label):\($0.isInout ? "Int" : $0.runtimeType)"
         }.joined(separator: ",")
         let specialization: String
@@ -333,12 +353,16 @@ func generate(
         let descriptor = "\(namespace)\(name)(\(matcherTypes)\(specialization))"
         let isVariadic = parameters.contains { $0.isVariadic }
         let isInout = parameters.contains(where: \.isInout)
-        if let previous = descriptors.updateValue((isVariadic, isInout), forKey: descriptor) {
+        let hasCallback = parameters.contains { $0.callback != nil }
+        if let previous = descriptors.updateValue((isVariadic, isInout, hasCallback), forKey: descriptor) {
             if isVariadic || previous.variadic {
                 try reject(node, "Variadic overloads with identical lowered matcher signatures require distinct argument labels")
             }
             if isInout || previous.inoutValue {
                 try reject(node, "Inout overloads with identical matcher signatures require distinct argument labels")
+            }
+            if hasCallback || previous.callback {
+                try reject(node, "Callback overloads with identical ordinary-argument matcher signatures require distinct argument labels")
             }
             try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names")
         }
@@ -387,7 +411,15 @@ func generate(
                     return Parameter(label: label, type: "Swift.Int", isInout: true)
                 }
                 if tokens.contains("->") {
-                    try reject(parameter, "Direct spy call-through requires a call-scoped provider for callback arguments")
+                    guard isolation == .sendable, !forSubscript, unmodified,
+                          let function = parameter.type.as(FunctionTypeSyntax.self),
+                          function.effectSpecifiers == nil, function.parameters.count == 1,
+                          let input = function.parameters.first.flatMap({ supportedType($0.type) }),
+                          let output = supportedResult(function.returnClause.type) else {
+                        try reject(parameter, "Direct spy callbacks require one unannotated, nonescaping, synchronous nonthrowing function argument of supported value types")
+                    }
+                    let callback = CallbackType(input: input, output: output)
+                    return Parameter(label: label, type: callback.declaration, callback: callback)
                 }
             }
             guard let type = supportedType(parameter.type), unmodified else {
@@ -559,6 +591,11 @@ func generate(
         let effect = try methodEffect(specifiers?.asyncSpecifier, specifiers?.throwsClause, at: fn)
         if effect.isAsync && parameters.contains(where: \.isInout) {
             try reject(fn, "Direct spy inout forwarding requires a synchronous method")
+        }
+        let callbacks = parameters.filter { $0.callback != nil }
+        if !callbacks.isEmpty && (callbacks.count != 1 || parameters.last?.callback == nil ||
+                                  effect.isAsync || effect.failure != nil) {
+            try reject(fn, "Direct spy callbacks require a synchronous nonthrowing method with one callback in the final position")
         }
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
                       effect: effect, kind: .method, at: fn)
@@ -849,10 +886,11 @@ func generate(
     output += "        configure(Stubs(" + instanceIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
     func spyForwardingArgument(_ member: Member) -> String {
         func inputExpression(_ index: Int) -> String {
-            member.parameters.count == 1 ? "input" : "input.\(index)"
+            member.metadataParameters.count == 1 ? "input" : "input.\(index)"
         }
         let arguments = member.parameters.enumerated().map { index, parameter in
-            let value = (parameter.isInout ? "&" : "") + inputExpression(index)
+            let value = parameter.callback != nil ? "callback" :
+                (parameter.isInout ? "&" : "") + inputExpression(index)
             return parameter.label == "_" ? value : "\(parameter.label): \(value)"
         }
         let call: String
@@ -875,7 +913,8 @@ func generate(
         if member.usesInout {
             input = "(input: inout \(member.inputType))"
         } else {
-            input = member.parameters.isEmpty ? "_" : "input"
+            let ordinaryInput = member.metadataParameters.isEmpty ? "_" : "input"
+            input = member.callback == nil ? ordinaryInput : "\(ordinaryInput), callback"
         }
         let isolationAttribute = isolation == .sendable ? "@Sendable" : "@MainActor"
         let effects = (member.effect.isAsync ? " async" : "") +
