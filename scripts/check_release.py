@@ -29,6 +29,7 @@ import argparse
 from collections import Counter
 import csv
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -52,9 +53,12 @@ PROFILE_FIELDS = {
 }
 
 
-def read_registry(path):
+def read_registry(path, expected_sha256=None):
     errors = []
-    with path.open(newline="", encoding="utf-8-sig") as stream:
+    data = path.read_bytes()
+    if expected_sha256 is not None and hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise ValueError("registry SHA-256 does not match the committed acceptance registry")
+    with io.StringIO(data.decode("utf-8-sig"), newline="") as stream:
         reader = csv.DictReader(stream, strict=True)
         columns = reader.fieldnames or []
         missing = REQUIRED_COLUMNS.difference(columns)
@@ -117,10 +121,13 @@ def validate_header(document, revision):
         raise ValueError("evidence revision does not match the requested release revision")
 
 
-def load_plan(path, revision):
+def load_plan(path, revision, expected_sha256=None):
     if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", revision):
         raise ValueError("--revision must be a full Git hash when a certification plan is supplied")
-    plan = read_json(path.read_bytes(), "certification plan")
+    data = path.read_bytes()
+    if expected_sha256 is not None and hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise ValueError("certification plan SHA-256 does not match the signed runner attestation")
+    plan = read_json(data, "certification plan")
     validate_header(plan, revision)
     profiles = obj(plan.get("profiles"), "profiles")
     for profile_id, profile in profiles.items():
@@ -168,7 +175,14 @@ def check_artifact(directory, entry, feature, gate, revision, profile, checks):
     if report.get("profile") != profile:
         raise ValueError("artifact does not match the required profile")
 
-    results = report.get("results")
+    observed = passing_results(report.get("results"))
+    missing = set(checks).difference(observed)
+    if missing:
+        raise ValueError("artifact is missing checks: " + ", ".join(sorted(missing)))
+
+
+
+def passing_results(results):
     if not isinstance(results, list):
         raise ValueError("evidence artifact needs check results")
     observed = set()
@@ -183,12 +197,10 @@ def check_artifact(directory, entry, feature, gate, revision, profile, checks):
                 or type(negative) is not bool or (status != 0) != negative):
             raise ValueError(f"check {name!r} lacks a passing result with its expected exit")
         observed.add(name)
-    missing = set(checks).difference(observed)
-    if missing:
-        raise ValueError("artifact is missing checks: " + ", ".join(sorted(missing)))
+    return observed
 
 
-def certify(row, directory, plan, revision):
+def certify(row, directory, plan, revision, repository):
     feature = row["Feature ID"]
     gate = row["Acceptance gate"]
     references = field_values(row["Implementation references"])
@@ -196,7 +208,7 @@ def certify(row, directory, plan, revision):
     if not references or not checks or len(checks) != len(set(checks)):
         raise ValueError("completed contract needs implementation references and unique evidence checks")
     for reference in references:
-        contained_path(REPO, reference)
+        contained_path(repository, reference)
 
     profiles, contracts = plan
     claim = obj(contracts.get(feature), "completed contract certification entry")
@@ -217,19 +229,20 @@ def certify(row, directory, plan, revision):
             raise ValueError(f"profile {profile_id}: {error}") from error
 
 
-def evaluate(registry, certification=None, revision=None):
+def evaluate(registry, certification=None, revision=None, *, repository=REPO,
+             registry_sha256=None, certification_sha256=None):
     counts = {"certified": 0, "partial": 0, "unimplemented": 0}
     errors = []
     pending = []
     try:
-        rows, errors = read_registry(registry)
+        rows, errors = read_registry(registry, registry_sha256)
     except (OSError, ValueError, csv.Error) as error:
         rows = {}
         errors.append(str(error))
     plan = None
     if certification:
         try:
-            plan = load_plan(certification, revision)
+            plan = load_plan(certification, revision, certification_sha256)
         except (OSError, ValueError) as error:
             errors.append(str(error))
     for feature, row in sorted(rows.items()):
@@ -242,7 +255,7 @@ def evaluate(registry, certification=None, revision=None):
             errors.append(f"{feature}: completed contract requires a valid certification plan and revision")
             continue
         try:
-            certify(row, certification.resolve().parent, plan, revision)
+            certify(row, certification.resolve().parent, plan, revision, repository)
             counts["certified"] += 1
         except (OSError, ValueError) as error:
             errors.append(f"{feature}: {error}")

@@ -14,3 +14,5 @@ Run `python3 scripts/check_release.py` as the strict release gate. It returns a 
 contract has an implementation and passing evidence for all of its required profiles. The script documents the
 certification plan and artifact format. A reviewer must confirm that the planned profiles and checks satisfy the
 acceptance gate before trusting a certification report.
+
+Run the signed candidate gate from the trusted build before any release publication. Use the candidate tag, external evidence archive and runner-owned key policy defined in the [release profile plan](Docs/Release-Profile-Plan.md#signed-candidate-gate). The command returns success only for strict readiness.

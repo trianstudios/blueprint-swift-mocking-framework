@@ -42,3 +42,21 @@ Concrete instance subscripts support variadic indices (GEN-024). Generated Senda
 4. Have a reviewer confirm that the profiles and passing checks cover the original gate, then validate the candidate registry with `python3 scripts/check_release.py --registry CANDIDATE.csv --certification PLAN.json --revision FULL_SOURCE_HASH --json`. The checker validates an input bundle's consistency and hashes. Execution, profile coverage and producer provenance require review. A valid but incomplete release registry still returns exit 1 in strict mode.
 
 [Release checker and field definitions](../scripts/check_release.py)
+
+## Signed candidate gate
+
+Before publication, run `verify_release_candidate.py` and its companion `check_release.py` from a reviewed, runner-owned tool installation. Give the gate the actual candidate checkout, the release tag name, the external build evidence directory, external SSH allowed-signers files for the release tag and the runner separately, the approved runner principal, and an approved SHA-256 for `scripts/verify.py`. Keep the allowlists and signing credentials under trusted build control. The candidate test process should have no access to the attestation signing key.
+
+Run the approved verifier with `BLUEPRINT_EVIDENCE_DIRECTORY` pointing outside the candidate checkout. Retain `profile.json`, `results.json`, named logs, `certification.json`, and its referenced artifacts as build evidence. After the reviewed checks, the trusted runner signs the exact bytes of `attestation.json` with the SSH namespace `blueprint-mocking-release-evidence`. Its schema-1 keys are `schema`, `revision`, `tag`, `tagObject`, `verifierSHA256`, `registrySHA256`, `profileSHA256`, `resultsSHA256`, and `certificationSHA256`. `tagObject` is the annotated tag object hash. The four artifact digests cover the committed acceptance CSV and the respective external JSON files. `verifierSHA256` covers the committed verifier entry point and must match the approved pin.
+
+The gate checks that its installation is outside the candidate, derives HEAD from Git, requires a clean full checkout, verifies the direct annotated tag target and its SSH signature, and authenticates the runner attestation against the separate allowed-signers policy. It compares the signed values with the committed registry and verifier, the hashed build profile, results, logs, and certification artifacts. It then requires the strict checker’s `ready` state and rechecks HEAD and the tag ref. Use its successful check in the same trusted build before consuming publication credentials.
+
+```sh
+python3 /trusted/blueprint-tools/verify_release_candidate.py \
+  --checkout "$candidate_checkout" --tag "$candidate_tag" \
+  --evidence "$build_evidence" --tag-signers "$release_signers" \
+  --runner-signers "$runner_signers" --runner-id "$runner_principal" \
+  --verifier-sha256 "$approved_verifier_sha256"
+```
+
+A synthetic fixture passes the legacy checker with older, internally consistent evidence, then pairs that signed evidence with a newer clean and signed checkout. The signed-candidate gate rejects the stale revision. The fixture also verifies a fully matching signed control and rejects incomplete readiness, wrong keys, a dirty checkout, log tampering, an unapproved verifier, and evidence physically inside the checkout. Production runner provisioning, key policy review, full multi-profile certification and publication integration remain open.

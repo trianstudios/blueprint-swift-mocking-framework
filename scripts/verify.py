@@ -14,8 +14,8 @@ import sys
 from fatal_child import check_fatal_child
 
 ROOT = Path(__file__).resolve().parent.parent
-EVIDENCE = ROOT / "Evidence"
-EVIDENCE.mkdir(exist_ok=True)
+EVIDENCE = Path(os.environ.get("BLUEPRINT_EVIDENCE_DIRECTORY", ROOT / "Evidence")).resolve()
+EVIDENCE.mkdir(parents=True, exist_ok=True)
 RESULTS = []
 
 def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
@@ -708,4 +708,4 @@ finally:
     (EVIDENCE / "results.json").write_bytes(result_document())
 if exit_status:
     sys.exit(exit_status)
-print("All prototype checks passed; evidence is in Evidence/results.json.", flush=True)
+print(f"All prototype checks passed; evidence is in {EVIDENCE / 'results.json'}.", flush=True)
