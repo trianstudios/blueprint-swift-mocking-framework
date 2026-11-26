@@ -72,8 +72,20 @@ public struct MainActorVerification<Input> {
 
     @discardableResult
     public func wasCalled(_ count: CallCount, fileID: String = #fileID,
-                          filePath: String = #filePath, line: Int = #line,
+                          staticFilePath: StaticString = #filePath, line: Int = #line,
                           column: Int = #column) -> VerificationResult {
+        verifyCount(count, source: SourceLocation(fileID: fileID, staticFilePath: staticFilePath,
+                                                  line: line, column: column))
+    }
+
+    @discardableResult
+    public func wasCalled(_ count: CallCount, fileID: String = #fileID,
+                          filePath: String, line: Int = #line,
+                          column: Int = #column) -> VerificationResult {
+        verifyCount(count, source: SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column))
+    }
+
+    private func verifyCount(_ count: CallCount, source: @autoclosure () -> SourceLocation) -> VerificationResult {
         let snapshot = journal.calls
         let watermark = UInt64(snapshot.count)
         let ids = snapshot.lazy.filter {
@@ -83,8 +95,7 @@ public struct MainActorVerification<Input> {
         let observed = invocationIDs.count
         let passed = count.accepts(observed)
         if !passed {
-            let source = SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
-            journal.reportCountMismatch(count, observed: observed, watermark: watermark, source: source)
+            journal.reportCountMismatch(count, observed: observed, watermark: watermark, source: source())
         }
         return VerificationResult(passed: passed, observed: observed,
                                   watermark: watermark, invocationIDs: invocationIDs)

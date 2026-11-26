@@ -13,10 +13,30 @@ public struct SourceLocation: Sendable, Equatable {
     public let filePath: String
     public let line: Int
     public let column: Int
-    public init(fileID: String = #fileID, filePath: String = #filePath,
+
+    /// The original literal, when available for reporters that require a static path.
+    public let staticFilePath: StaticString?
+
+    public init(fileID: String = #fileID, filePath: String, line: Int = #line, column: Int = #column) {
+        self.fileID = fileID
+        self.filePath = filePath
+        self.line = line
+        self.column = column
+        self.staticFilePath = nil
+    }
+
+    public init(fileID: String = #fileID, staticFilePath: StaticString = #filePath,
                 line: Int = #line, column: Int = #column) {
-        self.fileID = fileID; self.filePath = filePath
-        self.line = line; self.column = column
+        self.fileID = fileID
+        self.filePath = staticFilePath.description
+        self.line = line
+        self.column = column
+        self.staticFilePath = staticFilePath
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.fileID == rhs.fileID && lhs.filePath == rhs.filePath
+            && lhs.line == rhs.line && lhs.column == rhs.column
     }
 }
 
@@ -133,8 +153,20 @@ public struct Verification<Input: Sendable>: Sendable {
     fileprivate let phase: CallPhase
     @discardableResult
     public func wasCalled(_ count: CallCount, fileID: String = #fileID,
-                          filePath: String = #filePath, line: Int = #line,
+                          staticFilePath: StaticString = #filePath, line: Int = #line,
                           column: Int = #column) -> VerificationResult {
+        verifyCount(count, source: SourceLocation(fileID: fileID, staticFilePath: staticFilePath,
+                                                  line: line, column: column))
+    }
+
+    @discardableResult
+    public func wasCalled(_ count: CallCount, fileID: String = #fileID,
+                          filePath: String, line: Int = #line,
+                          column: Int = #column) -> VerificationResult {
+        verifyCount(count, source: SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column))
+    }
+
+    private func verifyCount(_ count: CallCount, source: @autoclosure () -> SourceLocation) -> VerificationResult {
         let prefix = journal.snapshot()
         let matches = prefix.calls.filter {
             (phase == .admitted || $0.phase == phase) && matcher.matches($0.input)
@@ -144,7 +176,7 @@ public struct Verification<Input: Sendable>: Sendable {
             journal.report(MockIssue(
                 kind: .verificationFailed, endpoint: journal.endpoint,
                 message: "Expected \(count.description) calls; observed \(matches.count)",
-                source: SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column),
+                source: source(),
                 watermark: prefix.watermark))
         }
         return VerificationResult(passed: passed, observed: matches.count,

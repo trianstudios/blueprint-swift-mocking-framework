@@ -40,7 +40,7 @@ let service = UserService(repository: mock)
 mock.verify.fetchUser(id: .equal("42")).wasCalled(.once)
 ```
 
-Select the `BluepringMockingFramework` SwiftPM library product in your test target and import its `BlueprintMocking` module. Add the `BlueprintMockingTesting` product and import its module to use the optional `.swiftTesting` reporter. The consumer’s production target depends only on the domain interface.
+Select the `BluepringMockingFramework` SwiftPM library product in your test target and import its `BlueprintMocking` module. Add the `BlueprintMockingTesting` product and import its module to use the optional `.swiftTesting` reporter. For XCTest, select `BlueprintMockingXCTest`, import its module, and pass `.xctest` as the reporter. Verification failures in XCTest use the assertion’s file and line when supplied as compiler literals. The consumer’s production target depends only on the domain interface.
 
 The generator accepts top-level public protocols in two profiles. A protocol inheriting only Sendable can declare methods that take and return a String. A protocol annotated with `@MainActor` and no inheritance can use simple named input and result types, including non-Sendable values owned by MainActor. Both profiles support synchronous nonthrowing and async typed-throwing methods with one argument. Overloads may differ by argument label or supported input type. Compiler validation of the generated conformance is part of verification. SwiftParser and SwiftSyntax come from the installed Xcode toolchain.
 
@@ -50,7 +50,7 @@ Unexpected value calls report before termination. Async typed-throwing endpoints
 
 The tested profile is **Apple Swift 6.4, Swift 6 language mode, arm64 macOS 27 execution, macOS 27 SDK**, compiling with deployment target macOS 15. The prototype uses Synchronization.Mutex and therefore selects macOS 15 in its manifests. The architecture's macOS 13/iOS 16 and other platform floors still require the audited fallback backend and native certification. Swift 6.0/6.2, older OS execution, other default-isolation modes, Linux, Windows, and mobile platforms were not verified.
 
-The MainActor mock keeps setup, matchers, answers, invocation history, and verification on MainActor. A matcher can observe actor-local state, and an answer may return an actor-local reference. History retains those references and evaluates matchers against their state at verification time. The sample includes a consumer workflow and checks that illegal cross-actor access fails compilation. Custom global actors, Actor-constrained protocols, projections, advanced history and sessions, additional declaration families, XCTest, plugins, migration and release certification remain roadmap work.
+The MainActor mock keeps setup, matchers, answers, invocation history, and verification on MainActor. A matcher can observe actor-local state, and an answer may return an actor-local reference. History retains those references and evaluates matchers against their state at verification time. The sample includes a consumer workflow and checks that illegal cross-actor access fails compilation. Custom global actors, Actor-constrained protocols, projections, advanced history and sessions, additional declaration families, plugins, migration and release certification remain roadmap work.
 
 See the [implementation evidence](Docs/Implementation-Evidence.md) for the verified scope and the next slice. The [contribution guide](CONTRIBUTING.md) explains the TDD workflow and how to submit a milestone.
 
