@@ -4,7 +4,7 @@ public struct SessionCheckpoint: Sendable, Equatable {
     public let epoch: SessionEpoch
     public let watermark: UInt64
 
-    fileprivate init(snapshot: SessionSnapshot) {
+    init(snapshot: SessionSnapshot) {
         sessionID = snapshot.sessionID
         epoch = snapshot.epoch
         watermark = snapshot.watermark
@@ -14,6 +14,12 @@ public struct SessionCheckpoint: Sendable, Equatable {
         guard currentEpoch.sessionID == sessionID else { throw .foreignSession }
         guard currentEpoch == epoch else { throw .staleEpoch }
     }
+}
+
+/// A committed event suffix and its next checkpoint from the same history snapshot.
+public struct SessionReplay: Sendable, Equatable {
+    public let events: [SessionEvent]
+    public let checkpoint: SessionCheckpoint
 }
 
 public enum SessionCheckpointError: Error, Equatable, Sendable {
@@ -37,6 +43,11 @@ public extension MockSession {
     ///
     /// A call admitted before the checkpoint can have a later event for its completion.
     func events(since checkpoint: SessionCheckpoint) throws(SessionCheckpointError) -> [SessionEvent] {
+        try replay(since: checkpoint).events
+    }
+
+    /// Replays through an atomic cutoff and returns the cursor for the next replay.
+    func replay(since checkpoint: SessionCheckpoint) throws(SessionCheckpointError) -> SessionReplay {
         let current = snapshot()
         try checkpoint.validate(for: current.epoch)
         if let prunedThrough = current.prunedThrough, checkpoint.watermark < prunedThrough {
@@ -44,7 +55,8 @@ public extension MockSession {
         }
 
         let events = current.events
-        return Array(events[events.firstEventIndex(after: checkpoint.watermark)...])
+        let suffix = Array(events[events.firstEventIndex(after: checkpoint.watermark)...])
+        return SessionReplay(events: suffix, checkpoint: SessionCheckpoint(snapshot: current))
     }
 
     /// Discards current-epoch session metadata at or before the checkpoint.
@@ -52,9 +64,10 @@ public extension MockSession {
     /// This does not clear endpoint histories or change the admission epoch. Repeating
     /// a discard through an earlier watermark has no effect.
     func discardEvents(through checkpoint: SessionCheckpoint) throws(SessionCheckpointError) {
-        _ = try withLock { (state: inout State) throws(SessionCheckpointError) in
-            try state.discardEvents(through: checkpoint)
+        let wake = try withLock { (state: inout State) throws(SessionCheckpointError) in
+            try state.discardEvents(through: checkpoint) ? state.observationWake() : nil
         }
+        wake?.publish()
     }
 }
 

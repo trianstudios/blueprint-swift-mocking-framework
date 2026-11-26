@@ -70,6 +70,8 @@ After your tasks have finished, call `try session.finishIfQuiescent()` to close 
 
 Use `try session.discardEvents(through: checkpoint)` to discard a current epoch's session metadata prefix. A checkpoint that misses a discarded event reports unavailable history. A gap in global ordinals alone is valid because another epoch can receive events. Endpoint argument histories are separate.
 
+For live observation, retain `session.observeChanges()`, then use its notifications as wake-ups. Read `try session.replay(since: checkpoint)` after a wake and use the returned checkpoint for the next read. Replay returns all retained events through that position, so coalesced wakes preserve intermediate transitions. Cancel the observation when finished.
+
 For the Ubuntu 24.04 arm64 runtime profile, run `bash scripts/verify_linux_runtime.sh --help` to prefetch the pinned Swift image, then `bash scripts/verify_linux_runtime.sh` to test a committed revision with networking disabled. The workflow exercises the runtime, archived generated mocks, both reporters, and runtime-only linkage. Linux code generation, Ubuntu 22.04, Linux x86_64 and Windows still require verification.
 
 The MainActor mock keeps setup, matchers, answers, invocation history, and verification on MainActor. A matcher can observe actor-local state, and an answer may return an actor-local reference. History retains those references and evaluates matchers against their state at verification time. The sample includes a consumer workflow and checks that illegal cross-actor access fails compilation. Custom global actors, Actor-constrained protocols, projections, advanced history and sessions, additional declaration families, plugins, migration and release certification remain roadmap work.

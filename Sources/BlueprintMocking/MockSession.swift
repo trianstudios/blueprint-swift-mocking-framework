@@ -115,9 +115,11 @@ public final class MockSession: Sendable {
     @discardableResult
     public func resetHistory(_ mode: SessionResetMode = .requireQuiescence)
         throws(SessionResetError) -> SessionEpoch {
-        let retirement = try state.withLock { (state: inout State) throws(SessionResetError) in
-            try state.resetHistory(mode)
+        let (retirement, wake) = try state.withLock { (state: inout State) throws(SessionResetError) in
+            let retirement = try state.resetHistory(mode)
+            return (retirement, state.closeObservations())
         }
+        wake?.publish()
         // User destructors and last-owner journal destruction may reenter this session.
         withExtendedLifetime(retirement) {}
         return retirement.epoch
@@ -127,9 +129,12 @@ public final class MockSession: Sendable {
     /// Repeated calls return the same final snapshot. The caller owns teardown of its tasks.
     @discardableResult
     public func finishIfQuiescent() throws(SessionFinishError) -> SessionSnapshot {
-        try state.withLock { (state: inout State) throws(SessionFinishError) in
-            try state.finishIfQuiescent()
+        let (snapshot, wake) = try state.withLock { (state: inout State) throws(SessionFinishError) in
+            let snapshot = try state.finishIfQuiescent()
+            return (snapshot, state.closeObservations())
         }
+        wake?.publish()
+        return snapshot
     }
 
     func register(_ journal: any SessionJournalRegistration) {
@@ -161,6 +166,10 @@ public final class MockSession: Sendable {
         private var journals: [WeakSessionJournal] = []
         private var nextQuiescenceWaiter: UInt64 = 0
         private var quiescenceWaiters: [UInt64: SessionQuiescenceContinuation] = [:]
+        private var nextObservationID: UInt64 = 0
+        private var observations: [UInt64: SessionObservationContinuation] = [:]
+
+        var observationCount: Int { observations.count }
 
         var quiescenceWaiterCount: Int { quiescenceWaiters.count }
 
@@ -218,6 +227,32 @@ public final class MockSession: Sendable {
             histories[epoch]!.activeInvocationCount += 1
             histories[epoch]!.events.append(event)
             return event
+        }
+
+        mutating func registerObservation(
+            _ continuation: SessionObservationContinuation
+        ) -> (SessionSnapshot, UInt64?) {
+            let initial = snapshot(epoch: epoch)!
+            guard !isFinished else { return (initial, nil) }
+            nextObservationID += 1
+            observations[nextObservationID] = continuation
+            return (initial, nextObservationID)
+        }
+
+        mutating func removeObservation(_ id: UInt64) -> SessionObservationContinuation? {
+            observations.removeValue(forKey: id)
+        }
+
+        func observationWake() -> SessionObservationDelivery? {
+            guard !observations.isEmpty else { return nil }
+            return SessionObservationDelivery(continuations: Array(observations.values), closes: false)
+        }
+
+        mutating func closeObservations() -> SessionObservationDelivery? {
+            guard !observations.isEmpty else { return nil }
+            let wake = SessionObservationDelivery(continuations: Array(observations.values), closes: true)
+            observations.removeAll()
+            return wake
         }
 
         mutating func registerQuiescenceWaiter(

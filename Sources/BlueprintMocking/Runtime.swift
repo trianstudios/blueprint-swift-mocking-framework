@@ -147,9 +147,10 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
 
     func admit(_ input: Input) -> (admission: JournalAdmission, configuration: Configuration)? {
         // Lock order is session, then this endpoint. No operation holds two endpoint locks.
-        scope.session.withLock { session in
-            guard !session.isFinished else { return nil }
-            return state.withLock {
+        let (result, wake) = scope.session.withLock {
+            session -> ((admission: JournalAdmission, configuration: Configuration)?, SessionObservationDelivery?) in
+            guard !session.isFinished else { return (nil, nil) }
+            let result = state.withLock {
                 $0.nextID += 1
                 let id = $0.nextID
                 let event = session.admit(mockID: scope.id, endpoint: endpoint,
@@ -159,7 +160,10 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
                                           phase: .admitted))
                 return (JournalAdmission(id: id, event: event), $0.configuration)
             }
+            return (result, session.observationWake())
         }
+        wake?.publish()
+        return result
     }
 
     func replaceConfiguration(_ configuration: Configuration) -> RuleRevision {
@@ -176,7 +180,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func complete(_ admission: JournalAdmission, phase: CallPhase) {
-        let delivery = scope.session.withLock { session in
+        let (delivery, wake) = scope.session.withLock { session in
             let ready = session.complete(admission.event.invocationID, phase: phase)
             if admission.event.epoch == session.epoch {
                 state.withLock { history in
@@ -187,9 +191,10 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
                     history.calls[index].phase = phase
                 }
             }
-            return ready
+            return (ready, session.observationWake())
         }
         delivery?.publish()
+        wake?.publish()
     }
 
     func snapshot(validating expectedEpoch: SessionEpoch? = nil) -> JournalSnapshot<Input> {
