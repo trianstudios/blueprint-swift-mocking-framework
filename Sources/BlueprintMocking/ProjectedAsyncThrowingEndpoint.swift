@@ -15,7 +15,7 @@ public final class ProjectedAsyncThrowingEndpoint<
     ) {
         dispatch = AsyncThrowingDispatch(id: id, configuration: configuration, failureReporter: failureReporter,
                                          scope: scope, failureMapping: failureMapping,
-                                         tracksProjectionTimeline: Argument.self == String.self)
+                                         tracksProjectionTimeline: .strings(argument: Argument.self, result: Result.self))
         self.projection = projection
     }
 
@@ -77,7 +77,25 @@ public extension ProjectedAsyncThrowingEndpoint where Argument == String {
 extension ProjectedAsyncThrowingEndpoint where Argument == String {
     func prepareArgumentStability(
         _ count: CallCount, matchingArgument argument: String, for duration: Duration, within timeout: Duration
-    ) throws -> ProjectedArgumentStabilityWait<Result> {
+    ) throws -> ProjectedStabilityWait<ProjectedFields<String, Result>> {
         try dispatch.prepareArgumentStability(count, matchingArgument: argument, for: duration, within: timeout)
+    }
+}
+
+public extension ProjectedAsyncThrowingEndpoint where Result == String {
+    /// Proves a stable count of returned result projections. A thrown call settles
+    /// its pending result as a known non-return.
+    func stable(
+        _ count: CallCount, matchingResult result: String, for duration: Duration, within timeout: Duration
+    ) async throws -> SessionTimedCountObservation {
+        try await prepareResultStability(count, matchingResult: result, for: duration, within: timeout).value()
+    }
+}
+
+extension ProjectedAsyncThrowingEndpoint where Result == String {
+    func prepareResultStability(
+        _ count: CallCount, matchingResult result: String, for duration: Duration, within timeout: Duration
+    ) throws -> ProjectedStabilityWait<ProjectedFields<Argument, String>> {
+        try dispatch.prepareResultStability(count, matchingResult: result, for: duration, within: timeout)
     }
 }

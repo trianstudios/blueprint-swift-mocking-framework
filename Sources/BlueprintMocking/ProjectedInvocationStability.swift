@@ -17,17 +17,77 @@ public extension ProjectedSyncEndpoint where Argument == String {
 extension ProjectedSyncEndpoint where Argument == String {
     func prepareArgumentStability(
         _ count: CallCount, matchingArgument argument: String, for duration: Duration, within timeout: Duration
-    ) throws -> ProjectedArgumentStabilityWait<Result> {
+    ) throws -> ProjectedStabilityWait<ProjectedFields<String, Result>> {
         try projectedJournal.prepareArgumentStability(
             count, matchingArgument: argument, for: duration, within: timeout
         )
     }
 }
 
+public extension ProjectedSyncEndpoint where Result == String {
+    /// Proves a stable count of the given returned result projection.
+    /// A result remains pending until its terminal event is committed.
+    func stable(
+        _ count: CallCount, matchingResult result: String, for duration: Duration, within timeout: Duration
+    ) async throws -> SessionTimedCountObservation {
+        try await prepareResultStability(count, matchingResult: result, for: duration, within: timeout).value()
+    }
+}
+
+extension ProjectedSyncEndpoint where Result == String {
+    func prepareResultStability(
+        _ count: CallCount, matchingResult result: String, for duration: Duration, within timeout: Duration
+    ) throws -> ProjectedStabilityWait<ProjectedFields<Argument, String>> {
+        try projectedJournal.prepareResultStability(count, matchingResult: result, for: duration, within: timeout)
+    }
+}
+
+enum TimedProjectionChange: Sendable {
+    case pending
+    // A nil resolution means a known non-return. Projected values here are nonoptional strings.
+    case resolved(String?)
+    case unchanged
+}
+
 extension ConfiguredJournal {
     func prepareArgumentStability<Result: Sendable>(
         _ count: CallCount, matchingArgument argument: String, for duration: Duration, within timeout: Duration
-    ) throws -> ProjectedArgumentStabilityWait<Result> where Input == ProjectedFields<String, Result> {
+    ) throws -> ProjectedStabilityWait<Input> where Input == ProjectedFields<String, Result> {
+        try prepareProjectionStability(count, matching: argument, for: duration, within: timeout) { change in
+            switch change {
+            case .admitted:
+                return .pending
+            case .argument(let input):
+                if case .value(let value) = input.argument { return .resolved(value) }
+                return .unchanged
+            case .completed:
+                return .unchanged
+            }
+        }
+    }
+
+    func prepareResultStability<Argument: Sendable>(
+        _ count: CallCount, matchingResult result: String, for duration: Duration, within timeout: Duration
+    ) throws -> ProjectedStabilityWait<Input> where Input == ProjectedFields<Argument, String> {
+        try prepareProjectionStability(count, matching: result, for: duration, within: timeout) { change in
+            switch change {
+            case .admitted:
+                return .pending
+            case .completed(.returned, let input):
+                if let input, case .value(let value) = input.result { return .resolved(value) }
+                return .unchanged
+            case .completed(.threw, _), .completed(.terminated, _):
+                return .resolved(nil)
+            case .completed(.admitted, _), .argument:
+                return .unchanged
+            }
+        }
+    }
+
+    private func prepareProjectionStability(
+        _ count: CallCount, matching literal: String, for duration: Duration, within timeout: Duration,
+        classify: @escaping @Sendable (ProjectionJournalChange<Input>) -> TimedProjectionChange
+    ) throws -> ProjectedStabilityWait<Input> {
         try Task.checkCancellation()
         guard count.isSatisfiable else { throw SessionTimedObservationError.contradictoryCount }
         guard duration > .zero, duration <= timeout else { throw SessionTimedObservationError.invalidDuration }
@@ -37,18 +97,20 @@ extension ConfiguredJournal {
             observation.cancel()
             throw SessionCheckpointError.historyUnavailable
         }
-        return ProjectedArgumentStabilityWait(
+        return ProjectedStabilityWait(
             session: session, observation: observation, read: { self.timedProjectionCut() },
-            argument: argument, count: count, duration: duration, deadline: observation.initialElapsed + timeout
+            classify: classify, literal: literal, count: count, duration: duration,
+            deadline: observation.initialElapsed + timeout
         )
     }
 }
 
-struct ProjectedArgumentStabilityWait<Result: Sendable>: Sendable {
+struct ProjectedStabilityWait<History: Sendable>: Sendable {
     let session: MockSession
     let observation: SessionObservation
-    let read: @Sendable () -> ProjectionJournalCut<ProjectedFields<String, Result>>
-    let argument: String
+    let read: @Sendable () -> ProjectionJournalCut<History>
+    let classify: @Sendable (ProjectionJournalChange<History>) -> TimedProjectionChange
+    let literal: String
     let count: CallCount
     let duration: Duration
     let deadline: Duration
@@ -67,7 +129,7 @@ struct ProjectedArgumentStabilityWait<Result: Sendable>: Sendable {
 
         var progress = Progress(watermark: cursor.watermark)
         for event in cut.events.prefix(while: { $0.ordinal <= cursor.watermark }) {
-            progress.apply(event, matching: argument)
+            progress.apply(event, as: classify(event.change), matching: literal)
         }
         progress.watermark = cursor.watermark
         progress.sawIncomplete = !progress.pending.isEmpty
@@ -85,7 +147,7 @@ struct ProjectedArgumentStabilityWait<Result: Sendable>: Sendable {
             for event in cut.events[start...] {
                 // The boundary is exclusive, even if an event has its exact timestamp.
                 if let finished = try completion(progress, by: event.elapsed) { return finished }
-                progress.apply(event, matching: argument)
+                progress.apply(event, as: classify(event.change), matching: literal)
                 progress.sawIncomplete = progress.sawIncomplete || !progress.pending.isEmpty
                 let satisfies = progress.pending.isEmpty && count.accepts(progress.observed)
                 progress.satisfyingSince = satisfies ? (progress.satisfyingSince ?? event.elapsed) : nil
@@ -116,7 +178,7 @@ struct ProjectedArgumentStabilityWait<Result: Sendable>: Sendable {
         }
     }
 
-    private func validate(_ cut: ProjectionJournalCut<ProjectedFields<String, Result>>,
+    private func validate(_ cut: ProjectionJournalCut<History>,
                           after cursor: SessionCheckpoint) throws(SessionCheckpointError) {
         try cursor.validate(for: cut.snapshot.epoch)
         if let pruned = cut.snapshot.prunedThrough, cursor.watermark < pruned {
@@ -131,14 +193,17 @@ struct ProjectedArgumentStabilityWait<Result: Sendable>: Sendable {
         var satisfyingSince: Duration?
         var watermark: UInt64
 
-        mutating func apply(_ event: ProjectionJournalEvent<ProjectedFields<String, Result>>, matching argument: String) {
+        mutating func apply(
+            _ event: ProjectionJournalEvent<History>, as change: TimedProjectionChange, matching literal: String
+        ) {
             watermark = event.ordinal
-            if let input = event.publication {
-                if case .value(let value) = input.argument, pending.remove(event.invocationID) != nil {
-                    if value == argument { observed += 1 }
-                }
-            } else {
+            switch change {
+            case .pending:
                 pending.insert(event.invocationID)
+            case .resolved(let value):
+                if pending.remove(event.invocationID) != nil, value == literal { observed += 1 }
+            case .unchanged:
+                break
             }
         }
     }

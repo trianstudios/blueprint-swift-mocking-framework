@@ -340,7 +340,7 @@ public final class MockSession: Sendable {
 
         mutating func complete(
             _ invocationID: SessionInvocationID, phase: CallPhase
-        ) -> SessionQuiescenceDelivery? {
+        ) -> (event: SessionEvent, delivery: SessionQuiescenceDelivery?) {
             precondition(phase != .admitted, "Completion requires a terminal phase")
             guard let admission = active.removeValue(forKey: invocationID) else {
                 preconditionFailure("No active invocation matches this completion")
@@ -354,11 +354,11 @@ public final class MockSession: Sendable {
             histories[admission.epoch]!.activeInvocationCount -= 1
             histories[admission.epoch]!.events.append(event)
 
-            guard active.isEmpty, !quiescenceWaiters.isEmpty else { return nil }
+            guard active.isEmpty, !quiescenceWaiters.isEmpty else { return (event, nil) }
             let delivery = SessionQuiescenceDelivery(snapshot: snapshot(epoch: epoch)!,
                                                      waiters: Array(quiescenceWaiters.values))
             quiescenceWaiters.removeAll()
-            return delivery
+            return (event, delivery)
         }
 
         fileprivate mutating func finishIfQuiescent() throws(SessionFinishError) -> SessionSnapshot {

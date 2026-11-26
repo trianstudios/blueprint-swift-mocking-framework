@@ -108,12 +108,30 @@ struct JournalSnapshot<Input: Sendable>: Sendable {
     let isStale: Bool
 }
 
+struct ProjectionTimelineFields: OptionSet, Sendable {
+    let rawValue: UInt8
+    static let argument = Self(rawValue: 1)
+    static let result = Self(rawValue: 2)
+
+    static func strings(argument: Any.Type, result: Any.Type) -> Self {
+        var fields: Self = []
+        if argument == String.self { fields.insert(.argument) }
+        if result == String.self { fields.insert(.result) }
+        return fields
+    }
+}
+
+enum ProjectionJournalChange<Input: Sendable>: Sendable {
+    case admitted
+    case argument(Input)
+    case completed(CallPhase, Input?)
+}
+
 struct ProjectionJournalEvent<Input: Sendable>: Sendable {
     let ordinal: UInt64
     let elapsed: Duration
     let invocationID: SessionInvocationID
-    // Nil is an admission with pending projections. A publication stores its immutable snapshot.
-    let publication: Input?
+    let change: ProjectionJournalChange<Input>
 }
 
 struct ProjectionJournalCut<Input: Sendable>: Sendable {
@@ -154,12 +172,12 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
 
     private let state: CriticalState<State>
     private let scope: MockScope
-    private let tracksProjectionTimeline: Bool
+    private let tracksProjectionTimeline: ProjectionTimelineFields
     let endpoint: EndpointID
     private let reporter: FailureReporter
 
     init(endpoint: EndpointID, reporter: FailureReporter, scope: MockScope,
-         configuration: Configuration, tracksProjectionTimeline: Bool = false) {
+         configuration: Configuration, tracksProjectionTimeline: ProjectionTimelineFields = []) {
         self.state = CriticalState(State(configuration: configuration))
         self.tracksProjectionTimeline = tracksProjectionTimeline
         self.scope = scope
@@ -181,9 +199,9 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
                 $0.calls.append(Invocation(id: id, input: input, configurationRevision: $0.revision,
                                           sessionInvocationID: event.invocationID, epoch: event.epoch,
                                           phase: .admitted))
-                if tracksProjectionTimeline {
+                if !tracksProjectionTimeline.isEmpty {
                     $0.projectionEvents.append(ProjectionJournalEvent(
-                        ordinal: event.ordinal, elapsed: event.elapsed, invocationID: event.invocationID, publication: nil
+                        ordinal: event.ordinal, elapsed: event.elapsed, invocationID: event.invocationID, change: .admitted
                     ))
                 }
                 return (JournalAdmission(id: id, event: event), $0.configuration)
@@ -215,11 +233,11 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
                 precondition(history.calls[index].phase == .admitted, "Cannot update a completed invocation")
                 let previous = history.calls[index].input
                 history.calls[index].input = input
-                if tracksProjectionTimeline {
+                if tracksProjectionTimeline.contains(.argument) {
                     let position = session.recordProjectionPosition()
                     history.projectionEvents.append(ProjectionJournalEvent(
                         ordinal: position.ordinal, elapsed: position.elapsed,
-                        invocationID: admission.event.invocationID, publication: input
+                        invocationID: admission.event.invocationID, change: .argument(input)
                     ))
                 }
                 return previous
@@ -232,12 +250,18 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
 
     func complete(_ admission: JournalAdmission, phase: CallPhase, replacing input: Input? = nil) {
         let (delivery, wake, retired) = scope.session.withLock { session in
-            let ready = session.complete(admission.event.invocationID, phase: phase)
+            let (terminal, ready) = session.complete(admission.event.invocationID, phase: phase)
             var retired: Input? = nil
             if admission.event.epoch == session.epoch {
                 retired = state.withLock { history -> Input? in
                     let index = Self.retainedIndex(of: admission, in: history.calls)
                     history.calls[index].phase = phase
+                    if tracksProjectionTimeline.contains(.result) {
+                        history.projectionEvents.append(ProjectionJournalEvent(
+                            ordinal: terminal.ordinal, elapsed: terminal.elapsed,
+                            invocationID: terminal.invocationID, change: .completed(phase, input)
+                        ))
+                    }
                     guard let input else { return nil }
                     let previous = history.calls[index].input
                     history.calls[index].input = input
@@ -376,7 +400,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
 
 extension ConfiguredJournal where Configuration == Void {
     convenience init(endpoint: EndpointID, reporter: FailureReporter, scope: MockScope,
-                     tracksProjectionTimeline: Bool = false) {
+                     tracksProjectionTimeline: ProjectionTimelineFields = []) {
         self.init(endpoint: endpoint, reporter: reporter, scope: scope, configuration: (),
                   tracksProjectionTimeline: tracksProjectionTimeline)
     }
@@ -614,7 +638,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
 
     init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
          failureReporter: FailureReporter, scope: MockScope,
-         failureMapping: (@Sendable (MockIssue) -> Failure)?, tracksProjectionTimeline: Bool = false) {
+         failureMapping: (@Sendable (MockIssue) -> Failure)?, tracksProjectionTimeline: ProjectionTimelineFields = []) {
         self.failureMapping = failureMapping
         journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
                                     configuration: configuration.publish(),
@@ -629,8 +653,14 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
 
     func prepareArgumentStability<Result: Sendable>(
         _ count: CallCount, matchingArgument argument: String, for duration: Duration, within timeout: Duration
-    ) throws -> ProjectedArgumentStabilityWait<Result> where History == ProjectedFields<String, Result> {
+    ) throws -> ProjectedStabilityWait<History> where History == ProjectedFields<String, Result> {
         try journal.prepareArgumentStability(count, matchingArgument: argument, for: duration, within: timeout)
+    }
+
+    func prepareResultStability<Argument: Sendable>(
+        _ count: CallCount, matchingResult result: String, for duration: Duration, within timeout: Duration
+    ) throws -> ProjectedStabilityWait<History> where History == ProjectedFields<Argument, String> {
+        try journal.prepareResultStability(count, matchingResult: result, for: duration, within: timeout)
     }
 
     func consumeProjected<Argument: Sendable, Result: Sendable>(
