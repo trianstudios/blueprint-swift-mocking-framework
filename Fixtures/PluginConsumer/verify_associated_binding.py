@@ -78,7 +78,9 @@ def stage(repository, checkout, tool, target):
     }
 
 
-def verify(repository, swift, tool, evidence, jobs, *, publication_checkpoint=None):
+def verify(repository, swift, tool, evidence, jobs, *, publication_checkpoint=None, first_publication=False):
+    if first_publication:
+        publication_checkpoint = "after-shard"
     target = json.loads(subprocess.check_output([str(swift), "-print-target-info"], timeout=30))
     triple = target["target"]["unversionedTriple"]
     if not triple.endswith("-apple-macosx"):
@@ -105,10 +107,12 @@ def verify(repository, swift, tool, evidence, jobs, *, publication_checkpoint=No
             environment.pop(PUBLICATION_FAULT, None)
             environment.pop("BLUEPRINT_TEST_ABORT_AFTER_SHARD", None)
 
-        lane = {
+        recovery_lanes = {
             "after-shard": "publication-recovery",
             "after-index": "publication-recovery-after-index",
-        }.get(publication_checkpoint, "associated-binding")
+        }
+        lane = ("first-publication-recovery" if first_publication
+                else recovery_lanes.get(publication_checkpoint, "associated-binding"))
 
         def set_bindings(*types):
             selected, = original["selections"]
@@ -125,31 +129,45 @@ def verify(repository, swift, tool, evidence, jobs, *, publication_checkpoint=No
             records[step] = result | {"outputs": outputs}
             return outputs
 
-        initial = run("first-string", "String")
-        set_bindings("Int")
-        if publication_checkpoint:
-            index_path = build / initial[INDEX]["path"]
-            shard_path = build / initial[MOCKS]["path"]
-            journal = index_path.with_name(JOURNAL)
-            if journal.exists():
+        if first_publication:
+            if build.exists() or any(path.name in (MOCKS, INDEX, JOURNAL) for path in fixture.rglob("*")):
+                raise ValueError("The first build must start without generated outputs or a recovery journal")
+            initial = {}
+            binding = "String"
+        else:
+            initial = run("first-string", "String")
+            if publication_checkpoint and (build / initial[INDEX]["path"]).with_name(JOURNAL).exists():
                 raise ValueError("The passing baseline left a recovery journal")
+            set_bindings("Int")
+            binding = "Int"
+
+        binding_label = binding.lower()
+        if publication_checkpoint:
             edited_config = config.read_bytes()
             diagnostic = f"DX013 fixture: interrupted at {publication_checkpoint}"
+            interrupted_step = f"interrupted-{binding_label}"
             interrupted = run(
-                "interrupted-int", failure=diagnostic,
+                interrupted_step, failure=diagnostic,
                 env=environment | {PUBLICATION_FAULT: publication_checkpoint},
             )
-            fault_log = (evidence / records["interrupted-int"]["log"]).read_text(encoding="utf-8")
+            fault_log = (evidence / records[interrupted_step]["log"]).read_text(encoding="utf-8")
             if fault_log.splitlines().count(diagnostic) != 1:
                 raise ValueError("The failed SwiftPM build did not report its exact interruption checkpoint")
-            if any(interrupted[name]["path"] != initial[name]["path"] for name in (MOCKS, INDEX)):
-                raise ValueError("The interrupted build moved generated outputs")
-            if interrupted[MOCKS]["sha256"] == initial[MOCKS]["sha256"]:
-                raise ValueError("The interrupted build did not publish the changed shard")
+            if initial:
+                if any(interrupted[name]["path"] != initial[name]["path"] for name in (MOCKS, INDEX)):
+                    raise ValueError("The interrupted build moved generated outputs")
+                if interrupted[MOCKS]["sha256"] == initial[MOCKS]["sha256"]:
+                    raise ValueError("The interrupted build did not publish the changed shard")
+            index_path = build / interrupted[INDEX]["path"]
+            shard_path = build / interrupted[MOCKS]["path"]
+            journal = index_path.with_name(JOURNAL)
             if not journal.is_file():
                 raise ValueError("The interrupted build did not retain a recovery journal")
             journal_bytes = journal.read_bytes()
-            staged = json.loads(journal_bytes)["next"]
+            transaction = json.loads(journal_bytes)
+            if first_publication and any(transaction["previous"].get(name) is not None for name in ("shard", "index")):
+                raise ValueError("A first publication must record both previous outputs as absent")
+            staged = transaction["next"]
             next_shard, next_index = (b64decode(staged[key], validate=True) for key in ("shard", "index"))
             expected_index = DIRTY_INDEX if publication_checkpoint == "after-shard" else next_index
             if shard_path.read_bytes() != next_shard or index_path.read_bytes() != expected_index:
@@ -160,10 +178,11 @@ def verify(repository, swift, tool, evidence, jobs, *, publication_checkpoint=No
                 (evidence / artifact).write_bytes(contents)
                 artifacts[artifact] = digest(contents)
 
-        updated = run("retry-int" if publication_checkpoint else "config-only-int", "Int")
-        if any(initial[name]["sha256"] == updated[name]["sha256"] for name in (MOCKS, INDEX)):
+        update_step = f"retry-{binding_label}" if publication_checkpoint else "config-only-int"
+        updated = run(update_step, binding)
+        if initial and any(initial[name]["sha256"] == updated[name]["sha256"] for name in (MOCKS, INDEX)):
             raise ValueError("Changing only the concrete type must update both generated outputs")
-        if run("unchanged-int", "Int", stamp=False) != updated:
+        if run(f"unchanged-{binding_label}", binding, stamp=False) != updated:
             raise ValueError("An unchanged configuration rewrote the generated outputs")
 
         if publication_checkpoint:
@@ -171,9 +190,9 @@ def verify(repository, swift, tool, evidence, jobs, *, publication_checkpoint=No
                 raise ValueError("The recovered build changed its authored configuration or retained incomplete output")
             if any(updated[name]["path"] != interrupted[name]["path"] for name in (MOCKS, INDEX)):
                 raise ValueError("The recovered build moved generated outputs")
-            if publication_checkpoint == "after-index" and (
-                updated != interrupted or shard_path.read_bytes() != next_shard or index_path.read_bytes() != next_index
-            ):
+            if shard_path.read_bytes() != next_shard or index_path.read_bytes() != next_index:
+                raise ValueError("Recovery did not publish the complete output pair")
+            if publication_checkpoint == "after-index" and updated != interrupted:
                 raise ValueError("Recovery rewrote the already complete output pair")
         else:
             set_bindings("Int", "String")
@@ -196,6 +215,7 @@ def verify(repository, swift, tool, evidence, jobs, *, publication_checkpoint=No
             "checks": records,
             **({"buildSystem": "native", "interruptionCheckpoint": publication_checkpoint,
                 "retryConfigurationSHA256": digest(edited_config)} if publication_checkpoint else {}),
+            **({"initialGeneratedOutputs": initial} if first_publication else {}),
         }
 
 
@@ -211,6 +231,8 @@ def main():
     recovery.add_argument("--publication-recovery-checkpoint", dest="publication_checkpoint",
                           choices=PUBLICATION_CHECKPOINTS,
                           help="Interrupt a fault-instrumented host tool, then retry in the same build")
+    recovery.add_argument("--first-publication-recovery", action="store_true",
+                          help="Interrupt the first build after its shard is written, then retry in the same build")
     options = parser.parse_args()
     repository = Path(__file__).resolve().parents[2]
     evidence = options.evidence_dir.resolve()
@@ -223,13 +245,18 @@ def main():
         "after-shard": "swiftpm-publication-recovery-report.json",
         "after-index": "swiftpm-publication-recovery-after-index-report.json",
     }.get(options.publication_checkpoint, "swiftpm-plugin-associated-binding-report.json")
+    if options.first_publication_recovery:
+        report_name = "swiftpm-first-publication-recovery-report.json"
     report = evidence / report_name
     report.unlink(missing_ok=True)
     write_json(report, verify(
-        repository, swift, tool, evidence, options.jobs, publication_checkpoint=options.publication_checkpoint,
+        repository, swift, tool, evidence, options.jobs,
+        publication_checkpoint=options.publication_checkpoint, first_publication=options.first_publication_recovery,
     ))
     print(f"EVIDENCE: {report.name} SHA-256 {digest(report.read_bytes())}")
-    if options.publication_checkpoint:
+    if options.first_publication_recovery:
+        print("PASS: DX013 SwiftPM recovered its interrupted first publication")
+    elif options.publication_checkpoint:
         print("PASS: DX013 SwiftPM rejected interrupted publication and ran the recovered pair")
     else:
         print("PASS: GEN008 configured binding compiled and ran through the SwiftPM build plugin")

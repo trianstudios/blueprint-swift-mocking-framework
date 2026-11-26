@@ -217,6 +217,13 @@ def main():
         ], env=swift_environment, timeout=300,
             patterns=[r"PASS: DX013 SwiftPM rejected interrupted publication and ran the recovered pair",
                       rf"EVIDENCE: {lane}-report\.json SHA-256 [0-9a-f]{{64}}"])
+    run("swiftpm-first-publication-recovery", [
+        sys.executable, "Fixtures/PluginConsumer/verify_associated_binding.py",
+        "--first-publication-recovery", "--swift", swift, "--host-tool", publication_fault_tool,
+        "--evidence-dir", EVIDENCE, "--jobs", "4",
+    ], env=swift_environment, timeout=300,
+        patterns=[r"PASS: DX013 SwiftPM recovered its interrupted first publication",
+                  r"EVIDENCE: swiftpm-first-publication-recovery-report\.json SHA-256 [0-9a-f]{64}"])
     with tempfile.TemporaryDirectory(prefix="Parser Parity Self Comparison ", dir=EVIDENCE) as directory:
         report = Path(directory) / "parser-parity-report.json"
         report.write_text('{"status":"passed","stale":true}\n')
