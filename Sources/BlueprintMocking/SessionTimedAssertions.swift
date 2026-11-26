@@ -1,10 +1,10 @@
-/// The committed metadata count at a violation or a completed observation boundary.
+/// The metadata count and committed history position at a timed observation result.
 public struct SessionTimedCountObservation: Equatable, Sendable {
     public let epoch: SessionEpoch
     /// The last included event position. Events at the exclusive cutoff are excluded.
     public let watermark: UInt64
     public let observed: Int
-    /// Elapsed session time at the violation or completed boundary.
+    /// Elapsed session time at the qualifying event, violation, or timed boundary.
     public let elapsed: Duration
 }
 
@@ -18,6 +18,18 @@ public enum SessionTimedObservationError: Error, Equatable, Sendable {
 }
 
 public extension MockSession {
+    /// Returns the first committed prefix satisfying the count within the timeout.
+    ///
+    /// The session clock starts the timeout at registration. The initial snapshot
+    /// can satisfy the count immediately. Replayed events qualify only if stamped
+    /// strictly before the deadline, even when the observer wakes afterward.
+    func eventually(
+        _ count: CallCount, for selector: SessionCallSelector,
+        phase: CallPhase = .admitted, within timeout: Duration
+    ) async throws -> SessionTimedCountObservation {
+        try await prepareTimedCount(count, for: selector, phase: phase, window: .eventually(timeout)).value()
+    }
+
     /// Requires the count to hold at registration and through every metadata event
     /// strictly before the end of the interval. The interval uses the session clock.
     /// Throws if the observation cannot prove its history or the session ends early.
@@ -43,6 +55,7 @@ public extension MockSession {
 }
 
 enum TimedCountWindow: Sendable {
+    case eventually(Duration)
     case until(Duration)
     case stable(Duration, within: Duration)
 }
@@ -59,19 +72,16 @@ extension MockSession {
         guard count.isSatisfiable else { throw SessionTimedObservationError.contradictoryCount }
 
         let timeout: Duration
-        let stableDuration: Duration?
         switch window {
-        case let .until(duration):
-            guard duration > .zero else { throw SessionTimedObservationError.invalidDuration }
+        case let .eventually(duration), let .until(duration):
             timeout = duration
-            stableDuration = nil
         case let .stable(duration, within: limit):
             guard duration > .zero, duration <= limit else {
                 throw SessionTimedObservationError.invalidDuration
             }
             timeout = limit
-            stableDuration = duration
         }
+        guard timeout > .zero else { throw SessionTimedObservationError.invalidDuration }
 
         let observation = observeChanges()
         guard observation.initialSnapshot.prunedThrough == nil else {
@@ -80,7 +90,7 @@ extension MockSession {
         }
         return TimedCountWait(
             session: self, observation: observation, count: count, selector: selector, phase: phase,
-            deadline: observation.initialElapsed + timeout, stableDuration: stableDuration
+            deadline: observation.initialElapsed + timeout, window: window
         )
     }
 }
@@ -93,7 +103,7 @@ struct TimedCountWait: Sendable {
     let selector: SessionCallSelector
     let phase: CallPhase
     let deadline: Duration
-    let stableDuration: Duration?
+    let window: TimedCountWindow
 
     func value() async throws -> SessionTimedCountObservation {
         var timer: Task<Void, Never>?
@@ -108,8 +118,12 @@ struct TimedCountWait: Sendable {
         try Task.checkCancellation()
         var progress = Progress(observed: initialCount, watermark: initial.watermark)
         if count.accepts(initialCount) {
-            progress.satisfyingSince = observation.initialElapsed
-        } else if stableDuration == nil {
+            switch window {
+            case .eventually: return result(progress, at: observation.initialElapsed)
+            case .until: break
+            case .stable: progress.satisfyingSince = observation.initialElapsed
+            }
+        } else if case .until = window {
             throw SessionTimedObservationError.violated(result(progress, at: observation.initialElapsed))
         }
 
@@ -132,15 +146,18 @@ struct TimedCountWait: Sendable {
                 // earlier clock boundary before applying equal-time or later events.
                 if let completed = try completion(progress, by: event.elapsed) { return completed }
                 progress.watermark = event.ordinal
-                if matches(event) {
-                    progress.observed += 1
-                    if count.accepts(progress.observed) {
-                        progress.satisfyingSince = progress.satisfyingSince ?? event.elapsed
-                    } else if stableDuration == nil {
-                        throw SessionTimedObservationError.violated(result(progress, at: event.elapsed))
-                    } else {
-                        progress.satisfyingSince = nil
-                    }
+                guard matches(event) else { continue }
+                progress.observed += 1
+                let satisfied = count.accepts(progress.observed)
+                switch window {
+                case .eventually where satisfied:
+                    return result(progress, at: event.elapsed)
+                case .until where !satisfied:
+                    throw SessionTimedObservationError.violated(result(progress, at: event.elapsed))
+                case .stable:
+                    progress.satisfyingSince = satisfied ? (progress.satisfyingSince ?? event.elapsed) : nil
+                default:
+                    break
                 }
             }
             if let completed = try completion(progress, by: cut.elapsed) { return completed }
@@ -179,12 +196,13 @@ struct TimedCountWait: Sendable {
     }
 
     private func stableEnd(since start: Duration) -> Duration? {
-        stableDuration.map { start + $0 }
+        guard case let .stable(duration, within: _) = window else { return nil }
+        return start + duration
     }
 
     private func completion(_ progress: Progress, by time: Duration) throws -> SessionTimedCountObservation? {
         try Task.checkCancellation()
-        if stableDuration == nil {
+        if case .until = window {
             return time >= deadline ? result(progress, at: deadline) : nil
         }
         if let end = progress.satisfyingSince.flatMap(stableEnd), end <= deadline, time >= end {

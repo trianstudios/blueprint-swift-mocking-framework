@@ -54,7 +54,7 @@ import ConsumerDoubles
 }
 
 @Test(.timeLimit(.minutes(1)))
-func RUN031_RUN032_generatedSelectorsDriveTimedMetadataAssertions() async throws {
+func RUN030_RUN031_RUN032_generatedSelectorsDriveTimedMetadataAssertions() async throws {
     let session = MockSession()
     let mock = UserRepositoryMock(failureReporter: .swiftTesting, session: session) { stubs in
         stubs.greeting(for: .any).willReturn("selected")
@@ -79,6 +79,11 @@ func RUN031_RUN032_generatedSelectorsDriveTimedMetadataAssertions() async throws
         #expect(mismatch.epoch == snapshot.epoch)
         #expect(mismatch.watermark == snapshot.watermark)
     }
+
+    let firstMatch = try await session.eventually(.once, for: selector, phase: .returned, within: .seconds(1))
+    #expect(firstMatch.observed == 1)
+    #expect(firstMatch.epoch == snapshot.epoch)
+    #expect(firstMatch.watermark == snapshot.watermark)
 
     let stable = try await session.stable(.once, for: selector, phase: .returned, for: window, within: .seconds(1))
     #expect(stable.observed == 1)

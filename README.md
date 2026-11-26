@@ -78,7 +78,7 @@ Create an epoch-scoped verification scope with `session.consumptionScope(named:)
 
 For live observation, retain `session.observeChanges()`, then use its notifications as wake-ups. Read `try session.replay(since: checkpoint)` after a wake and use the returned checkpoint for the next read. Replay returns all retained events through that position, so coalesced wakes preserve intermediate transitions. Cancel the observation when finished.
 
-Use `session.eventually(_:for:phase:until:clock:)` for a count of one mock endpoint's metadata events. It returns the first observed prefix that satisfies the count before the deadline, even if a later count changes. It throws when history is unavailable or an epoch changes.
+Use `session.eventually(_:for:phase:within:)` to find the first committed metadata count that satisfies the predicate before a session-clock deadline. A late wake still sees a qualifying pre-deadline prefix, even if a later call invalidates it. Use the `until:clock:` overload to supply a Swift clock and bound when the observer must see a qualifying prefix. Both overloads throw when unavailability of history prevents evaluating the query.
 
 Use `session.until(_:for:phase:for:)` to require a count to hold throughout an interval, or `session.stable(_:for:phase:for:within:)` to wait for an uninterrupted satisfying window. Both count committed events by mock, endpoint, and phase. Events stamped at the interval's ending boundary are outside that interval. Time defaults to a monotonic clock. Use `MockSession(clock: .manual)` and `try session.advanceClock(by:)` for deterministic tests.
 
