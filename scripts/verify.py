@@ -137,6 +137,14 @@ def main():
         tool, inherited_source, inherited_generated, "InheritedDirectory", sources=inherited_parents))
     inherited_mock = inherited_generated.read_text()
     assert len(re.findall(r"(?m)^    public func label\(", inherited_mock)) == 1
+    qualified_source = source.with_name("QualifiedDirectory.swift")
+    qualified_generated = generated.with_name("QualifiedDirectoryMock.swift")
+    qualified_parent = source.parent.parent / "ParentDomain/ForeignSharedDirectory.swift"
+    qualified_parents = (("ParentDomain", qualified_parent),)
+    run("qualified-inheritance-generation", generate(
+        tool, qualified_source, qualified_generated, "QualifiedDirectory", sources=qualified_parents))
+    qualified_mock = qualified_generated.read_text()
+    assert len(re.findall(r"(?m)^    public func recordForeign\(", qualified_mock)) == 1
     actor_source = source.with_name("MainActorDirectory.swift")
     actor_generated = generated.with_name("MainActorDirectoryMock.swift")
     run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
@@ -241,6 +249,24 @@ def main():
         "--input-set-id", "1", "--source", "ConsumerDomain", inherited_source],
         fails=True, patterns=[r"BPM001: Missing inherited protocol ConsumerDomain\.InheritedDirectoryReadBranch"])
     assert {file.name: file.read_bytes() for file in inherited_batch.glob("*.generated.swift")} == previous_batch
+    qualified_config = temp / "qualified-blueprint-mocking.json"
+    qualified_config.write_text(json.dumps({
+        "schemaVersion": 1,
+        "selections": [{"module": "ConsumerDomain", "type": "QualifiedDirectory", "kind": "protocol"}],
+    }))
+    qualified_batch = temp / "qualified-batch"
+    qualified_inputs = (*qualified_parents, ("ConsumerDomain", qualified_source))
+    qualified_outputs = []
+    for label, inputs in (("config", qualified_inputs), ("config-reordered", reversed(qualified_inputs))):
+        run("qualified-inheritance-generation-" + label, [
+            tool, "generate", "--config", qualified_config, "--output", qualified_batch,
+            "--input-set-id", "2", *(value for module, path in inputs for value in ("--source", module, path)),
+        ], patterns=[r"Blueprint Mocking: generated 1 protocol mock"])
+        assert qualified_mock in (qualified_batch / "BlueprintMocks.generated.swift").read_text()
+        qualified_outputs.append(tuple((qualified_batch / name).read_bytes() for name in (
+            "BlueprintMocks.generated.swift", "BlueprintMockingIndex.generated.swift",
+        )))
+    assert qualified_outputs[0] == qualified_outputs[1]
     assert baseline == (temp / "Repeated.swift").read_bytes()
     actor_repeated = temp / "RepeatedMainActor.swift"
     run("main-actor-generation-repeat",
@@ -482,8 +508,8 @@ def main():
         ("ambiguous", "MissingParent", (("ConsumerDomain", "DecoyParent"), ("ConsumerDomain", "AmbiguousParent")),
          [r"BPM001: Ambiguous inherited protocol ConsumerDomain\.UnsuppliedParent",
           r"DecoyParent\.swift:1:1", r"AmbiguousParent\.swift:1:1"]),
-        ("foreign", "ForeignQualifiedParent", (("DecoyDomain", "DecoyParent"),),
-         [r"BPM001: Unsupported foreign inherited protocol 'DecoyDomain\.UnsuppliedParent'"]),
+        ("unqualified-foreign-result", "ForeignQualifiedParent", (("DecoyDomain", "DecoyParent"),),
+         [r"DecoyParent\.swift:2:\d+: error: BPM001: Cross-module inherited results require an explicit Swift"]),
         ("cycle", "InheritanceCycleA", (("ConsumerDomain", "InheritanceCycleB"),),
          [r"BPM001: Protocol inheritance cycle: InheritanceCycleA -> InheritanceCycleB -> InheritanceCycleA"]),
         ("result-collision", "InheritedDescriptorCollision", (
@@ -504,6 +530,44 @@ def main():
         )
         run("reject-inheritance-" + label, command, fails=True, patterns=patterns)
         assert output.read_text() == "sentinel: preserve the previous generation\n"
+    qualified_missing = r"BPM001: Missing inherited protocol ParentDomain\.SharedDirectory in the supplied source inputs"
+    requires_plain_import = (
+        r"BPM001: Foreign inherited protocol 'ParentDomain\.SharedDirectory' "
+        r"requires an unconditional plain import ParentDomain"
+    )
+    qualified_negatives = [
+        ("unavailable", "QualifiedParentInput", (),
+         [r"QualifiedParentInput\.swift:3:\d+: error:", qualified_missing]),
+        ("wrong-module", "QualifiedParentInput", (("DecoyDomain", qualified_parent),), [qualified_missing]),
+        ("ambiguous", "QualifiedParentInput",
+         (*qualified_parents, ("ParentDomain", inheritance_rejections / "QualifiedDuplicateParent.swift")),
+         [r"BPM001: Ambiguous inherited protocol ParentDomain\.SharedDirectory",
+          r"ForeignSharedDirectory\.swift:5:1", r"QualifiedDuplicateParent\.swift:1:1"]),
+        ("no-import", "QualifiedParentWithoutImport", qualified_parents, [requires_plain_import]),
+        ("file-local-import", "QualifiedParentWithoutImport",
+         (*qualified_parents, ("ConsumerDomain", inheritance_rejections / "QualifiedParentInput.swift")),
+         [requires_plain_import]),
+        ("conditional-import", "QualifiedConditionalImport", qualified_parents, [requires_plain_import]),
+        ("imported-qualifier-shadow", "QualifiedParentInput",
+         (*qualified_parents, ("ParentDomain", inheritance_rejections / "QualifiedModuleShadow.swift")),
+         [r"QualifiedParentInput\.swift:3:\d+: error: BPM001: .*shadowed by an imported declaration",
+          r"QualifiedModuleShadow\.swift:1:1"]),
+        ("selective-import-shadow", "QualifiedSelectiveImport",
+         (*qualified_parents, ("QualifierAliases", inheritance_rejections / "QualifiedSelectiveAlias.swift")),
+         [r"QualifiedSelectiveImport\.swift:4:\d+: error: BPM001: .*shadowed by a selective import",
+          r"QualifiedSelectiveImport\.swift:2:1"]),
+        ("member-name-collision", "QualifiedMemberCollision", qualified_parents,
+         [r"BPM001: A cross-module inherited requirement needs a distinct member name 'remoteLabel'",
+          r"ForeignSharedDirectory\.swift:6:\d+", r"QualifiedMemberCollision\.swift:4:\d+"]),
+    ]
+    for label, selected, inputs, patterns in qualified_negatives:
+        output = temp / "RejectedQualifiedInheritance.swift"
+        sentinel = b"sentinel: preserve the previous qualified generation\n"
+        output.write_bytes(sentinel)
+        run("reject-qualified-inheritance-" + label, generate(
+            tool, inheritance_rejections / (selected + ".swift"), output, selected, sources=inputs),
+            fails=True, patterns=patterns)
+        assert output.read_bytes() == sentinel
     mapper_fixture = ROOT / "Fixtures/FailureMappingConsumer"
     mapper_tests = "Tests/FailureMappingProbeTests/FailureMappingTests.swift"
     baseline_probe = (mapper_fixture / "Variants/A/Probe.swift").read_text()
@@ -531,7 +595,8 @@ def main():
     run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
                   r"GEN002_diamondBranchesShareOneTypedWitnessAndEndpoint\(\) passed",
-                  r"GEN002_unstubbedSharedWitnessReportsItsOriginalDeclarationFile\(\) passed"])
+                  r"GEN002_unstubbedSharedWitnessReportsItsOriginalDeclarationFile\(\) passed",
+                  r"GEN002_qualifiedParentsKeepModuleIdentityAndForeignDeclarationProvenance\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [

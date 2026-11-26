@@ -116,7 +116,7 @@ def expected_plan(configuration, output, sources):
         "featureGates": {
             "analysis": "supplied-swift-sources",
             "compilerContext": "unavailable",
-            "protocolInheritance": "supplied-same-module",
+            "protocolInheritance": "supplied-source-index",
         },
     }
 

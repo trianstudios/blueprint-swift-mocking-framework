@@ -105,15 +105,12 @@ private struct BuildGenerationPlan {
         let sorted = loaded.selections.sorted { ($0.module, $0.type) < ($1.module, $1.type) }
         configuration = BuildConfiguration(schemaVersion: loaded.schemaVersion, selections: sorted)
 
-        var resolved: [Selection] = []
-        for module in Set(sorted.map(\.module)).sorted() {
-            let index = try ProtocolSourceIndex(module: module, paths: request.sources[module] ?? [])
-            for selection in sorted where selection.module == module {
-                let root = try index.select(selection.type, diagnosticFile: request.config.path)
-                let mock = try generate(index: index, root: root, projections: [],
-                                        variadicForwarding: [], subscriptSpecializations: [], spy: false)
-                resolved.append(Selection(selected: selection, origin: root.origin, mock: mock))
-            }
+        let sourceIndex = ProtocolSourceIndex(sources: request.sources)
+        let resolved = try sorted.map { selection in
+            let root = try sourceIndex.select(selection.type, in: selection.module, diagnosticFile: request.config.path)
+            let mock = try generate(index: sourceIndex, root: root, projections: [],
+                                    variadicForwarding: [], subscriptSpecializations: [], spy: false)
+            return Selection(selected: selection, origin: root.origin, mock: mock)
         }
         selections = resolved
 
@@ -169,7 +166,7 @@ private struct BuildInspection: Encodable {
     let featureGates = [
         "analysis": "supplied-swift-sources",
         "compilerContext": "unavailable",
-        "protocolInheritance": "supplied-same-module",
+        "protocolInheritance": "supplied-source-index",
     ]
 
     init(request: BuildGenerationRequest, plan: BuildGenerationPlan) {

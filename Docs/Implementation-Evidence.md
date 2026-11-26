@@ -148,7 +148,7 @@ GEN-002 now resolves transitive public Sendable protocols from an explicit same-
 
 The compiled consumer calls the common witness through both parent existential views and verifies one typed descriptor with two returned calls. It also exercises an inherited property, typed async errors, and an unstubbed inherited call with its original source location. Reordered input files give byte-identical mock output. The configuration entry emits the same mock.
 
-Missing, ambiguous, foreign and cyclic parents stop generation with `BPM001`. Return-only and effect conflicts name both declaration sites. Failed requests preserve prior output. Cross-module parent resolution, independent equivalent signatures, imported interfaces and inherited actor isolation remain open.
+Missing, ambiguous and cyclic same-module parents stop generation with `BPM001`. Return-only and effect conflicts name both declaration sites. Failed requests preserve prior output. Independent equivalent signatures, imported interfaces and inherited actor isolation remain open.
 
 The verification profile uses the installed Xcode parser and the existing SwiftPM consumer caches. Compilation of the exported tooling package, hosted distribution, and additional native qualification remain separate release gates.
 
@@ -163,3 +163,10 @@ The CLI fixture compares the JSON before generation and after both files exist, 
 ## Generated-file drift verification
 
 DX-011 adds the read-only `verify-generated` command for the SwiftPM-style generation request. It compares the planned shard and index byte for byte against the files in the supplied output directory. The check returns exit 3 and identifies every missing or edited file. The CLI fixture proves exact files pass, detects changed and missing files, and compares before and after project fingerprints. Manifest-owned cleanup and full output collision handling remain open.
+
+
+## Inheritance from supplied dependency sources
+
+GEN-002 now indexes explicit source inputs by Swift module and protocol name. A parent from another module requires an unconditional plain import in the file that declares the child. Bare parent names resolve within the declaring module, including when traversing a supplied dependency. The compiled consumer distinguishes the same-named protocols in two modules, exercises their typed setup and verification through existential views, and checks the original foreign module and file on an inherited invocation. The standalone and SwiftPM configuration entries generate the same mock.
+
+The generator accepts ordinary instance methods with explicitly qualified Swift scalars in foreign parents. It rejects missing exact sources, duplicate parents, missing imports, ambiguous witness names and unsupported foreign types before publishing output. When a known imported declaration or selective import shadows a module qualifier, generation rejects that edge with its competing origin. A native compiler probe confirmed such an edge can bind a nested protocol whose default implementation allows an incorrect generated conformance to compile. Re-exports and unsupplied import scopes need compiler context. Textual or compiler-queried module interfaces remain under GEN-003. Broader signatures and inherited isolation also remain open.

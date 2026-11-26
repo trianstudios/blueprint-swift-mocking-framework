@@ -100,7 +100,7 @@ bash scripts/generate.sh \
   --output Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/UserRepositoryMock.swift
 ```
 
-For a public `Sendable` protocol that inherits other protocols in the same module, pass their files explicitly using repeated `--source MODULE FILE` arguments. Keep `--input` pointed at the selected protocol’s file.
+For a public `Sendable` protocol that inherits other protocols, pass their files explicitly using repeated `--source MODULE FILE` arguments. Keep `--input` pointed at the selected protocol’s file.
 
 ```sh
 bash scripts/generate.sh \
@@ -111,7 +111,9 @@ bash scripts/generate.sh \
   --source AppDomain Sources/AppDomain/DirectoryRoot.swift
 ```
 
-The generator follows transitive parents in the supplied module and emits a shared diamond requirement once. Inherited calls retain the declaring file and line. The SwiftPM configuration entry uses the same resolver. Parents must be public, top-level, nongeneric protocols in the supplied module. Cross-module inheritance, conditional parents, and inherited actor isolation remain outside this profile.
+The generator follows transitive parents in the supplied sources and emits a shared diamond requirement once. Same-module parents may use their bare names. For a parent in another module, add an unconditional plain import in the declaring file, spell the parent as `ParentModule.ParentProtocol` and supply its files under `--source ParentModule`. The resolver diagnoses module qualifiers shadowed by supplied imports. Inherited call reports retain the declaring module, file and line.
+
+Parents must be public, top-level, nongeneric protocols. Across modules, ordinary instance methods may use explicitly qualified `Swift.Bool`, `Swift.Int` and `Swift.String` parameters and results or omit the return type. Inherited methods from other modules need distinct member names. These requests use ordinary mocks. Forwarding, projections and generic specializations are outside the cross-module profile. The SwiftPM configuration entry uses the same resolver with both modules supplied as source inputs. In the build plugin, the attached target must directly depend on all participating source targets. Conditional and actor-isolated parents, imported module interfaces, qualified nominal payloads and typed errors in foreign requirements are outside this profile.
 
 For supported Sendable methods, add `--project 'fetch(id:)'` and any other `--project` selectors to generate a separate `<Protocol>ProjectedMock`. Synchronous nonthrowing and async-throwing methods can opt in. A selector uses the declaration's argument labels, including `_:` for unlabeled arguments. If overloads share the same labels, use the canonical endpoint ID listed in the diagnostic.
 
@@ -144,7 +146,7 @@ mock.verify.fetchUser(id: .equal("42")).wasCalled(.once)
 
 Select the `BluepringMockingFramework` SwiftPM library product in your test target and import its `BlueprintMocking` module. Add the `BlueprintMockingTesting` product and import its module to use the optional `.swiftTesting` reporter. For XCTest, select `BlueprintMockingXCTest`, import its module, and pass `.xctest` as the reporter. Verification failures in XCTest use the assertion’s file and line when supplied as compiler literals. The consumer’s production target depends only on the domain interface.
 
-The generator accepts top-level public protocols in two profiles: a protocol inheriting only Sendable, or an `@MainActor` protocol without inheritance. Both support zero or more parameters and simple named types, including nested optionals, arrays, and dictionaries. A Sendable mock requires Sendable inputs and results. MainActor mocks can retain actor-local, non-Sendable references. Methods support sync, sync throws, async, async throws, Void, Never and named error types. Overloads may differ by argument label or input type. A multi-argument answer receives an ordered tuple, while setup and verification accept one typed matcher per argument. SwiftParser and SwiftSyntax come from the installed Xcode toolchain, and the verification suite compiles each generated conformance.
+The generator accepts top-level public protocols in two profiles: a Sendable protocol with supported inherited requirements, or an `@MainActor` protocol without inheritance. Both support zero or more parameters and simple named types, including nested optionals, arrays, and dictionaries. A Sendable mock requires Sendable inputs and results. MainActor mocks can retain actor-local, non-Sendable references. Methods support sync, sync throws, async, async throws, Void, Never and named error types. Overloads may differ by argument label or input type. A multi-argument answer receives an ordered tuple, while setup and verification accept one typed matcher per argument. SwiftParser and SwiftSyntax come from the installed Xcode toolchain, and the verification suite compiles each generated conformance.
 
 Protocol properties expose separate `get_<name>()` and `set_<name>(matcher)` descriptors for stubbing and verification. Read-only getters retain their async and throwing effects. Ordinary property stubs keep getter results independent from setter calls. Opt into last-assigned-value behavior with `stubs.store_<name>(initialValue:)`. Getter and setter verification stay separate.
 

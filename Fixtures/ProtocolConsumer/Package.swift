@@ -7,16 +7,17 @@ let package = Package(
     products: [.executable(name: "consumer-demo", targets: ["ConsumerDemo"])],
     dependencies: [.package(name: "BluepringMockingFramework", path: "../..")],
     targets: [
-        .target(name: "ConsumerDomain"),
+        .target(name: "ParentDomain"),
+        .target(name: "ConsumerDomain", dependencies: ["ParentDomain"]),
         .target(name: "ConsumerDoubles", dependencies: [
-            "ConsumerDomain", .product(name: "BluepringMockingFramework", package: "BluepringMockingFramework")
+            "ConsumerDomain", "ParentDomain", .product(name: "BluepringMockingFramework", package: "BluepringMockingFramework")
         ]),
         .executableTarget(name: "ConsumerDemo", dependencies: [
             "ConsumerDomain", "ConsumerDoubles",
             .product(name: "BluepringMockingFramework", package: "BluepringMockingFramework")
         ]),
         .testTarget(name: "ConsumerTests", dependencies: [
-            "ConsumerDomain", "ConsumerDoubles",
+            "ConsumerDomain", "ConsumerDoubles", "ParentDomain",
             .product(name: "BluepringMockingFramework", package: "BluepringMockingFramework"),
             .product(name: "BlueprintMockingTesting", package: "BluepringMockingFramework")
         ])

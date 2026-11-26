@@ -277,6 +277,20 @@ func generate(
         }
     }
 
+    let hasImportedRequirements = declarations.contains { $0.origin.module != module }
+    if hasImportedRequirements && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || !subscriptSpecializations.isEmpty) {
+        try reject(proto, "Supplied cross-module inheritance supports ordinary witnesses without forwarding, projections or generic specializations")
+    }
+
+    func importedScalar(_ type: TypeSyntax) -> String? {
+        guard let qualified = type.as(MemberTypeSyntax.self), qualified.genericArgumentClause == nil,
+              let qualifier = qualified.baseType.as(IdentifierTypeSyntax.self), qualifier.genericArgumentClause == nil,
+              qualifier.name.text == "Swift", ["Bool", "Int", "String"].contains(qualified.name.text) else {
+            return nil
+        }
+        return "Swift.\(qualified.name.text)"
+    }
+
     // The consumer compiler resolves aliases and validates the conformance. Reject type
     // shapes this emitter cannot reproduce, including references to a witness's Self.
     func supportedType(_ type: TypeSyntax) -> String? {
@@ -334,10 +348,25 @@ func generate(
 
     var members: [Member] = []
     var descriptors: [String: Member] = [:]
+    var witnessesByName: [String: Member] = [:]
+    func witnessName(_ name: String, kind: WitnessKind) -> String? {
+        switch kind {
+        case .method: name
+        case .getter(let property), .setter(let property): property
+        default: nil
+        }
+    }
     func addMember(
         name: String, parameters: [Parameter], outputType: String,
         effect: Effect, kind: WitnessKind, at node: some SyntaxProtocol
     ) throws {
+        let source = index.origin(of: node)
+        let witness = witnessName(name, kind: kind)
+        if let witness, let previous = witnessesByName[witness],
+           source.module != module || previous.origin.module != module {
+            try reject(node, "A cross-module inherited requirement needs a distinct member name '\(witness)' "
+                        + "(previous requirement at \(previous.origin))")
+        }
         let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
         let matcherTypes = parameters.filter { $0.callback == nil }.map {
             "\($0.label):\($0.isInout ? "Int" : $0.runtimeType)"
@@ -383,14 +412,15 @@ func generate(
         }
         let identity = "schema1|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(resultIdentity)|\(isolation.identity)"
         let member = Member(name: name, parameters: parameters, outputType: outputType,
-                            effect: effect, identity: identity, origin: index.origin(of: node),
+                            effect: effect, identity: identity, origin: source,
                             isolation: isolation, kind: kind)
+        if let witness { witnessesByName[witness] = member }
         descriptors[descriptor] = member
         members.append(member)
     }
 
     func parseParameters(
-        _ parameters: FunctionParameterListSyntax, forSubscript: Bool = false
+        _ parameters: FunctionParameterListSyntax, forSubscript: Bool = false, imported: Bool = false
     ) throws -> [Parameter] {
         try parameters.map { parameter in
             // A single name on a subscript index is local. A method's is external.
@@ -423,6 +453,12 @@ func generate(
                     let callback = CallbackType(input: input, output: output)
                     return Parameter(label: label, type: callback.declaration, callback: callback)
                 }
+            }
+            if imported {
+                guard let type = importedScalar(parameter.type), unmodified, !isVariadic else {
+                    try reject(parameter, "Cross-module inherited parameters require an unmodified Swift.Bool, Swift.Int or Swift.String type")
+                }
+                return Parameter(label: label, type: type)
             }
             guard let type = supportedType(parameter.type), unmodified else {
                 let subject = forSubscript ? "Subscript indices require" : "Use"
@@ -579,6 +615,11 @@ func generate(
     }
 
     for item in declarations.flatMap({ $0.declaration.memberBlock.members }) {
+        let source = index.origin(of: item)
+        let imported = source.module != module
+        if imported && !item.decl.is(FunctionDeclSyntax.self) {
+            try reject(item, "Cross-module inherited requirements currently support simple instance methods")
+        }
         if let decl = item.decl.as(SubscriptDeclSyntax.self) {
             try addSubscript(decl)
             continue
@@ -592,13 +633,44 @@ func generate(
         }
         guard fn.body == nil, fn.attributes.isEmpty, fn.modifiers.isEmpty,
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
-              simple(fn.name.text), !["init", "verify", "Stubs", "Verification"].contains(fn.name.text),
-              let outputType = supportedResult(fn.signature.returnClause?.type) else {
+              simple(fn.name.text), !["init", "verify", "Stubs", "Verification"].contains(fn.name.text) else {
             try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
         }
-        let parameters = try parseParameters(fn.signature.parameterClause.parameters)
+        let returnType = fn.signature.returnClause?.type
+        let outputType: String
+        if imported {
+            try index.requireUnshadowedQualifier("Swift", at: fn)
+            guard index.isUnshadowed("Swift", in: module) else {
+                try reject(fn, "Cross-module inherited requirements need an unshadowed Swift module in the selected module")
+            }
+            if returnType == nil || fn.signature.parameterClause.parameters.isEmpty {
+                guard index.isUnshadowed("Void", in: module) else {
+                    try reject(fn, "Cross-module inherited witnesses with empty input or result need an unshadowed Void in the selected module")
+                }
+            }
+            if let returnType {
+                guard let scalar = importedScalar(returnType) else {
+                    try reject(fn, "Cross-module inherited results require an explicit Swift.Bool, Swift.Int or Swift.String type")
+                }
+                outputType = scalar
+            } else {
+                outputType = "Void"
+            }
+        } else {
+            guard let resolved = supportedResult(returnType) else {
+                try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
+            }
+            outputType = resolved
+        }
+        let parameters = try parseParameters(fn.signature.parameterClause.parameters, imported: imported)
         let specifiers = fn.signature.effectSpecifiers
+        if imported && specifiers?.throwsClause?.type != nil {
+            try reject(fn, "Cross-module inherited methods support untyped throws; a typed error needs semantic type resolution")
+        }
         let effect = try methodEffect(specifiers?.asyncSpecifier, specifiers?.throwsClause, at: fn)
+        if imported && effect.failure?.isOrdinary == true && !index.isUnshadowed("Error", in: module) {
+            try reject(fn, "Cross-module inherited throws needs an unshadowed Error in the selected module")
+        }
         if effect.isAsync && parameters.contains(where: \.isInout) {
             try reject(fn, "Direct spy inout forwarding requires a synchronous method")
         }
@@ -1224,8 +1296,9 @@ private func run(_ arguments: [String]) throws {
     }
     let input = arguments[1]
     let module = arguments[3]
-    let index = try ProtocolSourceIndex(module: module, paths: [input] + (sourcePaths[module] ?? []))
-    let root = try index.select(arguments[5], diagnosticFile: input)
+    sourcePaths[module, default: []].append(input)
+    let index = ProtocolSourceIndex(sources: sourcePaths)
+    let root = try index.select(arguments[5], in: module, diagnosticFile: input)
     guard URL(fileURLWithPath: root.origin.path).standardizedFileURL == URL(fileURLWithPath: input).standardizedFileURL else {
         throw GenerationError(description: "\(input):1:1: error: BPM001: The selected protocol must be declared in --input")
     }
