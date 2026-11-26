@@ -63,39 +63,6 @@ extension Matcher where Input: Equatable {
     public static func equal(_ expected: Input) -> Self { Self { $0 == expected } }
 }
 
-public struct CallCount: Sendable {
-    private enum Bound: Sendable { case exact(Int), minimum(Int), maximum(Int) }
-    private let bound: Bound
-    public static var once: Self { .exactly(1) }
-    public static var never: Self { .exactly(0) }
-    public static func exactly(_ value: Int) -> Self {
-        precondition(value >= 0, "Call counts must be nonnegative")
-        return Self(bound: .exact(value))
-    }
-    public static func atLeast(_ value: Int) -> Self {
-        precondition(value >= 0, "Call counts must be nonnegative")
-        return Self(bound: .minimum(value))
-    }
-    public static func atMost(_ value: Int) -> Self {
-        precondition(value >= 0, "Call counts must be nonnegative")
-        return Self(bound: .maximum(value))
-    }
-    func accepts(_ actual: Int) -> Bool {
-        switch bound {
-        case .exact(let n): actual == n
-        case .minimum(let n): actual >= n
-        case .maximum(let n): actual <= n
-        }
-    }
-    var description: String {
-        switch bound {
-        case .exact(let n): "exactly \(n)"
-        case .minimum(let n): "at least \(n)"
-        case .maximum(let n): "at most \(n)"
-        }
-    }
-}
-
 /// Admission queries include unfinished and throwing calls; terminal phases are explicit.
 public enum CallPhase: Sendable { case admitted, returned, threw, terminated }
 public struct Invocation<Input: Sendable>: Sendable {
@@ -169,15 +136,15 @@ public struct Verification<Input: Sendable>: Sendable {
         let matches = prefix.calls.filter {
             (phase == .admitted || $0.phase == phase) && matcher.matches($0.input)
         }
-        let passed = count.accepts(matches.count)
-        if !passed {
+        let failure = count.failureMessage(observed: matches.count)
+        if let failure {
             journal.report(MockIssue(
                 kind: .verificationFailed, endpoint: journal.endpoint,
-                message: "Expected \(count.description) calls; observed \(matches.count)",
+                message: failure,
                 source: source(),
                 watermark: prefix.watermark))
         }
-        return VerificationResult(passed: passed, observed: matches.count,
+        return VerificationResult(passed: failure == nil, observed: matches.count,
                                   watermark: prefix.watermark, invocationIDs: matches.map(\.id))
     }
 }

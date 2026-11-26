@@ -55,11 +55,9 @@ private final class MainActorJournal<Input> {
         return issue
     }
 
-    func reportCountMismatch(_ expected: CallCount, observed: Int, watermark: UInt64,
-                             source: SourceLocation) {
+    func reportCountMismatch(_ message: String, watermark: UInt64, source: SourceLocation) {
         reporter.report(MockIssue(kind: .verificationFailed, endpoint: endpoint,
-                                  message: "Expected \(expected.description) calls; observed \(observed)",
-                                  source: source, watermark: watermark))
+                                  message: message, source: source, watermark: watermark))
     }
 }
 
@@ -93,11 +91,11 @@ public struct MainActorVerification<Input> {
         }.map(\.id)
         let invocationIDs = Array(ids)
         let observed = invocationIDs.count
-        let passed = count.accepts(observed)
-        if !passed {
-            journal.reportCountMismatch(count, observed: observed, watermark: watermark, source: source())
+        let failure = count.failureMessage(observed: observed)
+        if let failure {
+            journal.reportCountMismatch(failure, watermark: watermark, source: source())
         }
-        return VerificationResult(passed: passed, observed: observed,
+        return VerificationResult(passed: failure == nil, observed: observed,
                                   watermark: watermark, invocationIDs: invocationIDs)
     }
 }
