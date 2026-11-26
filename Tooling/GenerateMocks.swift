@@ -137,14 +137,12 @@ func generate(input: String, module: String, selected: String) throws -> String 
         return identifier.name.text
     }
     func supportedResult(_ type: TypeSyntax?) -> String? {
-        if isolation == .sendable {
-            guard let type else { return "Void" }
-            if type.trimmedDescription == "Void" || type.as(TupleTypeSyntax.self)?.elements.isEmpty == true {
-                return "Void"
-            }
-            if type.trimmedDescription == "Never" { return "Never" }
+        guard let type else { return "Void" }
+        if type.trimmedDescription == "Void" || type.as(TupleTypeSyntax.self)?.elements.isEmpty == true {
+            return "Void"
         }
-        return type.flatMap(supportedType)
+        if type.trimmedDescription == "Never" { return "Never" }
+        return supportedType(type)
     }
     var members: [Member] = []
     var descriptors = Set<String>()
@@ -184,12 +182,6 @@ func generate(input: String, module: String, selected: String) throws -> String 
                 failure = type.name.text == "Never" ? .never : .typed(type.name.text)
             } else {
                 failure = .ordinary
-            }
-        }
-        if isolation == .mainActor {
-            switch (isAsync, failure) {
-            case (false, nil), (true, .typed?): break
-            default: try reject(fn, "MainActor profile currently supports synchronous nonthrowing and async typed-throwing methods")
             }
         }
         let effect = Effect(isAsync: isAsync, failure: failure)

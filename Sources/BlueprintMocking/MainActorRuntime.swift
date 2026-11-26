@@ -25,7 +25,7 @@ public struct MainActorInvocation<Input> {
 }
 
 @MainActor
-private final class MainActorJournal<Input> {
+final class MainActorJournal<Input> {
     private let endpoint: EndpointID
     private let reporter: FailureReporter
     private(set) var calls: [MainActorInvocation<Input>] = []
@@ -45,14 +45,32 @@ private final class MainActorJournal<Input> {
         calls[Int(id - 1)].phase = phase
     }
 
-    @discardableResult
-    func unexpectedCall(_ id: UInt64, phase: CallPhase, source: SourceLocation) -> MockIssue {
-        complete(id, phase: phase)
+    func verification(matching matcher: MainActorMatcher<Input>, phase: CallPhase) -> MainActorVerification<Input> {
+        MainActorVerification(journal: self, matcher: matcher, phase: phase)
+    }
+
+    func unexpectedCall(_ id: UInt64, phase: CallPhase? = nil, source: SourceLocation) -> MockIssue {
+        if let phase { complete(id, phase: phase) }
         let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
                               message: "No matching stub for \(endpoint.rawValue)",
                               source: source, watermark: id)
         reporter.report(issue)
         return issue
+    }
+
+    func resolveMissingNonthrowingCall<Output>(
+        _ id: UInt64,
+        source: SourceLocation,
+        fallback: (@MainActor (MockIssue) -> Output)?
+    ) -> Output {
+        guard let fallback else {
+            let issue = unexpectedCall(id, phase: .terminated, source: source)
+            fatalError(issue.message)
+        }
+        let issue = unexpectedCall(id, source: source)
+        let result = fallback(issue)
+        complete(id, phase: .returned)
+        return result
     }
 
     func reportCountMismatch(_ message: String, watermark: UInt64, source: SourceLocation) {
@@ -101,13 +119,13 @@ public struct MainActorVerification<Input> {
 }
 
 @MainActor
-private struct MainActorRule<Input, Answer> {
+struct MainActorRule<Input, Answer> {
     let matcher: MainActorMatcher<Input>
     let answer: Answer
 }
 
 @MainActor
-private final class MainActorRuleBuilder<Input, Answer> {
+final class MainActorRuleBuilder<Input, Answer> {
     private var rules: [MainActorRule<Input, Answer>] = []
     private var finished = false
 
@@ -169,11 +187,15 @@ public struct MainActorSyncStub<Input, Output> {
 public final class MainActorSyncEndpoint<Input, Output> {
     private let configuration: MainActorSyncConfiguration<Input, Output>
     private let journal: MainActorJournal<Input>
+    private let fallback: (@MainActor (MockIssue) -> Output)?
 
+    /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
     public init(id: EndpointID, configuration: MainActorSyncConfiguration<Input, Output>,
-                failureReporter: FailureReporter) {
+                failureReporter: FailureReporter,
+                fallback: (@MainActor (MockIssue) -> Output)? = nil) {
         self.configuration = configuration
         self.journal = MainActorJournal(endpoint: id, reporter: failureReporter)
+        self.fallback = fallback
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) -> Output {
@@ -183,8 +205,7 @@ public final class MainActorSyncEndpoint<Input, Output> {
             journal.complete(id, phase: .returned)
             return result
         }
-        let issue = journal.unexpectedCall(id, phase: .terminated, source: source)
-        fatalError(issue.message)
+        return journal.resolveMissingNonthrowingCall(id, source: source, fallback: fallback)
     }
 
     public func verification(matching matcher: MainActorMatcher<Input>,

@@ -15,6 +15,9 @@ public enum DirectoryFailure: Error {
 public protocol MainActorDirectory {
     func display(_ entry: DirectoryEntry) -> DirectoryEntry
     func refresh(_ entry: DirectoryEntry) async throws(DirectoryFailure) -> DirectoryEntry
+    func require(_ entry: DirectoryEntry) throws(DirectoryFailure) -> DirectoryEntry
+    func read(_ entry: DirectoryEntry) async -> DirectoryEntry
+    func audit(_ entry: DirectoryEntry)
 }
 
 @MainActor

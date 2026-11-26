@@ -57,3 +57,39 @@ private final class DisplayState {
     #expect(mock.verify.display(matchSameName).wasCalled(.never).passed)
     #expect(mock.verify.refresh(matchSameName, phase: .threw).wasCalled(.once).passed)
 }
+
+@Test @MainActor func GEN013_generatedMainActorSyncThrowingAndAsyncNonThrowing() async {
+    let state = DisplayState()
+    let entry = DirectoryEntry("Ada")
+    let mock = MainActorDirectoryMock(failureReporter: .swiftTesting) { stubs in
+        stubs.require(.any).willAnswer { _ throws(DirectoryFailure) in
+            MainActor.preconditionIsolated()
+            state.observed.append("require")
+            throw .unavailable
+        }
+        stubs.read(.identical(to: entry)).willAnswer { input in
+            await Task.yield()
+            MainActor.preconditionIsolated()
+            state.observed.append("read")
+            input.name += " (read)"
+            return input
+        }
+    }
+    let directory: any MainActorDirectory = mock
+    do {
+        _ = try directory.require(entry)
+        Issue.record("Expected DirectoryFailure.unavailable")
+    } catch {
+        #expect(error == .unavailable)
+    }
+    let value = await directory.read(entry)
+    #expect(value === entry)
+    #expect(value.name == "Ada (read)")
+    withKnownIssue("Unstubbed MainActor Void call") {
+        directory.audit(entry)
+    }
+    #expect(state.observed == ["require", "read"])
+    #expect(mock.verify.require(.identical(to: entry), phase: .threw).wasCalled(.once).passed)
+    #expect(mock.verify.read(.identical(to: entry), phase: .returned).wasCalled(.once).passed)
+    #expect(mock.verify.audit(.identical(to: entry), phase: .returned).wasCalled(.once).passed)
+}
