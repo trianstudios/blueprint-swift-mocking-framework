@@ -68,6 +68,16 @@ struct Effect {
 struct Parameter {
     let label: String
     let type: String
+    let isVariadic: Bool
+
+    init(label: String, type: String, isVariadic: Bool = false) {
+        self.label = label
+        self.type = type
+        self.isVariadic = isVariadic
+    }
+
+    var witnessType: String { isVariadic ? "\(type)..." : type }
+    var runtimeType: String { isVariadic ? "[\(type)]" : type }
 }
 enum WitnessKind {
     case method
@@ -94,8 +104,8 @@ struct Member {
 
     var inputType: String {
         if parameters.isEmpty { return "Void" }
-        if parameters.count == 1 { return parameters[0].type }
-        return "(" + parameters.map(\.type).joined(separator: ", ") + ")"
+        if parameters.count == 1 { return parameters[0].runtimeType }
+        return "(" + parameters.map(\.runtimeType).joined(separator: ", ") + ")"
     }
 
     var genericArguments: String {
@@ -113,7 +123,7 @@ struct Member {
 
     var parameterDeclaration: String {
         parameters.enumerated().map { index, parameter in
-            "\(parameter.label) \(argumentName(index)): \(parameter.type)"
+            "\(parameter.label) \(argumentName(index)): \(parameter.witnessType)"
         }.joined(separator: ", ")
     }
 
@@ -131,7 +141,7 @@ struct Member {
 
     private var descriptorParameters: [String] {
         parameters.enumerated().map { index, parameter in
-            "\(parameter.label) \(matcherName(index)): \(isolation.prefix)Matcher<\(parameter.type)>"
+            "\(parameter.label) \(matcherName(index)): \(isolation.prefix)Matcher<\(parameter.runtimeType)>"
         }
     }
 
@@ -245,19 +255,24 @@ func generate(input: String, module: String, selected: String, projections: [Str
     }
 
     var members: [Member] = []
-    var descriptors = Set<String>()
+    var descriptors: [String: Bool] = [:]
     func addMember(
         name: String, parameters: [Parameter], outputType: String,
         effect: Effect, kind: WitnessKind, at node: some SyntaxProtocol
     ) throws {
-        let parameterTypes = parameters.map { "\($0.label):\($0.type)" }.joined(separator: ",")
-        let descriptor = "\(name)(\(parameterTypes))"
-        guard descriptors.insert(descriptor).inserted else {
+        let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
+        let matcherTypes = parameters.map { "\($0.label):\($0.runtimeType)" }.joined(separator: ",")
+        let descriptor = "\(name)(\(matcherTypes))"
+        let isVariadic = parameters.contains { $0.isVariadic }
+        if let previousVariadic = descriptors.updateValue(isVariadic, forKey: descriptor) {
+            if isVariadic || previousVariadic {
+                try reject(node, "Variadic overloads with identical lowered matcher signatures require distinct argument labels")
+            }
             try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names")
         }
         let endpoint: String
         switch kind {
-        case .method: endpoint = descriptor
+        case .method: endpoint = "\(name)(\(parameterTypes))"
         case .getter(let property): endpoint = "property:\(property).get"
         case .setter(let property): endpoint = "property:\(property).set(\(parameterTypes))"
         case .subscriptGetter(let indices): endpoint = "subscript:\(indices).get"
@@ -276,14 +291,16 @@ func generate(input: String, module: String, selected: String, projections: [Str
         try parameters.map { parameter in
             // A single name on a subscript index is local. A method's is external.
             let label = forSubscript && parameter.secondName == nil ? "_" : parameter.firstName.text
+            let isVariadic = parameter.ellipsis != nil
             guard let type = supportedType(parameter.type),
                   parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
-                  parameter.ellipsis == nil, parameter.defaultValue == nil,
+                  !forSubscript || !isVariadic, parameter.defaultValue == nil,
                   simple(label) || label == "_" else {
                 let subject = forSubscript ? "Subscript indices require" : "Use"
-                try reject(parameter, "\(subject) named, optional, array or dictionary parameter types without ownership, variadics or default values")
+                let exclusions = forSubscript ? "ownership, variadics or default values" : "ownership or default values"
+                try reject(parameter, "\(subject) named, optional, array or dictionary parameter types without \(exclusions)")
             }
-            return Parameter(label: label, type: type)
+            return Parameter(label: label, type: type, isVariadic: isVariadic)
         }
     }
 
@@ -495,7 +512,7 @@ func generate(input: String, module: String, selected: String, projections: [Str
         for index in failureIndices {
             let member = members[index]
             let mapper = "\(failureIsolation) (MockIssue) -> \(member.effect.runtimeFailure!.type)"
-            let selector = member.parameters.map { "\($0.label) _: (\($0.type)).Type" }
+            let selector = member.parameters.map { "\($0.label) _: (\($0.runtimeType)).Type" }
             let signature = (selector + ["_ mapping: @escaping \(mapper)"]).joined(separator: ", ")
             output += "        fileprivate var __mapping\(index): (\(mapper))? = nil\n"
             output += "        public mutating func \(member.name)(\(signature)) {\n"

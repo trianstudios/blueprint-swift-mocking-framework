@@ -20,11 +20,13 @@ def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
         [str(x) for x in command], cwd=ROOT, env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=timeout)
     output = completed.stdout
-    (EVIDENCE / (name + ".log")).write_text(output)
+    log = EVIDENCE / (name + ".log")
+    log.write_text(output, encoding="utf-8")
     valid = (completed.returncode != 0) if fails else (completed.returncode == 0)
     valid = valid and all(re.search(pattern, output) for pattern in patterns)
     RESULTS.append({"check": name, "passed": bool(valid), "exit": completed.returncode,
-                    "expected_failure": fails, "log": name + ".log"})
+                    "expected_failure": fails, "log": log.name,
+                    "logSHA256": hashlib.sha256(log.read_bytes()).hexdigest()})
     print(("PASS " if valid else "FAIL ") + name, flush=True)
     if not valid:
         print(output[-10000:], flush=True)
@@ -41,7 +43,30 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
 def xcrun(*arguments):
     return subprocess.check_output(["xcrun", *arguments], text=True).strip()
 
+def checkout_state():
+    def git(*arguments):
+        return subprocess.check_output(
+            ["git", *arguments], cwd=ROOT, stderr=subprocess.DEVNULL, text=True,
+            env=os.environ | {"GIT_OPTIONAL_LOCKS": "0"}, timeout=20,
+        ).strip()
+
+    try:
+        if Path(git("rev-parse", "--show-toplevel")).resolve() != ROOT:
+            return None
+        return {
+            "revision": git("rev-parse", "--verify", "HEAD"),
+            "clean": not git("status", "--porcelain", "--untracked-files=normal"),
+        }
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def result_document():
+    return (json.dumps(RESULTS, indent=2) + "\n").encode("utf-8")
+
+
 def main():
+    source_before = checkout_state()
     swift = Path(xcrun("--find", "swift"))
     swiftc = Path(xcrun("--find", "swiftc"))
     if any(not executable.is_absolute() or not os.access(executable, os.X_OK)
@@ -116,6 +141,9 @@ def main():
     effectful_subscript_generated = generated.with_name("EffectfulSubscriptDirectoryMock.swift")
     run("effectful-subscript-generation", generate(
         tool, effectful_subscript_source, effectful_subscript_generated, "EffectfulSubscriptDirectory"))
+    variadic_source = source.with_name("VariadicDirectory.swift")
+    variadic_generated = generated.with_name("VariadicDirectoryMock.swift")
+    run("variadic-generation", generate(tool, variadic_source, variadic_generated, "VariadicDirectory"))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -138,6 +166,9 @@ def main():
     run("subscript-label-normalization", generate(
         tool, relocated_subscript, repeated_subscript, "SubscriptDirectory"))
     assert subscript_generated.read_bytes() == repeated_subscript.read_bytes()
+    repeated_variadic = temp / "RepeatedVariadic.swift"
+    run("variadic-generation-repeat", generate(tool, variadic_source, repeated_variadic, "VariadicDirectory"))
+    assert variadic_generated.read_bytes() == repeated_variadic.read_bytes()
     projection_protocol = "GeneratedProjectionDirectory"
     projection_source = source.with_name(projection_protocol + ".swift")
     projection_output = generated.with_name(projection_protocol + "ProjectedMock.swift")
@@ -186,6 +217,7 @@ def main():
         "EffectfulSubscriptSetter": r"Effectful subscript getters require read-only subscripts",
         "BorrowingSubscript": r"Subscript indices require.*without ownership",
         "VariadicSubscript": r"Subscript indices require.*without ownership, variadics",
+        "VariadicDescriptorCollision": r"Variadic overloads with identical lowered matcher signatures",
         "SubscriptDescriptorCollision": r"methods that collide with accessor descriptors",
     }
     for rejection in sorted((ROOT / "Fixtures/GeneratorRejections").glob("*.swift")):
@@ -254,6 +286,8 @@ def main():
         "SubscriptThrowForSetter": r"has no member 'willThrow'",
         "SubscriptWrongTypedError": r"cannot convert value of type 'WrongSubscriptFailure' to expected argument type 'EffectfulSubscriptFailure'",
         "SubscriptWriteReadonly": r"subscript is get-only",
+        "VariadicWrongElement": r"cannot convert value of type 'String' to expected argument type 'Int'",
+        "VariadicArraySplat": r"cannot pass array of type '\[Int\]' as variadic arguments of type 'Int'",
     }
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
         compiler_stage = ["-typecheck"]
@@ -299,7 +333,16 @@ def main():
     runtime_sources = list((ROOT / "Sources/BlueprintMocking").glob("*.swift"))
     assert all("import Testing" not in p.read_text() and "import XCTest" not in p.read_text()
                and "import SwiftSyntax" not in p.read_text() for p in runtime_sources)
+    source_after = checkout_state()
+    exact_revision = (
+        source_before["revision"]
+        if source_before and source_before == source_after and source_before["clean"] else None
+    )
     profile = {
+        "sourceRevision": exact_revision,
+        "checkoutBefore": source_before,
+        "checkoutAfter": source_after,
+        "resultsSHA256": hashlib.sha256(result_document()).hexdigest(),
         "status": "prototype evidence, not release certification",
         "swift": swift_version,
         "swiftPath": str(swift),
@@ -320,6 +363,7 @@ def main():
         "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
         "subscriptGeneratedSHA256": hashlib.sha256(subscript_generated.read_bytes()).hexdigest(),
         "effectfulSubscriptGeneratedSHA256": hashlib.sha256(effectful_subscript_generated.read_bytes()).hexdigest(),
+        "variadicGeneratedSHA256": hashlib.sha256(variadic_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
@@ -331,7 +375,7 @@ except Exception as error:
     print("Verification failed: " + str(error), file=sys.stderr)
     exit_status = 1
 finally:
-    (EVIDENCE / "results.json").write_text(json.dumps(RESULTS, indent=2) + "\n")
+    (EVIDENCE / "results.json").write_bytes(result_document())
 if exit_status:
     sys.exit(exit_status)
 print("All prototype checks passed; evidence is in Evidence/results.json.", flush=True)

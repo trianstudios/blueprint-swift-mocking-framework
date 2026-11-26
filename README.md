@@ -10,7 +10,7 @@ Run from this directory on the tested Xcode toolchain:
 python3 scripts/verify.py
 ```
 
-That entry point regenerates the consumer mock, runs runtime and consumer tests, executes the example, checks compiler and generator rejections, runs deliberate failures in child processes, and checks runtime-only linkage. It writes local results and the toolchain profile to the ignored `Evidence/` directory.
+That entry point regenerates the consumer mock, runs runtime and consumer tests, executes the example, checks compiler and generator rejections, runs deliberate failures in child processes, and checks runtime-only linkage. It writes local results and the toolchain profile to the ignored `Evidence/` directory. The profile records the source revision when the checkout is clean and unchanged across the run. Hashes bind the profile to the results and each result to its log.
 
 For the ordinary SwiftPM entry points after generation:
 
@@ -65,6 +65,8 @@ The generator accepts top-level public protocols in two profiles: a protocol inh
 Protocol properties expose separate `get_<name>()` and `set_<name>(matcher)` descriptors for stubbing and verification. Read-only getters retain their async and throwing effects. Ordinary property stubs keep getter results independent from setter calls. Opt into last-assigned-value behavior with `stubs.store_<name>(initialValue:)`. Getter and setter verification stay separate.
 
 Concrete instance subscripts expose `get_subscript` and, when writable, `set_subscript` descriptors. Pass one matcher per index and a separate `newValue:` matcher for a setter. A single parameter name in a subscript declaration denotes an unlabeled index. Swift's computed read-modify-write uses the generated getter and setter independently. Read-only subscripts preserve async and throwing getter effects, including named errors and `throws(Never)`.
+
+Variadic instance methods keep `Element...` in the generated witness and pass arguments in call order to typed `[Element]` matchers, answers, and captures. A named failure mapper uses the packed array metatype for the variadic parameter. For call-through, pass the array to an array-taking dependency seam. Swift rejects splatting an array into a variadic call.
 
 The runtime supports typed equality, identity, optional, collection, string, numeric, custom and short-circuit logical matchers, last-registration-wins rules, immutable setup plans, return/answer stubs, typed async errors, admission/returned/threw count queries, and exact, minimum, maximum and inclusive-range counts. Use `.and`, `.or` and `.not()` to compose count predicates. An impossible combination produces a contradiction diagnostic. Use `Matcher.projecting(_:matching:)` to match typed enum payloads. Its extractor can reject a case before evaluating the payload matcher. Each endpoint has its own typed storage and append-only journal. No Any result casting, process-global registry, detached answer task, or unchecked Sendable conformance is used. User matchers, answers, and reporters execute outside journal synchronization.
 

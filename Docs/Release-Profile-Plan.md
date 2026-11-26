@@ -21,6 +21,19 @@ Run `python3 scripts/tests/test_check_release.py -v` on each supported release-e
 
 Proposed minimal scope is the actual host that evaluates the release bundle. The checker is a Python command, separate from the deployed Swift runtime. Review must establish whether it is supported on additional macOS, Linux or Windows release-evaluation hosts. If advertised there, run the suite on those exact host OS and architecture tuples with the reviewed Python versions. Record the evaluator and the Swift candidate profile it checks separately. Apple device and simulator execution belongs to runtime contracts such as RUN-006.
 
+## Evidence by source revision
+
+| Run | Source binding | Observed scope |
+| --- | --- | --- |
+| Public SwiftPM install on arm64 macOS | Resolved revision `5296b29a49633a925cbfef118da748c15cf4f019` in the package lockfiles | Runtime-only, Swift Testing and XCTest consumers passed. |
+| Apple floor and simulator checks around `5296b29` | Workspace logs recorded the toolchain but no full source hash | Apple SDK 27 linked all declared deployment targets. The iOS 17.5 simulator probe exercised selected matcher and fallback-lock checks. |
+| Offline Ubuntu 24.04.5 arm64 | Archived revision `08503581035f6b8be00113e7063c5777236143ab` | Swift 6.4.3 ran the runtime and archived consumer fixtures, including all six RUN-006 tests. |
+| Ubuntu arm64 rerun requested at `5296b29a49633a925cbfef118da748c15cf4f019` | Requested revision only | The container engine failed before the workload ran. The earlier Ubuntu result remains tied to its archived revision. |
+
+The macOS verifier records `sourceRevision` only when it can identify the repository root and both endpoint checks of the working tree are clean at the same revision. It records the before and after checks even for a dirty checkout. Compare the results SHA-256 in `Evidence/profile.json` with `Evidence/results.json` and retain the per-check log hashes. This is provenance for a local run. The reviewed certification bundle still needs all required exact profiles and equivalent gates.
+
+Generic and type-level subscript generation (GEN-024) and generated variadic forwarding adapters (GEN-020) are implementation gaps. The concrete subscript and variadic witness fixtures exercise their current supported boundaries. Separate native Apple execution, Ubuntu 22.04 and x86_64 runs, and Windows x64 runs are profile gaps. [Acceptance registry](Acceptance-Status.csv)
+
 ## Evidence bundle and review
 
 1. For each applicable profile, record the exact compiler and SwiftSyntax line or its inapplicability, host OS/build and architecture, SDK or container, target and minimum deployment, Swift 6 language mode, default isolation, feature flags, and test runner. Record the target execution OS/build separately from the build host when they differ. For SYS-008 record the Python version and the candidate Swift language mode. Where compiler, SwiftSyntax, isolation or SDK fields do not apply to the check, record that explicitly in their required string fields.
