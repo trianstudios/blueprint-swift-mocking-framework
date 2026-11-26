@@ -3,6 +3,13 @@ public enum SessionQuiescenceError: Error, Equatable {
     case deadlineExceeded
 }
 
+/// The session cannot accept a quiescent configuration replacement.
+public enum QuiescentConfigurationError: Error, Equatable, Sendable {
+    case activeInvocations(count: Int)
+    case finishedSession
+    case staleScope
+}
+
 typealias SessionQuiescenceContinuation = AsyncStream<SessionSnapshot>.Continuation
 
 enum SessionQuiescenceRegistration: Sendable {

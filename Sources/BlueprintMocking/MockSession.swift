@@ -248,6 +248,7 @@ public final class MockSession: Sendable {
         private var histories: [SessionEpoch: EpochHistory]
         private var claimsByScope: [String: SessionConsumptionClaims] = [:]
         private var active: [SessionInvocationID: SessionEvent] = [:]
+        var activeInvocationCountAcrossEpochs: Int { active.count }
         private var journals: [WeakSessionJournal] = []
         private var nextQuiescenceWaiter: UInt64 = 0
         private var quiescenceWaiters: [UInt64: SessionQuiescenceContinuation] = [:]

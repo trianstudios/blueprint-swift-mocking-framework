@@ -590,6 +590,9 @@ def main():
         env=swift_environment, timeout=600,
         patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines",
                   r"PASS: XCTest late type task retained its owning reporter"])
+    run("quiescent-configuration-retirement", [
+        modules / "consumer-demo", "--quiescent-configuration"], timeout=20,
+        patterns=[r"PASS: RUN035 retired configuration reentered both locks and published the next revision"])
     for label, flag in [("typed", "--missing"), ("sync", "--missing-sync"), ("never", "--missing-never")]:
         fatal_log = run(label + "-missing-terminates", [modules / "consumer-demo", flag],
                         fails=True, patterns=[r"MOCK ISSUE: No matching stub", r"Fatal error: No matching stub"])

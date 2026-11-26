@@ -106,6 +106,8 @@ Call `session.snapshot().matchOrder(_:mode:phase:)` to read cross-mock order by 
 
 Await `session.waitForQuiescence(until: deadline, clock: clock)` to observe a snapshot with no active calls, including calls in detached epochs. Waiting is cancellable, and the deadline is exclusive. Producers can admit new calls after the snapshot.
 
+Use `try endpoint.replaceConfigurationIfQuiescent(plan)` on a direct `AsyncThrowingEndpoint` when replacing its stubs requires an idle session. The idle check and publication are atomic. The check includes active calls from earlier epochs. It throws `QuiescentConfigurationError` for active calls, a finished session, or a stale epoch-bound scope.
+
 After your tasks have finished, call `try session.finishIfQuiescent()` to close admission and preserve the final timeline. Active calls cause a typed error. A later mock call reports through its original endpoint reporter and uses the endpoint's legal fallback, error mapping or termination behavior. It leaves final history unchanged. This operation does not join application tasks.
 
 In an active Swift Testing run, a custom reporter can buffer a neutral `MockIssue` for work whose owning case has ended. Import `BlueprintMockingTesting` and call `await FailureReporter.reportAtSwiftTestingRunLevel(issue)` from the code draining that buffer. The issue fails the run and includes its original source in the diagnostic. Drain each issue once before the runner exits.

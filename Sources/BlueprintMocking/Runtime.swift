@@ -261,16 +261,38 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func replaceConfiguration(_ configuration: Configuration) -> RuleRevision {
-        let (revision, retired) = state.withLock {
+        let (revision, retired) = swapConfiguration(configuration)
+        // A captured object can run user code in deinit.
+        withExtendedLifetime(retired) {}
+        return revision
+    }
+
+    func replaceConfigurationIfQuiescent(_ configuration: Configuration)
+        throws(QuiescentConfigurationError) -> RuleRevision {
+        let (revision, retired) = try scope.session.withLock {
+            session throws(QuiescentConfigurationError) -> (RuleRevision, Configuration) in
+            switch scope.admissionRejection(in: session) {
+            case .finished: throw .finishedSession
+            case .staleTypeScope: throw .staleScope
+            case nil: break
+            }
+            let count = session.activeInvocationCountAcrossEpochs
+            guard count == 0 else { throw .activeInvocations(count: count) }
+            return swapConfiguration(configuration)
+        }
+        // The retired plan can reenter both the session and the endpoint.
+        withExtendedLifetime(retired) {}
+        return revision
+    }
+
+    private func swapConfiguration(_ configuration: Configuration) -> (RuleRevision, Configuration) {
+        state.withLock {
             let retired = $0.configuration
             let revision = RuleRevision(rawValue: $0.revision.rawValue + 1)
             $0.configuration = configuration
             $0.revision = revision
             return (revision, retired)
         }
-        // A captured object can run user code in deinit.
-        withExtendedLifetime(retired) {}
-        return revision
     }
 
     func update(_ admission: JournalAdmission, replacing input: Input) {
@@ -855,6 +877,11 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         journal.replaceConfiguration(configuration.publish(for: sessionID))
     }
 
+    func replaceConfigurationIfQuiescent(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>)
+        throws(QuiescentConfigurationError) -> RuleRevision {
+        try journal.replaceConfigurationIfQuiescent(configuration.publish(for: sessionID))
+    }
+
     func snapshot() -> JournalSnapshot<History> { journal.snapshot() }
 
     func prepareArgumentStability<Result: Sendable>(
@@ -967,6 +994,14 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
     @discardableResult
     public func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {
         dispatch.replaceConfiguration(configuration)
+    }
+
+    /// Replaces the plan only while the session is open and has no active invocations,
+    /// including calls in earlier epochs. The check and publication share the admission gate.
+    @discardableResult
+    public func replaceConfigurationIfQuiescent(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>)
+        throws(QuiescentConfigurationError) -> RuleRevision {
+        try dispatch.replaceConfigurationIfQuiescent(configuration)
     }
 
     /// Supplies a typed handle for a structural forwarding link.

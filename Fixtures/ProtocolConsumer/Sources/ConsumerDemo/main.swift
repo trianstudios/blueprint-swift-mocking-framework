@@ -8,6 +8,10 @@ import ConsumerDoubles
         let reporter = FailureReporter { issue in
             FileHandle.standardError.write(Data("MOCK ISSUE: \(issue.message)\n".utf8))
         }
+        if CommandLine.arguments.contains("--quiescent-configuration") {
+            try await verifyQuiescentConfiguration(reporter: reporter)
+            return
+        }
         if CommandLine.arguments.contains("--missing-generic-specialization") {
             let session = MockSession()
             let reporter = FailureReporter { issue in
