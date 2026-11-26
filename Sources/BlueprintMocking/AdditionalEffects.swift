@@ -108,7 +108,7 @@ public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failu
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) throws(Failure) -> Output {
         guard let admission = journal.begin(input) else {
-            let issue = journal.reportFinishedCall(source: source)
+            let issue = journal.reportFinishedCall(source: source, terminating: failureMapping == nil)
             if let failureMapping { throw failureMapping(issue) }
             fatalError(issue.message)
         }

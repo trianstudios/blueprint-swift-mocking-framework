@@ -26,6 +26,14 @@ import ConsumerDoubles
             let service = GenericSubscriptClient(directory: mock)
             _ = service.read(true)
         }
+        if CommandLine.arguments.contains("--type-subscript-closed-orphan") {
+            let session = MockSession(orphanFailures: OrphanFailureBuffer())
+            let ownerReporter = FailureReporter { _ in fatalError("Closed orphan reached the owning reporter") }
+            let scope = TypeSubscriptDirectoryMock.makeTypeScope(failureReporter: ownerReporter, session: session) { _ in }
+            try session.finishIfQuiescent()
+            _ = scope.withValue { TypeSubscriptClient.read(7, using: TypeSubscriptDirectoryMock.self) }
+            return
+        }
         if CommandLine.arguments.contains("--type-subscript-unbound-setter") {
             TypeSubscriptDirectoryMock[7] = 20
             print("PASS: unbound type setter returned after diagnosis")

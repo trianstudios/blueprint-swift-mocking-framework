@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import tempfile
@@ -87,7 +88,7 @@ def release_after_owner_ends(events_path, bridge, process, *, timeout):
     raise TimeoutError("Native case-end bridge did not release")
 
 
-def validate_run(events_path, log_path, return_code):
+def validate_run(events_path, log_path, return_code, *, dropped_only):
     events = [event for line in events_path.read_bytes().splitlines() if (event := event_payload(line))]
     indexed = {}
     for index, event in enumerate(events):
@@ -120,22 +121,38 @@ def validate_run(events_path, log_path, return_code):
     if (source["fileID"] != "BlueprintMockingTesting/Reporter.swift"
             or source["line"] <= 0 or source["column"] <= 0):
         raise ValueError("The native issue location must originate in the adapter")
-    expected = (
-        "TypeSubscriptDirectory.swift:2:1: Cannot call schema1|ConsumerDomain.TypeSubscriptDirectory|"
-        "type:subscript:(_:Int).set(_:Int,newValue:Int)->Void|Sendable in a finished mock session"
+    log = log_path.read_text(encoding="utf-8")
+    marker = "PASS: DX023 owner closed while peer stayed active, one neutral issue"
+    if log.count(marker) != 1:
+        raise ValueError("Missing the callback and reporter ownership witness")
+    uuid = r"[0-9A-Fa-f]{8}(?:-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}"
+    owners = re.findall(
+        rf"^BLUEPRINT_CLOSED_OWNER session=({uuid}) epoch=(\d+) mock=(\d+) orphan=(\d+)$",
+        log, re.MULTILINE,
     )
+    if dropped_only:
+        if owners:
+            raise ValueError("Dropped-only flush unexpectedly retained an owner record")
+        expected = "Blueprint Mocking dropped 1 orphan failures"
+    else:
+        if len(owners) != 1:
+            raise ValueError("Missing original owner session, epoch, mock, and orphan metadata")
+        session, epoch, mock, orphan = owners[0]
+        expected = (
+            f"Mock session {session}, epoch {epoch}, mock {mock}, orphan {orphan}: "
+            "TypeSubscriptDirectory.swift:2:1: Cannot call schema1|ConsumerDomain.TypeSubscriptDirectory|"
+            "type:subscript:(_:Int).set(_:Int,newValue:Int)->Void|Sendable in a finished mock session"
+        )
     if issue.get("_comments") != [expected]:
         raise ValueError("Unexpected closed-session issue content")
-    marker = "PASS: DX023 owner closed while peer stayed active, one neutral issue"
-    if log_path.read_text(encoding="utf-8").count(marker) != 1:
-        raise ValueError("Missing the callback and reporter ownership witness")
 
 
-def verify(swift, package, evidence, context, *, skip_build):
-    events_path = evidence / f"closed-owner-{context}-events.jsonl"
-    log_path = evidence / f"closed-owner-{context}-runner.log"
+def verify(swift, package, evidence, context, *, skip_build, dropped_only):
+    qualifier = f"{context}-dropped-only" if dropped_only else context
+    events_path = evidence / f"closed-owner-{qualifier}-events.jsonl"
+    log_path = evidence / f"closed-owner-{qualifier}-runner.log"
     events_path.unlink(missing_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"closed-owner-{context}-", dir=evidence) as directory:
+    with tempfile.TemporaryDirectory(prefix=f"closed-owner-{qualifier}-", dir=evidence) as directory:
         bridge = Path(directory)
         pending_events = bridge / "native-events.jsonl"
         os.mkfifo(bridge / "release", mode=0o600)
@@ -148,6 +165,7 @@ def verify(swift, package, evidence, context, *, skip_build):
         env = os.environ | {
             "BLUEPRINT_CLOSED_OWNER_BRIDGE": directory,
             "BLUEPRINT_CLOSED_OWNER_CONTEXT": context,
+            "BLUEPRINT_CLOSED_OWNER_DROPPED_ONLY": "1" if dropped_only else "0",
         }
         with log_path.open("wb") as log:
             process = subprocess.Popen(
@@ -165,11 +183,12 @@ def verify(swift, package, evidence, context, *, skip_build):
                     process.wait(timeout=10)
                 if pending_events.exists():
                     events_path.write_bytes(pending_events.read_bytes())
-        validate_run(events_path, log_path, return_code)
+        validate_run(events_path, log_path, return_code, dropped_only=dropped_only)
     for artifact in (events_path, log_path):
         digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
         print(f"EVIDENCE: {artifact.name} SHA-256 {digest}")
-    print(f"PASS: Swift Testing closed-owner {context} produced one run-level issue and no case issues")
+    classification = "dropped-only run-level issue" if dropped_only else "run-level issue"
+    print(f"PASS: Swift Testing closed-owner {context} produced one {classification} and no case issues")
 
 
 def main():
@@ -178,10 +197,14 @@ def main():
     parser.add_argument("--evidence-dir", required=True, type=Path)
     parser.add_argument("--context", choices=("detached", "inherited", "thread"), required=True)
     parser.add_argument("--skip-build", action="store_true")
+    parser.add_argument("--dropped-only", action="store_true")
     options = parser.parse_args()
     evidence = options.evidence_dir.resolve()
     evidence.mkdir(parents=True, exist_ok=True)
-    verify(options.swift, Path(__file__).resolve().parent, evidence, options.context, skip_build=options.skip_build)
+    verify(
+        options.swift, Path(__file__).resolve().parent, evidence, options.context,
+        skip_build=options.skip_build, dropped_only=options.dropped_only,
+    )
 
 
 if __name__ == "__main__":

@@ -59,20 +59,26 @@ public struct MockScope: Sendable {
         of declaration: String, for type: Argument.Type, reporter: FailureReporter, source: SourceLocation
     ) -> Never {
         let endpoint = EndpointID(declaration, specializedFor: type)
-        let (admission, rejection, delivery, wake) = session.withLock {
-            state -> (SessionEvent?, ScopeAdmissionRejection?, SessionQuiescenceDelivery?, SessionObservationDelivery?) in
-            if let rejection = admissionRejection(in: state) { return (nil, rejection, nil, nil) }
+        let (admission, rejection, delivery, wake, closedEpoch) = session.withLock {
+            state -> (SessionEvent?, ScopeAdmissionRejection?, SessionQuiescenceDelivery?,
+                      SessionObservationDelivery?, SessionEpoch?) in
+            if let rejection = admissionRejection(in: state) {
+                return (nil, rejection, nil, nil, state.isFinished ? state.epoch : nil)
+            }
             let admission = state.admit(mockID: id, endpoint: endpoint,
                                         configurationRevision: RuleRevision(rawValue: 0))
             let (_, delivery) = state.complete(admission.invocationID, phase: .terminated)
-            return (admission, nil, delivery, state.observationWake())
+            return (admission, nil, delivery, state.observationWake(), nil)
         }
         delivery?.publish()
         wake?.publish()
         let message = rejection?.message(for: endpoint)
             ?? "No configured specialization for \(endpoint.diagnosticName)"
-        reporter.report(MockIssue(kind: .unexpectedCall, endpoint: endpoint, message: message,
-                                  source: source, watermark: admission?.ordinal ?? 0))
+        let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint, message: message,
+                              source: source, watermark: admission?.ordinal ?? 0)
+        if !bufferOrphan(issue, closedEpoch: closedEpoch, terminating: true) {
+            reporter.report(issue)
+        }
         fatalError(message)
     }
 }
@@ -140,15 +146,25 @@ private struct SessionRetirement: Sendable {
 /// Coordinates metadata, admission order and history epochs across an explicit set of mocks.
 public final class MockSession: Sendable {
     public let id: SessionID
+    let orphanFailures: OrphanFailureBuffer?
     private let state: CriticalState<State>
 
     public convenience init() {
         self.init(clock: .continuous)
     }
 
-    public init(clock: SessionClockMode) {
+    public convenience init(clock: SessionClockMode) {
+        self.init(clock: clock, orphanFailures: nil)
+    }
+
+    public convenience init(orphanFailures: OrphanFailureBuffer) {
+        self.init(clock: .continuous, orphanFailures: orphanFailures)
+    }
+
+    public init(clock: SessionClockMode, orphanFailures: OrphanFailureBuffer?) {
         let id = SessionID(rawValue: UUID())
         self.id = id
+        self.orphanFailures = orphanFailures
         state = CriticalState(State(sessionID: id, clock: SessionClockState(clock)))
     }
 

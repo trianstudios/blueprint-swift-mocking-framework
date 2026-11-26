@@ -12,7 +12,7 @@ private enum ForeignCallContext: String, Sendable {
 
 private enum LateCallCompletion: Sendable {
     case queued
-    case reportedFromInheritedCase(MockIssue)
+    case flushedFromInheritedCase(OrphanFailureBatch)
 }
 
 private struct LateOwnerWork: Sendable {
@@ -20,7 +20,8 @@ private struct LateOwnerWork: Sendable {
     let session: MockSession
     let frozen: SessionSnapshot
     let completion: AsyncStream<LateCallCompletion>
-    let issues: AsyncStream<MockIssue>
+    let buffer: OrphanFailureBuffer
+    let immediateIssues: AsyncStream<MockIssue>
 }
 
 private let lateOwnerWork = AsyncStream<LateOwnerWork>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -31,17 +32,11 @@ private func bridgeReleased(_ releasePath: String) -> Bool {
     return (try? gate.readToEnd()) == Data("release\n".utf8)
 }
 
-private func drainOneIssue(_ issues: AsyncStream<MockIssue>) async -> MockIssue? {
-    var received = issues.makeAsyncIterator()
-    guard let issue = await received.next(), await received.next() == nil else { return nil }
-    return issue
-}
-
 private func beginLateWork(
     context: ForeignCallContext,
     releasePath: String,
     ownerID: Test.ID,
-    issues: AsyncStream<MockIssue>,
+    buffer: OrphanFailureBuffer,
     invoke: @escaping @Sendable () -> Bool
 ) -> AsyncStream<LateCallCompletion> {
     let (completion, result) = AsyncStream<LateCallCompletion>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -54,11 +49,10 @@ private func beginLateWork(
         }
         guard released, invoke() else { return }
         if context == .inherited {
-            guard let issue = await drainOneIssue(issues),
-                  Test.current?.id == ownerID, Test.Case.current?.isParameterized == true else { return }
+            guard Test.current?.id == ownerID, Test.Case.current?.isParameterized == true else { return }
             // This task still carries the native context of the owner whose case ended.
-            await FailureReporter.reportAtSwiftTestingRunLevel(issue)
-            result.yield(.reportedFromInheritedCase(issue))
+            let batch = await FailureReporter.flushSwiftTestingOrphans(buffer)
+            result.yield(.flushedFromInheritedCase(batch))
         } else {
             result.yield(.queued)
         }
@@ -85,10 +79,12 @@ func DX023_closedParameterizedReporterAttribution(_ scenario: String) async thro
     let context = try #require(environment["BLUEPRINT_CLOSED_OWNER_CONTEXT"].flatMap(ForeignCallContext.init))
     let nativeID = try #require(Test.current?.id)
     try #require(Test.Case.current?.isParameterized == true)
-    let session = MockSession()
-    let (issues, inbox) = AsyncStream<MockIssue>.makeStream()
+    let droppedOnly = environment["BLUEPRINT_CLOSED_OWNER_DROPPED_ONLY"] == "1"
+    let buffer = droppedOnly ? OrphanFailureBuffer(maximumIssueBytes: 1) : OrphanFailureBuffer()
+    let session = MockSession(orphanFailures: buffer)
+    let (immediateIssues, immediateSink) = AsyncStream<MockIssue>.makeStream()
     let scope = TypeSubscriptDirectoryMock.makeTypeScope(
-        failureReporter: FailureReporter { inbox.yield($0) }, session: session
+        failureReporter: FailureReporter { immediateSink.yield($0) }, session: session
     ) {
         $0.set_subscript(.equal(7), newValue: .equal(1)).willReturn(())
     }
@@ -99,9 +95,9 @@ func DX023_closedParameterizedReporterAttribution(_ scenario: String) async thro
         let frozen = try session.finishIfQuiescent()
         try #require(frozen.events.map(\.phase) == [.admitted, .returned])
         let completion = beginLateWork(
-            context: context, releasePath: bridgePath + "/release", ownerID: nativeID, issues: issues
+            context: context, releasePath: bridgePath + "/release", ownerID: nativeID, buffer: buffer
         ) {
-            defer { inbox.finish() }
+            defer { immediateSink.finish() }
             let matchesNativeContext: Bool
             switch context {
             case .inherited:
@@ -113,7 +109,8 @@ func DX023_closedParameterizedReporterAttribution(_ scenario: String) async thro
             return matchesNativeContext
         }
         lateOwnerWork.continuation.yield(.init(
-            nativeID: nativeID, session: session, frozen: frozen, completion: completion, issues: issues
+            nativeID: nativeID, session: session, frozen: frozen, completion: completion, buffer: buffer,
+            immediateIssues: immediateIssues
         ))
         return
     }
@@ -131,23 +128,44 @@ func DX023_closedParameterizedReporterAttribution(_ scenario: String) async thro
         var completion = owner.completion.makeAsyncIterator()
         let lateCall = try #require(await completion.next())
         try #require(await completion.next() == nil)
-        let orphan: MockIssue
+        let batch: OrphanFailureBatch
         switch lateCall {
         case .queued:
             try #require(context != .inherited)
-            orphan = try #require(await drainOneIssue(owner.issues))
-            // Drain from the live peer, then explicitly report outside its runner context.
-            await FailureReporter.reportAtSwiftTestingRunLevel(orphan)
-        case .reportedFromInheritedCase(let issue):
+            // Flush while the peer is live without attributing the failures to that case.
+            batch = await FailureReporter.flushSwiftTestingOrphans(owner.buffer)
+        case .flushedFromInheritedCase(let inheritedBatch):
             try #require(context == .inherited)
-            orphan = issue
+            batch = inheritedBatch
         }
-        try #require(orphan.kind == .unexpectedCall)
-        try #require(orphan.message.hasSuffix(" in a finished mock session"))
+        if droppedOnly {
+            try #require(batch.failures.isEmpty)
+            try #require(batch.droppedCount == 1)
+        } else {
+            try #require(batch.failures.count == 1)
+            try #require(batch.droppedCount == 0)
+            let orphan = batch.failures[0]
+            let ownerMock = try #require(owner.frozen.events.first?.mockID)
+            try #require(orphan.epoch == owner.frozen.epoch)
+            try #require(orphan.mockID == ownerMock)
+            try #require(orphan.issue.kind == .unexpectedCall)
+            try #require(orphan.issue.message.hasSuffix(" in a finished mock session"))
+            print("BLUEPRINT_CLOSED_OWNER session=\(owner.session.id.rawValue.uuidString)"
+                  + " epoch=\(orphan.epoch.rawValue) mock=\(ownerMock.rawValue) orphan=\(orphan.ordinal)")
+        }
+
+        let alreadyFlushed = await FailureReporter.flushSwiftTestingOrphans(owner.buffer)
+        try #require(alreadyFlushed.failures.isEmpty)
+        try #require(alreadyFlushed.droppedCount == 0)
+        var ownerImmediate = owner.immediateIssues.makeAsyncIterator()
+        try #require(await ownerImmediate.next() == nil)
         try #require(owner.session.snapshot() == owner.frozen)
-        inbox.finish()
-        var peerIssues = issues.makeAsyncIterator()
-        try #require(await peerIssues.next() == nil)
+        let peerOrphans = buffer.drain()
+        try #require(peerOrphans.failures.isEmpty)
+        try #require(peerOrphans.droppedCount == 0)
+        immediateSink.finish()
+        var peerImmediate = immediateIssues.makeAsyncIterator()
+        try #require(await peerImmediate.next() == nil)
         try #require(baseline.events.map(\.phase) == [.admitted, .returned])
         try #require(session.snapshot() == baseline)
         try #require(Test.current?.id == nativeID)

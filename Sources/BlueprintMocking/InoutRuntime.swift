@@ -83,7 +83,7 @@ private struct InoutSyncDispatch<Value: Sendable, Output: Sendable, Failure: Err
     func invoke(_ value: inout Value, source: SourceLocation) throws(Failure) -> Output {
         let before = value
         guard let admission = journal.begin(InoutValues(before: before, after: nil)) else {
-            let issue = journal.reportFinishedCall(source: source)
+            let issue = journal.reportFinishedCall(source: source, terminating: fallback == nil)
             guard let fallback else { fatalError(issue.message) }
             return try fallback(issue).get()
         }

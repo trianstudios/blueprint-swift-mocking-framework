@@ -89,3 +89,11 @@ Deterministic runtime fixtures hold a sibling invocation across an epoch reset, 
 DX-029's six fatal consumer paths run in separate processes. For each path, the verifier requires the expected termination signal and one endpoint-specific issue on stderr before one fatal diagnostic. It captures up to 4 KiB of stderr, enforces a 10-second deadline through process exit, and reaps timed-out or oversized processes. The local arm64 macOS paths all terminated with `SIGTRAP`.
 
 Synthetic children exercise ordinary failure with valid-looking diagnostics, an unexpected signal, reordered or duplicate diagnostics, stdout-only diagnostics, a buffer exactly at the limit, overflow, and a hang after stderr closes. The x86_64 verifier expects `SIGILL`, pending native validation. Additional native runner profiles and the full legal-fallback matrix remain outstanding.
+
+## Automatic orphan buffering
+
+A test runner or custom harness can share an `OrphanFailureBuffer` through explicitly enrolled sessions. A rejected call from a closed session queues directly, retaining the session, original epoch, mock and issue. Concurrent drains atomically claim disjoint batches. Separate failures get separate ordinals even when their diagnostics match.
+
+The buffer caps both pending records and retained bytes per issue. A drain atomically takes the drop count with its records, and Swift Testing fails the run even when a batch contains only drops. A generated post-close getter with no legal fallback emits a synchronous, runner-neutral diagnostic before it traps. A process-level durable transport remains outstanding.
+
+The native Swift Testing fixture uses the product buffer for inherited, detached and Foundation-thread callbacks after native A-end while B stays active. The host verifier checks exactly one run-level issue and a failed process. This evidence uses Apple Swift 6.4 and Swift Testing 2084. Pending delivery while a foreign call still has an open owner, framework-managed finish, and native XCTest and other runner profiles remain open.

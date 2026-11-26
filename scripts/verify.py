@@ -593,6 +593,11 @@ def main():
                 "--swift", swift, "--evidence-dir", EVIDENCE, "--skip-build", "--context", context],
                 env=swift_environment, timeout=180,
                 patterns=[rf"PASS: Swift Testing closed-owner {context} produced one run-level issue and no case issues"])
+        run("swift-testing-finished-owner-dropped-only", [
+            sys.executable, "Fixtures/ProtocolConsumer/verify_closed_owner.py",
+            "--swift", swift, "--evidence-dir", EVIDENCE, "--skip-build", "--context", "detached", "--dropped-only"],
+            env=swift_environment, timeout=180,
+            patterns=[r"PASS: Swift Testing closed-owner detached produced one dropped-only run-level issue and no case issues"])
     run("xctest-consumer", [sys.executable, "Fixtures/XCTestConsumer/verify.py"],
         env=swift_environment, timeout=600,
         patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines",
@@ -633,6 +638,12 @@ def main():
         r".*\.get->Int\|Sendable with a stale type-level mock scope$"
     )
     run_fatal("type-subscript-stale-reject", "--type-subscript-stale", stale_scope)
+    closed_scope = (
+        r"Cannot call schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:"
+        r".*\.get->Int\|Sendable in a finished mock session$"
+    )
+    run_fatal("type-subscript-closed-orphan-terminates", "--type-subscript-closed-orphan", closed_scope,
+              issue_prefix=r"^MOCK ORPHAN: session [0-9A-Fa-f-]+ epoch 0 TypeSubscriptDirectory\.swift:2:1: ")
     run_swift("runtime-only-consumer", [
         "run", "--package-path", "Fixtures/RuntimeOnly", "RuntimeOnly"],
         patterns=[r"PASS: runtime-only consumer"])

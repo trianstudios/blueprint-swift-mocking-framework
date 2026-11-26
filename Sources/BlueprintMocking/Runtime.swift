@@ -453,21 +453,23 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         return issue
     }
 
-    func reportFinishedCall(source: SourceLocation) -> MockIssue {
-        // Use the same refusal check as admission. A stale epoch cannot become current,
-        // and a finished session cannot reset, so the reason is stable after rejection.
-        let rejection = scope.session.withLock { scope.admissionRejection(in: $0) } ?? .finished
+    func reportFinishedCall(source: SourceLocation, terminating: Bool) -> MockIssue {
+        let (rejection, closedEpoch) = scope.session.withLock {
+            (scope.admissionRejection(in: $0) ?? .finished, $0.isFinished ? $0.epoch : nil)
+        }
         let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
                               message: rejection.message(for: endpoint),
                               source: source, watermark: state.withLock { $0.nextID })
-        report(issue)
+        if !scope.bufferOrphan(issue, closedEpoch: closedEpoch, terminating: terminating) {
+            report(issue)
+        }
         return issue
     }
 
     func resolveFinishedNonthrowingCall<Output: Sendable>(
         source: SourceLocation, fallback: (@Sendable (MockIssue) -> Output)?
     ) -> Output {
-        let issue = reportFinishedCall(source: source)
+        let issue = reportFinishedCall(source: source, terminating: fallback == nil)
         guard let fallback else { fatalError(issue.message) }
         return fallback(issue)
     }
@@ -916,7 +918,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         completionProjection: @Sendable (History, Output?) -> History? = { _, _ in nil }
     ) async throws(Failure) -> Output {
         guard let (admission, configuration) = journal.admit(initialHistory) else {
-            let issue = journal.reportFinishedCall(source: source)
+            let issue = journal.reportFinishedCall(source: source, terminating: failureMapping == nil)
             if let failureMapping { throw failureMapping(issue) }
             fatalError(issue.message)
         }
