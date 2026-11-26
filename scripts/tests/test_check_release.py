@@ -174,6 +174,26 @@ class ReleaseCheckTests(unittest.TestCase):
                 self.prepare_claim(**variant)
                 self.assertEqual(self.run_check(evidence=True)[0], 2)
 
+    def test_rejects_blank_implementation_reference_with_valid_artifacts(self):
+        self.prepare_claim()
+        self.rows[0]["Implementation references"] = ""
+        exit_code, result = self.run_check(evidence=True)
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["counts"]["certified"], 0)
+        self.assertEqual(result["errors"], [
+            "SYS-001: completed contract needs implementation references and unique evidence checks"
+        ])
+
+    def test_rejects_blank_check_names_with_valid_artifacts(self):
+        self.prepare_claim()
+        self.rows[0]["Evidence checks"] = ""
+        exit_code, result = self.run_check(evidence=True)
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["counts"]["certified"], 0)
+        self.assertEqual(result["errors"], [
+            "SYS-001: completed contract needs implementation references and unique evidence checks"
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()
