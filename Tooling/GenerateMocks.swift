@@ -13,24 +13,67 @@ enum Isolation {
     var prefix: String { self == .mainActor ? "MainActor" : "" }
     var annotation: String { self == .mainActor ? "@MainActor " : "" }
 }
+enum FailureEffect {
+    case ordinary
+    case typed(String)
+
+    var type: String {
+        switch self {
+        case .ordinary: "any Error"
+        case .typed(let type): type
+        }
+    }
+
+    var declaration: String {
+        switch self {
+        case .ordinary: " throws"
+        case .typed(let type): " throws(\(type))"
+        }
+    }
+
+    var isOrdinary: Bool {
+        if case .ordinary = self { return true }
+        return false
+    }
+}
+struct Effect {
+    let isAsync: Bool
+    let failure: FailureEffect?
+
+    var family: String {
+        switch (isAsync, failure != nil) {
+        case (false, false): "Sync"
+        case (false, true): "SyncThrowing"
+        case (true, false): "Async"
+        case (true, true): "AsyncThrowing"
+        }
+    }
+
+    var declaration: String {
+        (isAsync ? " async" : "") + (failure?.declaration ?? "")
+    }
+
+    var callPrefix: String {
+        (failure != nil ? "try " : "") + (isAsync ? "await " : "")
+    }
+}
 struct Member {
     let name: String
     let label: String
     let inputType: String
     let outputType: String
-    let failure: String?
+    let effect: Effect
     let identity: String
     let line: Int
     let isolation: Isolation
-    var family: String { isolation.prefix + (failure == nil ? "Sync" : "AsyncThrowing") }
+    var family: String { isolation.prefix + effect.family }
     var arguments: String {
         let types = "\(inputType), \(outputType)"
-        return failure.map { "\(types), \($0)" } ?? types
+        return effect.failure.map { "\(types), \($0.type)" } ?? types
     }
     var signature: String {
         let parameter = label == "_" ? "_ input" : label + " input"
-        let effects = failure.map { " async throws(\($0))" } ?? ""
-        return "\(name)(\(parameter): \(inputType))\(effects) -> \(outputType)"
+        return "\(name)(\(parameter): \(inputType))\(effect.declaration) -> \(outputType)"
     }
     var descriptorSignature: String {
         let parameter = label == "_" ? "_ matcher" : label + " matcher"
@@ -105,28 +148,43 @@ func generate(input: String, module: String, selected: String) throws -> String 
             let shape = isolation == .sendable ? "String" : "a simple named value or reference type"
             try reject(fn, "Supported requirements take one parameter and return a value of the supported type shape (\(shape)); generics, ownership modifiers, attributes and reserved mock names are unsupported")
         }
-        let effects = fn.signature.effectSpecifiers
-        var failure: String?
-        if effects != nil {
-            guard effects?.asyncSpecifier?.text == "async",
-                  let thrown = effects?.throwsClause,
-                  thrown.throwsSpecifier.text == "throws",
-                  let type = thrown.type?.as(IdentifierTypeSyntax.self),
-                  type.genericArgumentClause == nil, simple(type.name.text) else {
-                try reject(fn, "Use synchronous nonthrowing or async throws(NamedError); other effect families are not implemented")
-            }
-            failure = type.name.text
+        let specifiers = fn.signature.effectSpecifiers
+        if let asyncSpecifier = specifiers?.asyncSpecifier, asyncSpecifier.text != "async" {
+            try reject(fn, "Only async method effects are supported")
         }
+        let isAsync = specifiers?.asyncSpecifier != nil
+        var failure: FailureEffect?
+        if let clause = specifiers?.throwsClause {
+            guard clause.throwsSpecifier.text == "throws" else {
+                try reject(fn, "Rethrows requires a callback-derived error and is not implemented")
+            }
+            if let failureType = clause.type {
+                guard let type = failureType.as(IdentifierTypeSyntax.self),
+                      type.genericArgumentClause == nil, simple(type.name.text),
+                      !["Self", "Never", "Stubs", "Verification"].contains(type.name.text) else {
+                    try reject(fn, "Use a named error type; typed Never and complex error types are not implemented")
+                }
+                failure = .typed(type.name.text)
+            } else {
+                failure = .ordinary
+            }
+        }
+        if isolation == .mainActor {
+            switch (isAsync, failure) {
+            case (false, nil), (true, .typed?): break
+            default: try reject(fn, "MainActor profile currently supports synchronous nonthrowing and async typed-throwing methods")
+            }
+        }
+        let effect = Effect(isAsync: isAsync, failure: failure)
         let name = fn.name.text
         let label = parameter.firstName.text
         let descriptor = "\(name)(\(label):\(inputType))"
         guard descriptors.insert(descriptor).inserted else {
             try reject(fn, "Overloads that differ only by effects or result type require separate descriptor names")
         }
-        let effect = failure.map { " async throws(" + $0 + ")" } ?? ""
-        let identity = "schema1|\(module).\(selected)|\(descriptor)\(effect)->\(outputType)|\(isolation.identity)"
+        let identity = "schema1|\(module).\(selected)|\(descriptor)\(effect.declaration)->\(outputType)|\(isolation.identity)"
         members.append(Member(name: name, label: label, inputType: inputType, outputType: outputType,
-                              failure: failure, identity: identity,
+                              effect: effect, identity: identity,
                               line: converter.location(for: fn.positionAfterSkippingLeadingTrivia).line,
                               isolation: isolation))
     }
@@ -163,8 +221,8 @@ func generate(input: String, module: String, selected: String) throws -> String 
     output += "    public init(failureReporter: FailureReporter,\n"
     let failureIsolation = isolation == .sendable ? "@Sendable" : "@MainActor"
     for (i,m) in members.enumerated() {
-        guard let failure = m.failure else { continue }
-        output += "                failureMapping\(i): (\(failureIsolation) (MockIssue) -> \(failure))? = nil,\n"
+        guard let failure = m.effect.failure else { continue }
+        output += "                failureMapping\(i): (\(failureIsolation) (MockIssue) -> \(failure.type))? = nil,\n"
     }
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void) {\n"
     for (i,m) in members.enumerated() {
@@ -172,12 +230,19 @@ func generate(input: String, module: String, selected: String) throws -> String 
     }
     output += "        configure(Stubs(" + members.indices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
     for (i,m) in members.enumerated() {
-        output += "        self.__endpoint\(i) = \(m.family)Endpoint(id: EndpointID(\(String(reflecting: m.identity))),\n            configuration: setup\(i).finish(), failureReporter: failureReporter\(m.failure != nil ? ", failureMapping: failureMapping" + String(i) : ""))\n"
+        var mapping = ""
+        if let failure = m.effect.failure {
+            mapping = ", failureMapping: failureMapping\(i)"
+            if failure.isOrdinary {
+                mapping += " ?? { BlueprintMocking.UnexpectedInvocationError(issue: $0) }"
+            }
+        }
+        output += "        self.__endpoint\(i) = \(m.family)Endpoint(id: EndpointID(\(String(reflecting: m.identity))),\n            configuration: setup\(i).finish(), failureReporter: failureReporter\(mapping))\n"
     }
     output += "    }\n"
     for (i,m) in members.enumerated() {
         let file = module + "/" + URL(fileURLWithPath: input).lastPathComponent
-        output += "\n    public func \(m.signature) {\n        \(m.failure != nil ? "try await " : "")__endpoint\(i).invoke(input, source: SourceLocation(fileID: \(String(reflecting: file)), filePath: \(String(reflecting: URL(fileURLWithPath: input).lastPathComponent)), line: \(m.line), column: 1))\n    }\n"
+        output += "\n    public func \(m.signature) {\n        \(m.effect.callPrefix)__endpoint\(i).invoke(input, source: SourceLocation(fileID: \(String(reflecting: file)), filePath: \(String(reflecting: URL(fileURLWithPath: input).lastPathComponent)), line: \(m.line), column: 1))\n    }\n"
     }
     return output + "}\n"
 }

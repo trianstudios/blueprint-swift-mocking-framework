@@ -84,6 +84,10 @@ def main():
     actor_generated = generated.with_name("MainActorDirectoryMock.swift")
     run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
     actor_baseline = actor_generated.read_bytes()
+
+    effect_source = source.with_name("EffectDirectory.swift")
+    effect_generated = generated.with_name("EffectDirectoryMock.swift")
+    run("effects-generation", generate(tool, effect_source, effect_generated, "EffectDirectory"))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -101,6 +105,7 @@ def main():
     assert baseline == (temp / "Whitespace.swift").read_bytes()
     expected_rejections = {
         "DescriptorCollision": r"Overloads that differ only by effects or result type",
+        "UnsupportedEffect": r"Rethrows requires a callback-derived error",
     }
     for rejection in sorted((ROOT / "Fixtures/GeneratorRejections").glob("*.swift")):
         output = temp / "Rejected.swift"
@@ -131,6 +136,9 @@ def main():
         "NonSendableCapture": r"capture of 'box'.*non-[Ss]endable",
         "SchemaMismatch": r"cannot find type 'BlueprintRuntimeSchemaV999'",
         "ThrowForSync": r"has no member 'willThrow'",
+        "ThrowForAsync": r"has no member 'willThrow'",
+        "ThrowingAnswerForAsync": r"to non-throwing function type",
+        "AsyncAnswerForSyncThrowing": r"to parameter expecting synchronous function type",
     }
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
         compiler_stage = ["-typecheck"]
@@ -190,6 +198,7 @@ def main():
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
         "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
         "mainActorGeneratedSHA256": hashlib.sha256(actor_baseline).hexdigest(),
+        "effectsGeneratedSHA256": hashlib.sha256(effect_generated.read_bytes()).hexdigest(),
         "acceptanceContractCount": len(rows),
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")

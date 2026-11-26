@@ -77,7 +77,7 @@ public struct VerificationResult: Sendable {
     public let invocationIDs: [UInt64]
 }
 
-private final class Journal<Input: Sendable>: Sendable {
+final class Journal<Input: Sendable>: Sendable {
     private struct State: Sendable {
         var nextID: UInt64 = 0
         var calls: [Invocation<Input>] = []
@@ -106,6 +106,10 @@ private final class Journal<Input: Sendable>: Sendable {
     func snapshot() -> (calls: [Invocation<Input>], watermark: UInt64) {
         state.withLock { ($0.calls, $0.nextID) }
     }
+    func verification(matching matcher: Matcher<Input>, phase: CallPhase) -> Verification<Input> {
+        Verification(journal: self, matcher: matcher, phase: phase)
+    }
+
     func report(_ issue: MockIssue) {
         state.withLock { $0.issues.append(issue) }
         reporter.report(issue) // Consumer code must run after releasing synchronization.
@@ -149,7 +153,7 @@ public struct Verification<Input: Sendable>: Sendable {
     }
 }
 
-private struct Rule<Input: Sendable, Answer: Sendable>: Sendable {
+struct Rule<Input: Sendable, Answer: Sendable>: Sendable {
     let matcher: Matcher<Input>
     let answer: Answer
 }
