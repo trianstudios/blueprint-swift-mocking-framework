@@ -123,3 +123,11 @@ The plugin derives input membership from direct Swift targets in the consumer pa
 The clean fixture compiles and runs a typed generated mock, proves an unchanged repeat skips generation, and checks addition, deletion, edits and renames. Unsupported syntax and a missing selected protocol stop the build before any output changes. The runtime-only consumer still resolves a single package with no transitive dependencies and links without parser or runner libraries.
 
 The checked profile is Apple Swift 6.4 on arm64 macOS. Separately hosted tooling distribution, complete compiler context, configurable sharding, prepared offline and other native profiles remain open.
+
+## Reproducible local tooling source exports
+
+The checked-in `Packages/Tooling/ExportManifest.json` specifies the standalone payload and compatibility. The exporter flattens the tooling package to the archive root, adds the repository’s MIT license, and records the authoring revision, the SwiftSyntax pin, and the SHA-256 of each shipped file. Sorted regular-file entries and fixed tar metadata make the archive repeatable. Verification rebuilds the expected archive from raw Git blobs before extraction.
+
+Tests cover repeatable exports across checkout paths, staged and unstaged source changes, archive attributes, corrupted bytes, unsafe paths, a tracked symlink, and an internally consistent older archive checked against a newer revision. The local install verifier places the exact unpacked artifact in a disposable Git repository and checks the consumer’s tooling, runtime and SwiftSyntax pins. A separate runtime-only fixture resolves zero transitive dependencies.
+
+This milestone covers local source packaging and resolution through a prepared local mirror on Apple Swift 6.4. The checks use file-only Git transport. Compilation from the exported package, complete offline build qualification, hosted tooling distribution and signed release exports remain open.

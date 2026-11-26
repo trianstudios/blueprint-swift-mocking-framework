@@ -53,6 +53,23 @@ An ordinary `swift test` or `swift build` builds the generator and compiles the 
 
 Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsumer PluginProbe`. Use `BLUEPRINT_VERIFY_SWIFTPM_PLUGIN=1 python3 scripts/verify.py` for clean-build, incremental and rejection checks. The opt-in tooling package resolves pinned SwiftSyntax 600.0.1. Local checkout installation is verified on Apple Swift 6.4. Separate remote tooling distribution and other native profiles remain open.
 
+### Local tooling source export
+
+The authoring repository can produce a standalone `blueprint-swift-mocking-tools` source archive. Use the full SHA of a commit that includes the tooling export manifest.
+
+```sh
+revision=$(git rev-parse HEAD)
+artifact_dir=$(mktemp -d)
+archive="$artifact_dir/blueprint-swift-mocking-tools.tar"
+python3 scripts/export_tooling.py export "$revision" --output "$archive"
+python3 scripts/export_tooling.py verify "$revision" --archive "$archive"
+python3 scripts/verify_tooling_install.py "$revision" --archive "$archive" \
+  --swift-syntax-mirror "$prepared_swift_syntax_mirror" \
+  --evidence-dir "$artifact_dir/evidence"
+```
+
+Set `prepared_swift_syntax_mirror` to a local bare Git mirror containing the SwiftSyntax tag and commit in the export manifest. The install check resolves separate tooling and runtime packages by exact Git revision using local Git transport. It verifies the prepared SwiftSyntax pin and the runtime-only dependency graph. The check covers package resolution. Building the exported tool and qualifying public distribution and other hosts remain separate gates.
+
 ### Standalone generation
 
 The generated source is included so the consumer can build directly. Regenerate it with:
