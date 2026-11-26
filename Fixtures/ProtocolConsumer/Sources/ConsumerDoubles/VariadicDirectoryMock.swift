@@ -30,6 +30,28 @@ public final class VariadicDirectoryMock: VariadicDirectory {
         }
     }
 
+    public struct VariadicForwarding: Sendable {
+        public init(_ configure: (inout Self) -> Void = { _ in }) {
+            configure(&self)
+        }
+        fileprivate var __install0: (@Sendable (AsyncThrowingStubbing<(String, [Int], String), String, VariadicFailure>) -> Void)? = nil
+        public mutating func names(in _: (String).Type, ids _: ([Int]).Type, fallback _: (String).Type, _ adapter: @escaping @Sendable (String, [Int], String) async throws(VariadicFailure) -> String) {
+            __install0 = { setup in
+                setup.matching(.any).willAnswer { input async throws(VariadicFailure) in
+                    try await adapter(input.0, input.1, input.2)
+                }
+            }
+        }
+        fileprivate var __install1: (@Sendable (SyncStubbing<[Int], [Int]>) -> Void)? = nil
+        public mutating func sample(_ _: ([Int]).Type, _ adapter: @escaping @Sendable ([Int]) -> [Int]) {
+            __install1 = { setup in
+                setup.matching(.any).willAnswer { input in
+                    adapter(input)
+                }
+            }
+        }
+    }
+
     public struct Verification: Sendable {
         fileprivate let __endpoint0: AsyncThrowingEndpoint<(String, [Int], String), String, VariadicFailure>
         public func names(in matcher0: Matcher<String>, ids matcher1: Matcher<[Int]>, fallback matcher2: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, [Int], String)> {
@@ -48,10 +70,13 @@ public final class VariadicDirectoryMock: VariadicDirectory {
     public init(failureReporter: FailureReporter,
                 session: MockSession = MockSession(),
                 failureMappings: FailureMappings = .init(),
+                forwarding: VariadicForwarding = .init(),
                 _ configure: (Stubs) -> Void) {
         let scope = session.makeMock()
         let setup0 = AsyncThrowingStubbing<(String, [Int], String), String, VariadicFailure>()
         let setup1 = SyncStubbing<[Int], [Int]>()
+        forwarding.__install0?(setup0)
+        forwarding.__install1?(setup1)
         configure(Stubs(__setup0: setup0, __setup1: setup1))
         self.__endpoint0 = AsyncThrowingEndpoint(id: EndpointID("schema1|ConsumerDomain.VariadicDirectory|names(in:String,ids:Int...,fallback:String) async throws(VariadicFailure)->String|Sendable"),
             configuration: setup0.finish(), failureReporter: failureReporter, scope: scope, failureMapping: failureMappings.__mapping0)

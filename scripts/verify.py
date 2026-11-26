@@ -33,11 +33,14 @@ def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
         raise RuntimeError(name)
     return output
 
-def generate(tool, source, output, selected="UserRepository", projections=(), *, module="ConsumerDomain"):
+def generate(tool, source, output, selected="UserRepository", projections=(), *,
+             module="ConsumerDomain", forwarding=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
         arguments.extend(["--project", projection])
+    for method in forwarding:
+        arguments.extend(["--forward-variadic", method])
     return arguments
 
 def xcrun(*arguments):
@@ -143,7 +146,13 @@ def main():
         tool, effectful_subscript_source, effectful_subscript_generated, "EffectfulSubscriptDirectory"))
     variadic_source = source.with_name("VariadicDirectory.swift")
     variadic_generated = generated.with_name("VariadicDirectoryMock.swift")
-    run("variadic-generation", generate(tool, variadic_source, variadic_generated, "VariadicDirectory"))
+    variadic_forwarding = ("sample(_:)", "names(in:ids:fallback:)")
+    run("variadic-generation", generate(
+        tool, variadic_source, variadic_generated, "VariadicDirectory", forwarding=variadic_forwarding))
+    variadic_projected = generated.with_name("VariadicDirectoryProjectedMock.swift")
+    run("projected-variadic-forwarding-generation", generate(
+        tool, variadic_source, variadic_projected, "VariadicDirectory",
+        projections=("sample(_:)",), forwarding=("sample(_:)",)))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
@@ -167,7 +176,9 @@ def main():
         tool, relocated_subscript, repeated_subscript, "SubscriptDirectory"))
     assert subscript_generated.read_bytes() == repeated_subscript.read_bytes()
     repeated_variadic = temp / "RepeatedVariadic.swift"
-    run("variadic-generation-repeat", generate(tool, variadic_source, repeated_variadic, "VariadicDirectory"))
+    run("variadic-generation-repeat", generate(
+        tool, variadic_source, repeated_variadic, "VariadicDirectory",
+        forwarding=reversed(variadic_forwarding)))
     assert variadic_generated.read_bytes() == repeated_variadic.read_bytes()
     projection_protocol = "GeneratedProjectionDirectory"
     projection_source = source.with_name(projection_protocol + ".swift")
@@ -208,6 +219,43 @@ def main():
     run("projection-canonical-selector", generate(
         tool, ambiguous, disambiguated, "AmbiguousProjection", (canonical,)))
     assert "ProjectedSyncEndpoint<Int, String," in disambiguated.read_text()
+    forwarding_ambiguity = temp / "ForwardingAmbiguity.swift"
+    forwarding_ambiguity.write_text(
+        "public protocol ForwardingAmbiguity: Sendable {\n"
+        "    func sample(_ values: Int...) -> String\n"
+        "    func sample(_ values: String...) -> String\n"
+        "}\n"
+    )
+    actor_forwarding = temp / "IsolatedForwarding.swift"
+    actor_forwarding.write_text(
+        "@MainActor public protocol IsolatedForwarding {\n"
+        "    func sample(_ values: Int...) -> String\n"
+        "}\n"
+    )
+    forwarding_rejections = (
+        ("nonvariadic", source, "UserRepository", ("greeting(for:)",), "requires a variadic instance method"),
+        ("unknown", variadic_source, "VariadicDirectory", ("missing(_:)",), "Unknown variadic forwarding selector"),
+        ("duplicate", variadic_source, "VariadicDirectory", ("sample(_:)",) * 2,
+         "Duplicate variadic forwarding selector"),
+        ("actor", actor_forwarding, "IsolatedForwarding", ("sample(_:)",), "adapters require a Sendable protocol"),
+        ("ambiguous", forwarding_ambiguity, "ForwardingAmbiguity", ("sample(_:)",),
+         "Ambiguous variadic forwarding selector"),
+    )
+    for label, input_path, protocol, selectors, pattern in forwarding_rejections:
+        rejected = temp / "RejectedForwarding.swift"
+        previous = "sentinel: preserve the previous forwarding generation\n"
+        rejected.write_text(previous)
+        run("forwarding-reject-" + label, generate(
+            tool, input_path, rejected, protocol, forwarding=selectors),
+            fails=True, patterns=[r"BPM001", r":\d+:\d+: error:", pattern])
+        assert rejected.read_text() == previous
+    selected_forward = "schema1|ConsumerDomain.ForwardingAmbiguity|sample(_:Int...)->String|Sendable"
+    disambiguated_forward = temp / "DisambiguatedForwarding.swift"
+    run("forwarding-canonical-selector", generate(
+        tool, forwarding_ambiguity, disambiguated_forward, "ForwardingAmbiguity",
+        forwarding=(selected_forward,)))
+    assert "@escaping @Sendable ([Int]) -> String" in disambiguated_forward.read_text()
+    assert "@escaping @Sendable ([String]) -> String" not in disambiguated_forward.read_text()
     expected_rejections = {
         "DescriptorCollision": r"Overloads that differ only by effects or result type",
         "UnsupportedEffect": r"Rethrows requires a callback-derived error",
@@ -287,6 +335,8 @@ def main():
         "SubscriptWrongTypedError": r"cannot convert value of type 'WrongSubscriptFailure' to expected argument type 'EffectfulSubscriptFailure'",
         "SubscriptWriteReadonly": r"subscript is get-only",
         "VariadicWrongElement": r"cannot convert value of type 'String' to expected argument type 'Int'",
+        "VariadicForwardingWrongArray": r"cannot convert value of type 'Int.Type' to expected argument type '\[Int\].Type'",
+        "VariadicForwardingWrongError": r"invalid conversion of thrown error type 'ForeignAdapterFailure' to 'VariadicFailure'",
         "VariadicArraySplat": r"cannot pass array of type '\[Int\]' as variadic arguments of type 'Int'",
     }
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):

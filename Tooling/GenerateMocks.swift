@@ -98,7 +98,7 @@ struct Member {
 
     var family: String { isolation.prefix + effect.family }
 
-    var projectionSelector: String {
+    var selector: String {
         "\(name)(" + parameters.map { "\($0.label):" }.joined() + ")"
     }
 
@@ -163,7 +163,9 @@ struct Member {
     }
 }
 
-func generate(input: String, module: String, selected: String, projections: [String]) throws -> String {
+func generate(
+    input: String, module: String, selected: String, projections: [String], variadicForwarding: [String]
+) throws -> String {
     let source = try String(contentsOfFile: input, encoding: .utf8)
     let tree = Parser.parse(source: source)
     let converter = SourceLocationConverter(fileName: input, tree: tree)
@@ -403,29 +405,49 @@ func generate(input: String, module: String, selected: String, projections: [Str
         if case .setter(let property) = m.kind { setterIndices[property] = i }
         if case .subscriptSetter(let indices) = m.kind { subscriptSetters[indices] = i }
     }
+    func selectMethod(_ selector: String, purpose: String) throws -> Int {
+        let matches = members.indices.filter {
+            let member = members[$0]
+            guard case .method = member.kind else { return false }
+            return selector == member.selector || selector == member.identity
+        }
+        guard let index = matches.first else {
+            try reject(proto, "Unknown \(purpose) selector '\(selector)'; use an instance method with its argument labels")
+        }
+        guard matches.count == 1 else {
+            let choices = matches.map { members[$0].identity }.joined(separator: ", ")
+            try reject(proto, "Ambiguous \(purpose) selector '\(selector)'; use one canonical endpoint ID: \(choices)")
+        }
+        return index
+    }
+
     var projectedIndices = Set<Int>()
     for selector in projections {
         guard isolation == .sendable else {
             try reject(proto, "Generated projections require a Sendable protocol")
         }
-        let matches = members.indices.filter {
-            let member = members[$0]
-            guard case .method = member.kind else { return false }
-            return selector == member.projectionSelector || selector == member.identity
-        }
-        guard let index = matches.first else {
-            try reject(proto, "Unknown projection selector '\(selector)'; use a method with its argument labels")
-        }
-        guard matches.count == 1 else {
-            let choices = matches.map { members[$0].identity }.joined(separator: ", ")
-            try reject(proto, "Ambiguous projection selector '\(selector)'; use one canonical endpoint ID: \(choices)")
-        }
+        let index = try selectMethod(selector, purpose: "projection")
         let family = members[index].effect.family
         guard family == "Sync" || family == "AsyncThrowing" else {
             try reject(proto, "Projection selector '\(selector)' requires a synchronous nonthrowing or async-throwing method")
         }
         guard projectedIndices.insert(index).inserted else {
-            try reject(proto, "Duplicate projection selector for '\(members[index].projectionSelector)'")
+            try reject(proto, "Duplicate projection selector for '\(members[index].selector)'")
+        }
+    }
+
+    var forwardingIndices = Set<Int>()
+    for selector in variadicForwarding {
+        guard isolation == .sendable else {
+            try reject(proto, "Generated variadic forwarding adapters require a Sendable protocol")
+        }
+        let index = try selectMethod(selector, purpose: "variadic forwarding")
+        let member = members[index]
+        guard member.parameters.contains(where: \.isVariadic) else {
+            try reject(proto, "Variadic forwarding selector '\(selector)' requires a variadic instance method")
+        }
+        guard forwardingIndices.insert(index).inserted else {
+            try reject(proto, "Duplicate variadic forwarding selector for '\(member.selector)'")
         }
     }
 
@@ -437,6 +459,9 @@ func generate(input: String, module: String, selected: String, projections: [Str
     let failureIndices = members.indices.filter { members[$0].effect.runtimeFailure != nil }
     if !failureIndices.isEmpty, memberTypeNames.contains("FailureMappings") {
         try reject(proto, "A requirement type collides with the generated 'FailureMappings' setup type")
+    }
+    if !forwardingIndices.isEmpty, memberTypeNames.contains("VariadicForwarding") {
+        try reject(proto, "A requirement type collides with the generated 'VariadicForwarding' setup type")
     }
     if !projectedIndices.isEmpty, usedNames.contains(name) {
         try reject(proto, "A method type collides with the generated projected mock name '\(name)'")
@@ -520,6 +545,29 @@ func generate(input: String, module: String, selected: String, projections: [Str
         }
         output += "    }\n\n"
     }
+    if !forwardingIndices.isEmpty {
+        output += "    public struct VariadicForwarding: Sendable {\n"
+        output += "        public init(_ configure: (inout Self) -> Void = { _ in }) {\n"
+        output += "            configure(&self)\n        }\n"
+        for index in forwardingIndices.sorted() {
+            let member = members[index]
+            let parameters = member.parameters.map(\.runtimeType).joined(separator: ", ")
+            let effects = (member.effect.isAsync ? " async" : "") +
+                (member.effect.runtimeFailure.map { " throws(\($0.type))" } ?? "")
+            let adapter = "@Sendable (\(parameters))\(effects) -> \(member.outputType)"
+            let selector = member.parameters.map { "\($0.label) _: (\($0.runtimeType)).Type" }
+            let signature = (selector + ["_ adapter: @escaping \(adapter)"]).joined(separator: ", ")
+            let arguments = member.parameters.count == 1 ? "input"
+                : member.parameters.indices.map { "input.\($0)" }.joined(separator: ", ")
+            output += "        fileprivate var __install\(index): (@Sendable (\(member.family)Stubbing<\(member.genericArguments)>) -> Void)? = nil\n"
+            output += "        public mutating func \(member.name)(\(signature)) {\n"
+            output += "            __install\(index) = { setup in\n"
+            output += "                setup.matching(.any).willAnswer { input\(effects) in\n"
+            output += "                    \(member.effect.callPrefix)adapter(\(arguments))\n"
+            output += "                }\n            }\n        }\n"
+        }
+        output += "    }\n\n"
+    }
     output += "    \(isolation.annotation)public struct Verification\(isolationConformance) {\n"
     for (i,m) in members.enumerated() {
         output += "        fileprivate let __endpoint\(i): \(endpointType(i))\n"
@@ -547,6 +595,9 @@ func generate(input: String, module: String, selected: String, projections: [Str
     if !failureIndices.isEmpty {
         output += "                failureMappings: FailureMappings = .init(),\n"
     }
+    if !forwardingIndices.isEmpty {
+        output += "                forwarding: VariadicForwarding = .init(),\n"
+    }
     for i in projectedIndices.sorted() {
         let member = members[i]
         let types = projectionTypes[i]!
@@ -556,6 +607,9 @@ func generate(input: String, module: String, selected: String, projections: [Str
     if isolation == .sendable { output += "        let scope = session.makeMock()\n" }
     for (i,m) in members.enumerated() {
         output += "        let setup\(i) = \(m.family)Stubbing<\(m.genericArguments)>()\n"
+    }
+    for i in forwardingIndices.sorted() {
+        output += "        forwarding.__install\(i)?(setup\(i))\n"
     }
     output += "        configure(Stubs(" + members.indices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
     for (i,m) in members.enumerated() {
@@ -606,14 +660,16 @@ func generate(input: String, module: String, selected: String, projections: [Str
 
 do {
     let arguments = Array(CommandLine.arguments.dropFirst())
+    let options = stride(from: 8, to: arguments.count, by: 2)
     guard arguments.count >= 8, arguments.count.isMultiple(of: 2), arguments[0] == "--input",
           arguments[2] == "--module", arguments[4] == "--protocol", arguments[6] == "--output",
-          stride(from: 8, to: arguments.count, by: 2).allSatisfy({ arguments[$0] == "--project" }) else {
-        throw GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']...")
+          options.allSatisfy({ arguments[$0] == "--project" || arguments[$0] == "--forward-variadic" }) else {
+        throw GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'method(label:)']...")
     }
-    let projections = stride(from: 9, to: arguments.count, by: 2).map { arguments[$0] }
+    let projections = options.filter { arguments[$0] == "--project" }.map { arguments[$0 + 1] }
+    let variadicForwarding = options.filter { arguments[$0] == "--forward-variadic" }.map { arguments[$0 + 1] }
     let output = try generate(input: arguments[1], module: arguments[3], selected: arguments[5],
-                              projections: projections)
+                              projections: projections, variadicForwarding: variadicForwarding)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.write(toFile: arguments[7], atomically: true, encoding: .utf8)
 } catch {
