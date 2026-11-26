@@ -31,9 +31,12 @@ def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
         raise RuntimeError(name)
     return output
 
-def generate(tool, source, output, selected="UserRepository"):
-    return [tool, "--input", source, "--module", "ConsumerDomain",
-            "--protocol", selected, "--output", output]
+def generate(tool, source, output, selected="UserRepository", projections=()):
+    arguments = [tool, "--input", source, "--module", "ConsumerDomain",
+                 "--protocol", selected, "--output", output]
+    for projection in projections:
+        arguments.extend(["--project", projection])
+    return arguments
 
 def xcrun(*arguments):
     return subprocess.check_output(["xcrun", *arguments], text=True).strip()
@@ -121,6 +124,45 @@ def main():
         "func greeting(for name: String)", "func   greeting( for name : String )"))
     run("generation-whitespace", generate(tool, relocated_source, temp / "Whitespace.swift"))
     assert baseline == (temp / "Whitespace.swift").read_bytes()
+    projection_protocol = "GeneratedProjectionDirectory"
+    projection_source = source.with_name(projection_protocol + ".swift")
+    projection_output = generated.with_name(projection_protocol + "ProjectedMock.swift")
+    projection_members = ("fetch(id:)", "read(id:)")
+    run("projection-generation", generate(
+        tool, projection_source, projection_output, projection_protocol, projection_members))
+    repeated_projection = temp / "RepeatedProjection.swift"
+    run("projection-generation-repeat", generate(
+        tool, projection_source, repeated_projection, projection_protocol, reversed(projection_members)))
+    assert projection_output.read_bytes() == repeated_projection.read_bytes()
+
+    ambiguous = temp / "AmbiguousProjection.swift"
+    ambiguous.write_text(
+        "public protocol AmbiguousProjection: Sendable {\n"
+        "    func fetch(id: Int) -> String\n"
+        "    func fetch(id: String) -> String\n"
+        "}\n"
+    )
+    projection_rejections = (
+        ("unknown", projection_source, projection_protocol, ("missing(id:)",), "Unknown projection selector"),
+        ("duplicate", projection_source, projection_protocol, (projection_members[0],) * 2,
+         "Duplicate projection selector"),
+        ("actor", actor_source, "MainActorDirectory", ("display(id:)",), "require a Sendable protocol"),
+        ("effect", effect_source, "EffectDirectory", ("refreshedName(id:)",),
+         "requires a synchronous nonthrowing or async-throwing method"),
+        ("ambiguous", ambiguous, "AmbiguousProjection", ("fetch(id:)",), "Ambiguous projection selector"),
+    )
+    for label, input_path, protocol, selectors, pattern in projection_rejections:
+        rejected = temp / "RejectedProjection.swift"
+        previous = "sentinel: preserve the previous projection generation\n"
+        rejected.write_text(previous)
+        run("projection-reject-" + label, generate(tool, input_path, rejected, protocol, selectors),
+            fails=True, patterns=[r"BPM001", r":\d+:\d+: error:", pattern])
+        assert rejected.read_text() == previous
+    canonical = "schema1|ConsumerDomain.AmbiguousProjection|fetch(id:Int)->String|Sendable"
+    disambiguated = temp / "DisambiguatedProjection.swift"
+    run("projection-canonical-selector", generate(
+        tool, ambiguous, disambiguated, "AmbiguousProjection", (canonical,)))
+    assert "ProjectedSyncEndpoint<Int, String," in disambiguated.read_text()
     expected_rejections = {
         "DescriptorCollision": r"Overloads that differ only by effects or result type",
         "UnsupportedEffect": r"Rethrows requires a callback-derived error",
