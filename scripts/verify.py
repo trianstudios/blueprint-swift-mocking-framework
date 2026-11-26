@@ -359,6 +359,14 @@ def main():
         run(check + "-generation", generate(
             tool, source.with_name(protocol + ".swift"), generated.with_name(protocol + "Mock.swift"),
             protocol, spy=True))
+    run("escaping-callback-generation", generate(
+        tool, source.with_name("EscapingCallbackDirectory.swift"),
+        generated.with_name("EscapingCallbackDirectoryMock.swift"), "EscapingCallbackDirectory"))
+    run("escaping-callback-configured-rejection", [
+        sys.executable, "scripts/verify_escaping_callback_generation.py", "--tool", tool, "--evidence-dir", EVIDENCE,
+    ], env=swift_environment, timeout=60,
+        patterns=[r"PASS: GEN016 configured generation creates both owned outputs",
+                  r"EVIDENCE: escaping-callback-generation-report\.json SHA-256 [0-9a-f]{64}"])
     type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
     run("type-subscript-generation", generate(
@@ -1047,7 +1055,9 @@ def main():
                   r"GEN008_iteratorEqualitySurvivesInheritedPrimaryNormalization\(\) passed",
                   r"GEN004B_protocolBaselineRemainsAvailableAtPackageFloor\(\) passed",
                   r"GEN004B_guardedMockKeepsReceiptStorageAndSurfacesAvailable\(\) passed",
-                  r"BLUEPRINT_AVAILABILITY_GUARDED_RECEIPT Swift\.Int 47"])
+                  r"BLUEPRINT_AVAILABILITY_GUARDED_RECEIPT Swift\.Int 47",
+                  r"GEN016_escapingCallbackCapturesOnlyTheLatestWinningRule\(\) passed",
+                  r"GEN016_escapingCallbackLifetimeFollowsCaptureSelectionAndSessionEpoch\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [
@@ -1116,6 +1126,17 @@ def main():
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
         "GenericSubscriptWrongResult": r"cannot convert value of type 'String' to expected argument type 'Int'",
+        "EscapingCallbackMainActorConversion": (
+            r"EscapingCallbackMainActorConversion\.swift:\d+:\d+: error: .*loses global actor 'MainActor'"
+        ),
+        "EscapingCallbackNonSendableCapture": (
+            r"EscapingCallbackNonSendableCapture\.swift:\d+:\d+: error: "
+            r"capture of 'payload'.*non-[Ss]endable type 'NonSendableCallbackPayload'"
+        ),
+        "EscapingCallbackWrongReplayInput": (
+            r"EscapingCallbackWrongReplayInput\.swift:\d+:\d+: error: "
+            r"cannot convert value of type 'String' to expected argument type 'Int'"
+        ),
         "CallbackSpyDeferredCapture": r"passing non-escaping parameter 'callback'.*'@escaping'",
         "CallbackSpyDetachedCapture": r"escaping closure captures non-escaping value",
         "InoutSpyRetainsAccess": r"escaping closure captures 'inout' parameter 'value'",
@@ -1152,7 +1173,8 @@ def main():
         run(check_name, [*compiler_command, fixture], env=swift_environment,
             fails=True, patterns=diagnostic_patterns)
         if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess", "MainActorVerificationAccess",
-                            "MainActorSpyWitnessAccess", "MainActorSpyAsyncTransport", "CallbackSpyDetachedCapture"}:
+                            "MainActorSpyWitnessAccess", "MainActorSpyAsyncTransport", "CallbackSpyDetachedCapture",
+                            "EscapingCallbackMainActorConversion"}:
             run(check_name + "-DefaultIsolation",
                 [*compiler_command, "-default-isolation", "MainActor", fixture],
                 env=swift_environment, fails=True, patterns=diagnostic_patterns)

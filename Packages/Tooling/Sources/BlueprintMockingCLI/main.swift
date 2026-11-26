@@ -124,8 +124,17 @@ struct Effect {
 struct CallbackType {
     let input: String
     let output: String
+    let escapes: Bool
 
-    var declaration: String { "(\(input)) -> \(output)" }
+    init(input: String, output: String, escapes: Bool = false) {
+        self.input = input
+        self.output = output
+        self.escapes = escapes
+    }
+
+    var declaration: String {
+        (escapes ? "@escaping @Sendable " : "") + "(\(input)) -> \(output)"
+    }
 }
 
 struct Parameter {
@@ -195,7 +204,7 @@ struct Member {
     var callback: CallbackType? { parameters.last?.callback }
     var metadataParameters: [Parameter] { callback == nil ? parameters : Array(parameters.dropLast()) }
     var family: String {
-        if callback != nil { return "SyncCallback" }
+        if let callback { return callback.escapes ? "SyncEscapingCallback" : "SyncCallback" }
         return (usesInout ? "Inout" : isolation.prefix) + effect.family
     }
     var verificationInputType: String { usesInout ? "InoutValues<\(inputType)>" : inputType }
@@ -508,11 +517,11 @@ func generate(
             let isVariadic = parameter.ellipsis != nil
             let unmodified = parameter.attributes.isEmpty && parameter.modifiers.isEmpty &&
                 parameter.defaultValue == nil && (simple(label) || label == "_")
+            let tokens = parameter.type.tokens(viewMode: .sourceAccurate).map(\.text)
             if spy {
                 if isVariadic {
                     try reject(parameter, "Direct spy call-through cannot splat a Swift variadic argument; use --forward-variadic with an array-taking provider")
                 }
-                let tokens = parameter.type.tokens(viewMode: .sourceAccurate).map(\.text)
                 if tokens.first == "inout" {
                     guard isolation == .sendable, !forSubscript, parameters.count == 1, unmodified,
                           let attributed = parameter.type.as(AttributedTypeSyntax.self),
@@ -533,6 +542,26 @@ func generate(
                     let callback = CallbackType(input: input, output: output)
                     return Parameter(label: label, type: callback.declaration, callback: callback)
                 }
+            }
+            if tokens.contains("->") {
+                guard isolation == .sendable, !imported, !hasBindings, !forSubscript, !isVariadic, unmodified,
+                      let attributed = parameter.type.as(AttributedTypeSyntax.self), attributed.specifiers.isEmpty,
+                      attributed.attributes.count == 2,
+                      Set(attributed.attributes.compactMap({ element -> String? in
+                          guard let attribute = element.as(AttributeSyntax.self),
+                                attribute.leftParen == nil, attribute.arguments == nil else { return nil }
+                          return attribute.attributeName.trimmedDescription
+                      })) == ["escaping", "Sendable"],
+                      let function = attributed.baseType.as(FunctionTypeSyntax.self),
+                      function.effectSpecifiers == nil, function.parameters.count == 1,
+                      let argument = function.parameters.first, argument.inoutKeyword == nil,
+                      argument.firstName == nil, argument.ellipsis == nil,
+                      let input = supportedType(argument.type),
+                      let output = supportedResult(function.returnClause.type) else {
+                    try reject(parameter, "Escaping callback capture requires one @escaping @Sendable synchronous nonthrowing function argument of supported value types")
+                }
+                let callback = CallbackType(input: input, output: output, escapes: true)
+                return Parameter(label: label, type: callback.declaration, callback: callback)
             }
             if imported {
                 guard let type = importedType(parameter.type), unmodified, !isVariadic else {
@@ -798,7 +827,9 @@ func generate(
         let callbacks = parameters.filter { $0.callback != nil }
         if !callbacks.isEmpty && (callbacks.count != 1 || parameters.last?.callback == nil ||
                                   effect.isAsync || effect.failure != nil) {
-            try reject(fn, "Direct spy callbacks require a synchronous nonthrowing method with one callback in the final position")
+            try reject(fn, spy
+                ? "Direct spy callbacks require a synchronous nonthrowing method with one callback in the final position"
+                : "Escaping callback capture requires a synchronous nonthrowing Sendable method with one callback in the final position")
         }
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
                       effect: effect, kind: .method, at: fn)
@@ -881,6 +912,9 @@ func generate(
             try reject(proto, "Generated projections require a Sendable protocol")
         }
         let index = try selectMember(selector, purpose: "projection")
+        guard members[index].callback == nil else {
+            try reject(proto, "Projection selector '\(selector)' cannot retain a callback requirement")
+        }
         let family = members[index].effect.family
         guard family == "Sync" || family == "AsyncThrowing" else {
             try reject(proto, "Projection selector '\(selector)' requires a synchronous nonthrowing or async-throwing method")
@@ -897,6 +931,9 @@ func generate(
         }
         let index = try selectMember(selector, purpose: "variadic forwarding", includeSubscripts: true)
         let member = members[index]
+        guard member.callback == nil else {
+            try reject(proto, "Variadic forwarding selector '\(selector)' cannot forward a callback requirement")
+        }
         guard member.parameters.contains(where: \.isVariadic) else {
             try reject(proto, "Variadic forwarding selector '\(selector)' requires a variadic instance method or subscript accessor")
         }

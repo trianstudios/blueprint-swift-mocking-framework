@@ -240,7 +240,23 @@ Generate a Sendable or `@MainActor` protocol spy with `--spy` and pass the real 
 
 Checked Sendable spies also support synchronous methods with a single `inout Int` parameter. Pass the caller's value to the mock with `&` as usual. Real providers and `willAnswer` stubs can change it before returning or throwing a typed error. Pass `after:` to verification to match the final integer in addition to the entry value.
 
-Checked Sendable spies can also forward a final, unary nonescaping callback on a synchronous nonthrowing method. A `willAnswer` stub receives the ordinary input and callback separately. Stubbing and verification match the ordinary arguments, and the journal stores only those arguments. Swift enforces the callback lifetime at the witness and answer boundaries. Escaping, effectful and explicitly isolated callbacks require another profile.
+Checked Sendable spies can also forward a final, unary nonescaping callback on a synchronous nonthrowing method. A `willAnswer` stub receives the ordinary input and callback separately. Stubbing and verification match the ordinary arguments, and the journal stores only those arguments. Swift enforces the callback lifetime at the witness and answer boundaries.
+
+An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
+
+```swift
+let session = MockSession()
+let captor = EscapingCallbackCaptor<Int, String>(session: session)
+let mock = EscapingCallbackDirectoryMock(failureReporter: .swiftTesting, session: session) { stubs in
+    stubs.register(id: .equal("row")).capturingCallback(into: captor).willReturn("registered")
+}
+_ = mock.register(id: "row") { value in "received \(value)" }
+if let callback = captor.captures.first {
+    let result = try callback.invoke(7)  // "received 7"
+}
+```
+
+Delivery is synchronous and repeatable. Resetting or finishing the session releases stored closures and makes earlier handles throw `CallbackDeliveryError.unavailable`. A delivery that already acquired its closure can finish. The generated profile covers nonisolated, synchronous, nonthrowing callback types.
 
 Set `maximumAsyncThrowingForwardingDepth:` to a positive integer when initializing a checked Sendable spy to bound recursive async-throwing call-through. Only active real forwarding hops count. A matching stub still wins at the limit. A blocked call reports once and follows the endpoint’s missing-call policy. A configured typed failure mapping turns the rejection into a declared error. Inherited tasks participate while their forwarding ancestry is active. Detached work starts with an independent path. This limit bounds opaque reentry through a real provider.
 

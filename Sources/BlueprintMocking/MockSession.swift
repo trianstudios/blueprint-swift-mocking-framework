@@ -130,6 +130,11 @@ public enum SessionFinishError: Error, Equatable, Sendable {
 /// destructors can only run after the caller releases the session and journal locks.
 protocol SessionJournalRegistration: AnyObject, Sendable {
     func discardHistory() -> any Sendable
+    func discardCapturesOnFinish() -> (any Sendable)?
+}
+
+extension SessionJournalRegistration {
+    func discardCapturesOnFinish() -> (any Sendable)? { nil }
 }
 
 private struct WeakSessionJournal: Sendable {
@@ -229,11 +234,12 @@ public final class MockSession: Sendable {
     /// Repeated calls return the same final snapshot. The caller owns teardown of its tasks.
     @discardableResult
     public func finishIfQuiescent() throws(SessionFinishError) -> SessionSnapshot {
-        let (snapshot, wake) = try state.withLock { (state: inout State) throws(SessionFinishError) in
-            let snapshot = try state.finishIfQuiescent()
-            return (snapshot, state.closeObservations())
+        let (snapshot, wake, retirement) = try state.withLock { (state: inout State) throws(SessionFinishError) in
+            let (snapshot, retirement) = try state.finishIfQuiescent()
+            return (snapshot, state.closeObservations(), retirement)
         }
         wake?.publish()
+        withExtendedLifetime(retirement) {}
         return snapshot
     }
 
@@ -496,11 +502,15 @@ public final class MockSession: Sendable {
             return (event, delivery)
         }
 
-        fileprivate mutating func finishIfQuiescent() throws(SessionFinishError) -> SessionSnapshot {
+        fileprivate mutating func finishIfQuiescent() throws(SessionFinishError) -> (SessionSnapshot, SessionRetirement?) {
             guard active.isEmpty else { throw .activeInvocations(count: active.count) }
             // Keep the final cutoff stable even if the clock advances before observers wake.
-            if finishedElapsed == nil { finishedElapsed = clock.elapsed }
-            return snapshot(epoch: epoch)!
+            guard finishedElapsed == nil else { return (snapshot(epoch: epoch)!, nil) }
+            finishedElapsed = clock.elapsed
+            let registered = journals.compactMap(\.value)
+            let retired = registered.compactMap { $0.discardCapturesOnFinish() }
+            let retirement = SessionRetirement(epoch: epoch, journals: registered, history: retired)
+            return (snapshot(epoch: epoch)!, retirement)
         }
 
         fileprivate mutating func resetHistory(_ mode: SessionResetMode)
