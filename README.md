@@ -146,6 +146,8 @@ bash scripts/generate.sh \
 
 This profile supports ordinary instance methods on `Sendable` protocols, with `Swift.Bool`, `Swift.Int`, or `Swift.String` bindings and optional `Sendable` constraints. Bind each associated type once. Overloads need distinct argument labels. Dependent constraints, defaults and associated types from compiler-provided interfaces remain open.
 
+A supplied parent with one primary associated type can fix the witness in the inheritance clause. For example, `ParentDomain.BoundParent<Swift.Int>` sets `Element` to `Swift.Int`. The inheritance clause accepts `Swift.Bool`, `Swift.Int` or `Swift.String` in this profile. An explicit CLI or configuration binding may repeat the same type and must agree with the source constraint.
+
 For supported Sendable methods, add `--project 'fetch(id:)'` and any other `--project` selectors to generate a separate `<Protocol>ProjectedMock`. Synchronous nonthrowing and async-throwing methods can opt in. A selector uses the declaration's argument labels, including `_:` for unlabeled arguments. If overloads share the same labels, use the canonical endpoint ID listed in the diagnostic.
 
 Supply an `InvocationProjection` for each selected initializer argument `projectionN`, then read `mock.verify.historyN` for its typed history. The generated index follows canonical endpoint order. For projected String fields, `mock.verify.stableHistoryN` accepts `matchingArgument:` or `matchingResult:` and a session-clock window. Unselected methods retain the ordinary verification descriptors, and stubbing uses the same typed setup for all methods.

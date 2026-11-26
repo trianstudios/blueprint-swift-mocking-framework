@@ -19,9 +19,16 @@ struct IndexedProtocol {
     var name: String { declaration.name.text }
 }
 
+struct InheritedPrimaryTypeBinding {
+    let name: String
+    let type: String
+    let origin: ProtocolSourceOrigin
+}
+
 struct ResolvedProtocolInheritance {
     let declarations: [IndexedProtocol]
     let parentsByDeclaration: [SyntaxIdentifier: [SyntaxIdentifier]]
+    let primaryTypeBindings: [InheritedPrimaryTypeBinding]
 }
 
 final class ProtocolSourceIndex {
@@ -181,6 +188,7 @@ final class ProtocolSourceIndex {
     func resolveSendable(from root: IndexedProtocol) throws -> ResolvedProtocolInheritance {
         var resolved: [IndexedProtocol] = []
         var parentsByDeclaration: [SyntaxIdentifier: [SyntaxIdentifier]] = [:]
+        var primaryTypeBindings: [InheritedPrimaryTypeBinding] = []
         var activePath: [ProtocolName] = []
         var visited: Set<ProtocolName> = []
         var hasSendable = false
@@ -213,8 +221,14 @@ final class ProtocolSourceIndex {
             for edge in edges {
                 let site = origin(of: edge.type)
                 let parentName: ProtocolName
-                if let name = Self.simpleName(edge.type) {
+                let arguments: GenericArgumentClauseSyntax?
+                if let identifier = edge.type.as(IdentifierTypeSyntax.self), Self.isSimple(identifier.name.text) {
+                    let name = identifier.name.text
+                    arguments = identifier.genericArgumentClause
                     if name == "Sendable" {
+                        guard arguments == nil else {
+                            throw Self.error(at: site, "The Sendable marker cannot take inherited type arguments")
+                        }
                         try requireUnshadowed("Sendable", in: module, at: site,
                                               remedy: ". Use Swift.Sendable for the standard marker.")
                         hasSendable = true
@@ -222,10 +236,13 @@ final class ProtocolSourceIndex {
                     }
                     parentName = ProtocolName(module: module, name: name)
                 } else if let qualified = edge.type.as(MemberTypeSyntax.self),
-                          let qualifier = Self.simpleName(qualified.baseType), qualified.genericArgumentClause == nil,
-                          Self.isSimple(qualified.name.text) {
+                          let qualifier = Self.simpleName(qualified.baseType), Self.isSimple(qualified.name.text) {
                     let name = qualified.name.text
+                    arguments = qualified.genericArgumentClause
                     if qualifier == "Swift", name == "Sendable" {
+                        guard arguments == nil else {
+                            throw Self.error(at: site, "The Sendable marker cannot take inherited type arguments")
+                        }
                         try requireUnshadowedQualifier(qualifier, at: qualified.baseType)
                         hasSendable = true
                         continue
@@ -242,6 +259,9 @@ final class ProtocolSourceIndex {
                 }
 
                 let inherited = try parent(named: parentName, at: site)
+                if let arguments {
+                    primaryTypeBindings.append(try primaryTypeBinding(for: inherited, arguments: arguments))
+                }
                 parentsByDeclaration[declaration.id, default: []].append(inherited.declaration.id)
                 try visit(inherited, referencedAt: site)
             }
@@ -251,7 +271,33 @@ final class ProtocolSourceIndex {
         guard hasSendable else {
             throw Self.error(at: root.origin, "Use a public Sendable protocol or inherit the standard Sendable marker")
         }
-        return ResolvedProtocolInheritance(declarations: resolved, parentsByDeclaration: parentsByDeclaration)
+        return ResolvedProtocolInheritance(declarations: resolved, parentsByDeclaration: parentsByDeclaration,
+                                           primaryTypeBindings: primaryTypeBindings)
+    }
+
+    private func primaryTypeBinding(
+        for parent: IndexedProtocol, arguments clause: GenericArgumentClauseSyntax
+    ) throws -> InheritedPrimaryTypeBinding {
+        let primary = parent.declaration.primaryAssociatedTypeClause?.primaryAssociatedTypes ?? []
+        guard primary.count == 1, let parameter = primary.first,
+              clause.arguments.count == 1, let argument = clause.arguments.first else {
+            throw Self.error(at: origin(of: clause), "Specialized inherited protocol "
+                             + "'\(parent.origin.module).\(parent.name)' requires exactly one primary associated type "
+                             + "and one concrete argument")
+        }
+
+        // SwiftSyntax 600 exposes a type directly. Later parsers can also represent a value argument.
+        let type = Syntax(argument.argument)
+        let argumentOrigin = origin(of: type)
+        let name = parameter.name.text
+        guard let scalar = type.as(MemberTypeSyntax.self), scalar.genericArgumentClause == nil,
+              Self.simpleName(scalar.baseType) == "Swift",
+              ["Bool", "Int", "String"].contains(scalar.name.text) else {
+            throw Self.error(at: argumentOrigin, "Unsupported inherited specialization argument for '\(name)'. "
+                             + "Use Swift.Bool, Swift.Int or Swift.String")
+        }
+        try requireUnshadowedQualifier("Swift", at: scalar.baseType)
+        return InheritedPrimaryTypeBinding(name: name, type: "Swift.\(scalar.name.text)", origin: argumentOrigin)
     }
 
     private func parent(named name: ProtocolName, at origin: ProtocolSourceOrigin) throws -> IndexedProtocol {

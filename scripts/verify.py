@@ -161,6 +161,11 @@ def main():
     run("qualified-associated-binding-generation", generate(
         tool, dependency_associated_source, dependency_associated_generated, "AssociatedDirectoryFromDependency",
         sources=dependency_associated_parents, associated_bindings=("Element=String",)))
+    parameterized_parent_source = source.with_name("IntDirectory.swift")
+    parameterized_parent_generated = generated.with_name("IntDirectoryMock.swift")
+    run("parameterized-parent-generation", generate(
+        tool, parameterized_parent_source, parameterized_parent_generated, "IntDirectory",
+        sources=dependency_associated_parents))
     actor_source = source.with_name("MainActorDirectory.swift")
     actor_generated = generated.with_name("MainActorDirectoryMock.swift")
     run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
@@ -343,6 +348,32 @@ def main():
         dependency_batch / "BlueprintMocks.generated.swift"
     ).read_bytes()
     run("qualified-associated-config-verify-generated", [tool, "verify-generated", *dependency_config_args],
+        patterns=[r"Blueprint Mocking: verified 2 generated file"])
+    explicit_parameterized_parent = temp / "RepeatedParameterizedParent.swift"
+    run("parameterized-parent-explicit-parity", generate(
+        tool, parameterized_parent_source, explicit_parameterized_parent, "IntDirectory",
+        sources=dependency_associated_parents, associated_bindings=("Element=Int",)))
+    assert explicit_parameterized_parent.read_bytes() == parameterized_parent_generated.read_bytes()
+    parameterized_config = temp / "parameterized-parent-blueprint-mocking.json"
+    parameterized_selection = {"module": "ConsumerDomain", "type": "IntDirectory", "kind": "protocol"}
+    parameterized_config.write_text(json.dumps({"schemaVersion": 1, "selections": [parameterized_selection]}))
+    parameterized_batch = temp / "parameterized-parent-batch"
+    parameterized_config_args = [
+        "--config", parameterized_config, "--output", parameterized_batch, "--input-set-id", "5",
+        "--source", "ConsumerDomain", parameterized_parent_source, "--source", "ParentDomain", bound_parent,
+    ]
+    parameterized_inspection = json.loads(run("parameterized-parent-config-inspection", [
+        tool, "inspect", *parameterized_config_args, "--format", "json",
+    ]))
+    assert parameterized_inspection["configuration"]["selections"] == [parameterized_selection | {
+        "associatedTypeBindings": [{"name": "Element", "type": "Swift.Int"}],
+    }]
+    run("parameterized-parent-config-generation", [tool, "generate", *parameterized_config_args],
+        patterns=[r"Blueprint Mocking: generated 1 protocol mock"])
+    assert parameterized_parent_generated.read_bytes() in (
+        parameterized_batch / "BlueprintMocks.generated.swift"
+    ).read_bytes()
+    run("parameterized-parent-config-verify-generated", [tool, "verify-generated", *parameterized_config_args],
         patterns=[r"Blueprint Mocking: verified 2 generated file"])
     assert baseline == (temp / "Repeated.swift").read_bytes()
     actor_repeated = temp / "RepeatedMainActor.swift"
@@ -692,6 +723,27 @@ def main():
             tool, selected, output, selected.stem, sources=inputs, associated_bindings=bindings),
             fails=True, patterns=patterns)
         assert output.read_bytes() == sentinel
+    parameterized_negatives = [
+        ("explicit-conflict", parameterized_parent_source, ("Element=String",), [
+            r"IntDirectory\.swift:3:56: error: BPM001: Inherited specialization for 'Element' "
+            r"requires Swift\.Int, but the explicit binding is Swift\.String",
+        ]),
+        ("nested-argument", inheritance_rejections / "NestedPrimaryArgument.swift", (), [
+            r"NestedPrimaryArgument\.swift:3:\d+: error: BPM001: Unsupported inherited specialization argument for 'Element'",
+        ]),
+        ("graph-conflict", inheritance_rejections / "ConflictingPrimaryParents.swift", (), [
+            r"ConflictingPrimaryParents\.swift:4:\d+: error: BPM001: Conflicting inherited specializations "
+            r"for 'Element' require Swift\.Int at .*ConflictingPrimaryParents\.swift:3:\d+ and Swift\.String",
+        ]),
+    ]
+    for label, selected, bindings, patterns in parameterized_negatives:
+        output = temp / "RejectedParameterizedParent.swift"
+        sentinel = b"sentinel: preserve prior parameterized parent generation\n"
+        output.write_bytes(sentinel)
+        run("reject-parameterized-parent-" + label, generate(
+            tool, selected, output, selected.stem, sources=dependency_associated_parents, associated_bindings=bindings),
+            fails=True, patterns=patterns)
+        assert output.read_bytes() == sentinel
     mapper_fixture = ROOT / "Fixtures/FailureMappingConsumer"
     mapper_tests = "Tests/FailureMappingProbeTests/FailureMappingTests.swift"
     baseline_probe = (mapper_fixture / "Variants/A/Probe.swift").read_text()
@@ -723,7 +775,8 @@ def main():
                   r"GEN002_qualifiedParentsKeepModuleIdentityAndForeignDeclarationProvenance\(\) passed",
                   r"GEN008_concretePrimaryAssociatedTypeBindingSurvivesConsumerCalls\(\) passed",
                   r"GEN008_inheritedAssociatedRequirementKeepsItsDeclarationSource\(\) passed",
-                  r"GEN008_qualifiedParentBindsAssociatedTypeAcrossTargets\(\) passed"])
+                  r"GEN008_qualifiedParentBindsAssociatedTypeAcrossTargets\(\) passed",
+                  r"GEN008_parameterizedParentInfersConcreteWitnessAcrossTargets\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [

@@ -100,6 +100,18 @@ struct ConcreteAssociatedTypeBindings {
         }
         visibleNames = visible
 
+        var inheritedByName: [String: InheritedPrimaryTypeBinding] = [:]
+        for binding in inheritance.primaryTypeBindings {
+            if let previous = inheritedByName[binding.name] {
+                guard previous.type == binding.type else {
+                    throw GenerationError(description: "\(binding.origin): error: BPM001: Conflicting inherited specializations for "
+                                          + "'\(binding.name)' require \(previous.type) at \(previous.origin) and \(binding.type)")
+                }
+            } else {
+                inheritedByName[binding.name] = binding
+            }
+        }
+
         var concrete: [String: String] = [:]
         for option in options {
             let name = option.name.trimmingCharacters(in: .whitespaces)
@@ -116,7 +128,14 @@ struct ConcreteAssociatedTypeBindings {
                 let reason = previous == canonical ? "Duplicate" : "Conflicting"
                 try reject(associated, "\(reason) explicit bindings for associated type '\(name)'")
             }
+            if let required = inheritedByName[name], canonical != required.type {
+                throw GenerationError(description: "\(required.origin): error: BPM001: Inherited specialization for '\(name)' "
+                                      + "requires \(required.type), but the explicit binding is \(canonical)")
+            }
             concrete[name] = canonical
+        }
+        for binding in inheritedByName.values {
+            concrete[binding.name] = binding.type
         }
         for (name, associated) in associatedByName.sorted(by: { $0.key < $1.key }) where concrete[name] == nil {
             try reject(associated, "Missing explicit binding for associated type '\(name)'")

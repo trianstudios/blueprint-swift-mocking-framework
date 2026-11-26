@@ -266,7 +266,7 @@ func generate(
               attribute.leftParen == nil, attribute.arguments == nil,
               conformances.isEmpty {
         isolation = .mainActor
-        inheritance = ResolvedProtocolInheritance(declarations: [root], parentsByDeclaration: [:])
+        inheritance = ResolvedProtocolInheritance(declarations: [root], parentsByDeclaration: [:], primaryTypeBindings: [])
     } else {
         try reject(proto, "Use a public Sendable protocol without attributes or a public @MainActor protocol without inheritance")
     }

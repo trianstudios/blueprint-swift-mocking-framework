@@ -196,4 +196,13 @@ GEN-008 extends concrete bindings to module-qualified parents in supplied Swift 
 
 The SwiftPM consumer binds `ParentDomain.BoundParent.Element` while generating a mock for `ConsumerDomain.AssociatedDirectoryFromDependency`. It calls through a constrained `any AssociatedDirectoryFromDependency<String>` existential and verifies typed calls. An unstubbed inherited call reports `ParentDomain/BoundParent.swift:5:1` and retains the selected protocol's endpoint identity. Missing and conflicting bindings identify the parent associated declaration and preserve the previous output. Configured generation emits the same witness as the standalone command.
 
-The source profile covers known concrete scalars and ordinary instance methods. Dependent same-type constraints, implicit generic witnesses, parameterized inheritance and interfaces obtained from compiled modules remain open.
+The source profile covers known concrete scalars and ordinary instance methods. Dependent same-type constraints, implicit generic witnesses and interfaces obtained from compiled modules remain open.
+
+
+## Concrete witnesses from parameterized protocol parents
+
+GEN-008 now lowers a supplied parent specialization with one primary associated type and one explicitly qualified `Swift.Bool`, `Swift.Int` or `Swift.String` argument. Swift's inheritance syntax expresses a same-type requirement. The generator records that requirement before deduplicating parent visits, then checks it against explicit bindings before emitting any files. [Swift Evolution SE-0346](https://github.com/swiftlang/swift-evolution/blob/main/proposals/0346-light-weight-same-type-syntax.md#constrained-protocols-in-desugared-positions)
+
+The SwiftPM consumer builds `IntDirectory: ParentDomain.BoundParent<Swift.Int>` and calls through both `any IntDirectory` and `any ParentDomain.BoundParent<Int>`. The mock derives `Element` without a flag, a matching explicit binding gives identical bytes, and configured generation and inspection report the same concrete type. Inherited call reports retain `ParentDomain/BoundParent.swift:5:1`. Contradictory explicit bindings, conflicting inheritance paths and unsupported nested arguments produce diagnostics and preserve existing output.
+
+GEN008-B still needs the dependent `Iterator.Element == Element` normalization fixture. Generic witnesses, multiple primary arguments, protocol-level where clauses, and compiler-provided module interfaces remain open.
