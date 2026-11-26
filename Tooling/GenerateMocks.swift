@@ -106,6 +106,8 @@ enum WitnessKind {
     case setter(String)
     case subscriptGetter(String)
     case subscriptSetter(String)
+    case typeSubscriptGetter(String)
+    case typeSubscriptSetter(String)
     case specializedSubscriptGetter(GenericSubscript, String)
 }
 struct Member {
@@ -119,6 +121,13 @@ struct Member {
     let kind: WitnessKind
 
     var family: String { isolation.prefix + effect.family }
+
+    var isTypeLevel: Bool {
+        switch kind {
+        case .typeSubscriptGetter, .typeSubscriptSetter: true
+        default: false
+        }
+    }
 
     var selector: String {
         "\(name)(" + parameters.map { "\($0.label):" }.joined() + ")"
@@ -297,7 +306,12 @@ func generate(
         } else {
             specialization = ""
         }
-        let descriptor = "\(name)(\(matcherTypes)\(specialization))"
+        let namespace: String
+        switch kind {
+        case .typeSubscriptGetter, .typeSubscriptSetter: namespace = "type:"
+        default: namespace = ""
+        }
+        let descriptor = "\(namespace)\(name)(\(matcherTypes)\(specialization))"
         let isVariadic = parameters.contains { $0.isVariadic }
         if let previousVariadic = descriptors.updateValue(isVariadic, forKey: descriptor) {
             if isVariadic || previousVariadic {
@@ -313,6 +327,8 @@ func generate(
         case .setter(let property): endpoint = "property:\(property).set(\(parameterTypes))"
         case .subscriptGetter(let indices): endpoint = "subscript:\(indices).get"
         case .subscriptSetter(let indices): endpoint = "subscript:\(indices).set(\(parameterTypes))"
+        case .typeSubscriptGetter(let indices): endpoint = "type:subscript:\(indices).get"
+        case .typeSubscriptSetter(let indices): endpoint = "type:subscript:\(indices).set(\(parameterTypes))"
         case .specializedSubscriptGetter(let declaration, _):
             endpoint = declaration.endpoint
             resultIdentity = declaration.resultIdentity
@@ -426,18 +442,23 @@ func generate(
     }
 
     func addSubscript(_ decl: SubscriptDeclSyntax) throws {
-        guard !decl.modifiers.contains(where: { ["static", "class"].contains($0.name.text) }) else {
-            try reject(decl, "Static and class subscripts require a scoped type-level adapter")
-        }
-        guard decl.modifiers.isEmpty, decl.attributes.isEmpty,
+        let isTypeLevel = decl.modifiers.map(\.name.text) == ["static"]
+        guard decl.modifiers.isEmpty || isTypeLevel, decl.attributes.isEmpty,
               let output = supportedResult(decl.returnClause.type),
               let accessorBlock = decl.accessorBlock, case .accessors(let accessors) = accessorBlock.accessors else {
-            try reject(decl, "Use an unmodified instance subscript with a supported result and explicit get and optional set accessors")
+            try reject(decl, "Use an instance or static subscript with a supported result and explicit get and optional set accessors")
         }
         let indices = try parseParameters(decl.parameterClause.parameters, forSubscript: true)
         let (getter, setter) = try getterAndSetter(accessors, at: decl)
         let effects = getter.effectSpecifiers
         let effect = try methodEffect(effects?.asyncSpecifier, effects?.throwsClause, at: getter)
+        if isTypeLevel {
+            guard isolation == .sendable, !effect.isAsync, effect.failure == nil, setter?.effectSpecifiers == nil,
+                  decl.genericParameterClause == nil, decl.genericWhereClause == nil, output != "Void",
+                  !indices.contains(where: \.isVariadic) else {
+                try reject(decl, "Type-level subscript scopes require a concrete synchronous Sendable static subscript with a value result")
+            }
+        }
         if decl.genericParameterClause != nil || decl.genericWhereClause != nil {
             try collectGenericSubscript(decl, indices: indices, output: output, effect: effect,
                                         setter: setter, getter: getter)
@@ -448,11 +469,12 @@ func generate(
         }
         let identity = "(" + indices.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",") + ")"
         try addMember(name: "get_subscript", parameters: indices, outputType: output, effect: effect,
-                      kind: .subscriptGetter(identity), at: getter)
+                      kind: isTypeLevel ? .typeSubscriptGetter(identity) : .subscriptGetter(identity), at: getter)
         if let setter {
             let parameters = indices + [Parameter(label: "newValue", type: output)]
             try addMember(name: "set_subscript", parameters: parameters, outputType: "Void",
-                          effect: Effect(isAsync: false, failure: nil), kind: .subscriptSetter(identity), at: setter)
+                          effect: Effect(isAsync: false, failure: nil),
+                          kind: isTypeLevel ? .typeSubscriptSetter(identity) : .subscriptSetter(identity), at: setter)
         }
     }
 
@@ -517,11 +539,18 @@ func generate(
     }
     guard !members.isEmpty else { try reject(proto, "The selected protocol has no supported requirements") }
     members.sort { ($0.identity, $0.inputType) < ($1.identity, $1.inputType) }
+    let typeIndices = members.indices.filter { members[$0].isTypeLevel }
+    let instanceIndices = members.indices.filter { !members[$0].isTypeLevel }
+    if !typeIndices.isEmpty && !projections.isEmpty {
+        try reject(proto, "Type-level subscript scopes cannot be combined with generated projected mock types")
+    }
     var setterIndices: [String: Int] = [:]
     var subscriptSetters: [String: Int] = [:]
+    var typeSubscriptSetters: [String: Int] = [:]
     for (i, m) in members.enumerated() {
         if case .setter(let property) = m.kind { setterIndices[property] = i }
         if case .subscriptSetter(let indices) = m.kind { subscriptSetters[indices] = i }
+        if case .typeSubscriptSetter(let indices) = m.kind { typeSubscriptSetters[indices] = i }
     }
     func selectMember(_ selector: String, purpose: String, includeSubscripts: Bool = false) throws -> Int {
         let matches = members.indices.filter {
@@ -530,7 +559,8 @@ func generate(
             switch member.kind {
             case .method: return true
             case .subscriptGetter, .subscriptSetter: return includeSubscripts
-            case .getter, .setter, .specializedSubscriptGetter: return false
+            case .getter, .setter, .specializedSubscriptGetter, .typeSubscriptGetter, .typeSubscriptSetter:
+                return false
             }
         }
         guard let index = matches.first else {
@@ -585,6 +615,9 @@ func generate(
     }
     if !forwardingIndices.isEmpty, memberTypeNames.contains("VariadicForwarding") {
         try reject(proto, "A requirement type collides with the generated 'VariadicForwarding' setup type")
+    }
+    if !typeIndices.isEmpty, !memberTypeNames.isDisjoint(with: ["TypeScope", "TypeStubs", "TypeVerification"]) {
+        try reject(proto, "A requirement type collides with a generated type-level scope or descriptor type")
     }
     if !projectedIndices.isEmpty, usedNames.contains(name) {
         try reject(proto, "A method type collides with the generated projected mock name '\(name)'")
@@ -641,11 +674,12 @@ func generate(
     if !specializedEndpoints.isEmpty {
         output += "    private let __scope: MockScope\n    private let __failureReporter: FailureReporter\n"
     }
-    for i in members.indices {
+    for i in instanceIndices {
         output += "    private let __endpoint\(i): \(endpointType(i))\n"
     }
     output += "\n    \(isolation.annotation)public struct Stubs {\n"
-    for (i,m) in members.enumerated() {
+    for i in instanceIndices {
+        let m = members[i]
         output += "        fileprivate let __setup\(i): \(m.family)Stubbing<\(m.genericArguments)>\n"
         output += "        public func \(m.descriptorSignature) -> \(m.family)Stub<\(m.genericArguments)> {\n            __setup\(i).matching(\(m.matcherExpression))\n        }\n"
     }
@@ -699,7 +733,8 @@ func generate(
         output += "    }\n\n"
     }
     output += "    \(isolation.annotation)public struct Verification\(isolationConformance) {\n"
-    for (i,m) in members.enumerated() {
+    for i in instanceIndices {
+        let m = members[i]
         output += "        fileprivate let __endpoint\(i): \(endpointType(i))\n"
         if let types = projectionTypes[i] {
             output += "        public var history\(i): ProjectedInvocationHistory<\(types.argument), \(types.result)> {\n            __endpoint\(i).projectedHistory()\n        }\n"
@@ -719,7 +754,7 @@ func generate(
         }
     }
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
-        members.indices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
+        instanceIndices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
     output += "    public init(failureReporter: FailureReporter,\n"
     if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
     if !failureIndices.isEmpty {
@@ -734,18 +769,22 @@ func generate(
         output += "                projection\(i): InvocationProjection<\(member.inputType), \(member.outputType), \(types.argument), \(types.result)>,\n"
     }
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void) {\n"
-    if isolation == .sendable { output += "        let scope = session.makeMock()\n" }
+    if isolation == .sendable && !instanceIndices.isEmpty {
+        output += "        let scope = session.makeMock()\n"
+    }
     if !specializedEndpoints.isEmpty {
         output += "        self.__scope = scope\n        self.__failureReporter = failureReporter\n"
     }
-    for (i,m) in members.enumerated() {
+    for i in instanceIndices {
+        let m = members[i]
         output += "        let setup\(i) = \(m.family)Stubbing<\(m.genericArguments)>()\n"
     }
     for i in forwardingIndices.sorted() {
         output += "        forwarding.__install\(i)?(setup\(i))\n"
     }
-    output += "        configure(Stubs(" + members.indices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
-    for (i,m) in members.enumerated() {
+    output += "        configure(Stubs(" + instanceIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
+    for i in instanceIndices {
+        let m = members[i]
         var mapping = isolation == .sendable ? ", scope: scope" : ""
         if let failure = m.effect.runtimeFailure {
             mapping += ", failureMapping: failureMappings.__mapping\(i)"
@@ -767,6 +806,80 @@ func generate(
         output += "        self.__endpoint\(i) = \(endpointFamily(i))Endpoint(id: \(endpointID),\n            configuration: setup\(i).finish()\(projection), failureReporter: failureReporter\(mapping))\n"
     }
     output += "    }\n"
+    if !typeIndices.isEmpty {
+        output += "\n    @TaskLocal private static var __typeScope: TypeScope?\n"
+        output += "\n    public struct TypeStubs {\n"
+        for i in typeIndices {
+            let member = members[i]
+            output += "        fileprivate let __setup\(i): SyncStubbing<\(member.genericArguments)>\n"
+            output += "        public func \(member.descriptorSignature) -> SyncStub<\(member.genericArguments)> {\n            __setup\(i).matching(\(member.matcherExpression))\n        }\n"
+        }
+        output += "    }\n\n    public struct TypeVerification: Sendable {\n"
+        for i in typeIndices {
+            let member = members[i]
+            output += "        fileprivate let __endpoint\(i): \(endpointType(i))\n"
+            output += "        public func \(member.verificationSignature) -> BlueprintMocking.Verification<\(member.inputType)> {\n            __endpoint\(i).verification(matching: \(member.matcherExpression), phase: phase)\n        }\n"
+        }
+        output += "    }\n\n"
+        output += """
+            public struct TypeScope: Sendable {
+        """
+        output += "\n"
+        for i in typeIndices {
+            output += "        fileprivate let __endpoint\(i): \(endpointType(i))\n"
+        }
+        output += "        public var verify: TypeVerification {\n            TypeVerification(" +
+            typeIndices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n        }\n"
+        output += """
+
+                public func withValue<Value>(_ body: () throws -> Value) rethrows -> Value {
+                    try \(name).$__typeScope.withValue(self, operation: body)
+                }
+
+                public func withValue<Value, Failure: Error>(
+                    isolation: isolated (any Actor)? = #isolation,
+                    _ body: () async throws(Failure) -> Value
+                ) async throws(Failure) -> Value {
+                    #if compiler(>=6.2)
+                    let operation: nonisolated(nonsending) () async -> Result<Value, Failure> = {
+                        do throws(Failure) { return .success(try await body()) }
+                        catch { return .failure(error) }
+                    }
+                    let result = await \(name).$__typeScope.withValue(self, operation: operation)
+                    #else
+                    let result: Result<Value, Failure> = await \(name).$__typeScope.withValue(
+                        self, operation: {
+                            do throws(Failure) { return .success(try await body()) }
+                            catch { return .failure(error) }
+                        }, isolation: isolation
+                    )
+                    #endif
+                    return try result.get()
+                }
+            }
+
+            public static func makeTypeScope(
+                failureReporter: FailureReporter,
+                session: MockSession = MockSession(),
+                _ configure: (TypeStubs) -> Void
+            ) -> TypeScope {
+                let scope = session.makeEpochBoundMock()
+        """
+        output += "\n"
+        for i in typeIndices {
+            output += "        let setup\(i) = SyncStubbing<\(members[i].genericArguments)>()\n"
+        }
+        output += "        configure(TypeStubs(" +
+            typeIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
+        for i in typeIndices {
+            let member = members[i]
+            let fallback = member.outputType == "Void" ? ", fallback: { _ in () }" : ""
+            output += "        let endpoint\(i) = \(endpointFamily(i))Endpoint(id: EndpointID(\(String(reflecting: member.identity))),\n"
+            output += "            configuration: setup\(i).finish(), failureReporter: failureReporter, scope: scope\(fallback))\n"
+        }
+        output += "        return TypeScope(" +
+            typeIndices.map { "__endpoint\($0): endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n"
+    }
     let fileName = URL(fileURLWithPath: input).lastPathComponent
     let fileID = module + "/" + fileName
     func location(_ line: Int) -> String {
@@ -817,7 +930,22 @@ func generate(
             }
             output += "        __scope.terminateMissingSpecialization(of: \(String(reflecting: m.identity)), for: __BlueprintKey.self,\n"
             output += "            reporter: __failureReporter, source: \(location(declaration.line)))\n    }\n"
-        case .setter, .subscriptSetter:
+        case .typeSubscriptGetter(let indices):
+            func missingScope(_ member: Member) -> String {
+                "BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID(\(String(reflecting: member.identity))), source: \(location(member.line)))"
+            }
+            output += "\n    public static subscript(\(m.parameterDeclaration)) -> \(m.outputType) {\n"
+            output += "        get {\n            guard let scope = __typeScope else {\n"
+            output += "                fatalError(\(missingScope(m)))\n            }\n"
+            output += "            return scope.\(call(i, m.invocationInput))\n        }\n"
+            if let setter = typeSubscriptSetters[indices] {
+                let arguments = "(" + (m.invocationArguments + ["newValue"]).joined(separator: ", ") + ")"
+                output += "        set {\n            guard let scope = __typeScope else {\n"
+                output += "                _ = \(missingScope(members[setter]))\n                return\n            }\n"
+                output += "            scope.\(call(setter, arguments))\n        }\n"
+            }
+            output += "    }\n"
+        case .setter, .subscriptSetter, .typeSubscriptSetter:
             continue
         }
     }

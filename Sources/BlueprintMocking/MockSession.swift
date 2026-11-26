@@ -23,29 +23,54 @@ public struct SessionInvocationID: Hashable, Sendable {
     public let rawValue: UInt64
 }
 
+enum ScopeAdmissionRejection: Sendable {
+    case finished
+    case staleTypeScope
+
+    func message(for endpoint: EndpointID) -> String {
+        switch self {
+        case .finished:
+            "Cannot call \(endpoint.diagnosticName) in a finished mock session"
+        case .staleTypeScope:
+            "Cannot call \(endpoint.diagnosticName) with a stale type-level mock scope"
+        }
+    }
+}
+
 /// The explicitly selected session and identity for a mock's endpoints.
 public struct MockScope: Sendable {
     public let id: MockID
     public let session: MockSession
+    let expectedEpoch: SessionEpoch?
+
+    init(id: MockID, session: MockSession, expectedEpoch: SessionEpoch? = nil) {
+        self.id = id
+        self.session = session
+        self.expectedEpoch = expectedEpoch
+    }
+
+    func admissionRejection(in state: MockSession.State) -> ScopeAdmissionRejection? {
+        if let expectedEpoch, expectedEpoch != state.epoch { return .staleTypeScope }
+        return state.isFinished ? .finished : nil
+    }
 
     /// Generated value witnesses record an unlisted specialization before applying the missing-value policy.
     public func terminateMissingSpecialization<Argument>(
         of declaration: String, for type: Argument.Type, reporter: FailureReporter, source: SourceLocation
     ) -> Never {
         let endpoint = EndpointID(declaration, specializedFor: type)
-        let (admission, delivery, wake) = session.withLock {
-            state -> (SessionEvent?, SessionQuiescenceDelivery?, SessionObservationDelivery?) in
-            guard !state.isFinished else { return (nil, nil, nil) }
+        let (admission, rejection, delivery, wake) = session.withLock {
+            state -> (SessionEvent?, ScopeAdmissionRejection?, SessionQuiescenceDelivery?, SessionObservationDelivery?) in
+            if let rejection = admissionRejection(in: state) { return (nil, rejection, nil, nil) }
             let admission = state.admit(mockID: id, endpoint: endpoint,
                                         configurationRevision: RuleRevision(rawValue: 0))
             let (_, delivery) = state.complete(admission.invocationID, phase: .terminated)
-            return (admission, delivery, state.observationWake())
+            return (admission, nil, delivery, state.observationWake())
         }
         delivery?.publish()
         wake?.publish()
-        let message = admission == nil
-            ? "Cannot call \(endpoint.diagnosticName) in a finished mock session"
-            : "No configured specialization for \(endpoint.diagnosticName)"
+        let message = rejection?.message(for: endpoint)
+            ?? "No configured specialization for \(endpoint.diagnosticName)"
         reporter.report(MockIssue(kind: .unexpectedCall, endpoint: endpoint, message: message,
                                   source: source, watermark: admission?.ordinal ?? 0))
         fatalError(message)
@@ -128,6 +153,13 @@ public final class MockSession: Sendable {
     public func makeMock() -> MockScope {
         let mockID = state.withLock { $0.makeMockID() }
         return MockScope(id: mockID, session: self)
+    }
+
+    /// Creates a scope whose admissions and verification remain bound to this epoch.
+    /// A history reset invalidates the scope even while the owning session stays open.
+    public func makeEpochBoundMock() -> MockScope {
+        let (mockID, epoch) = state.withLock { state in (state.makeMockID(), state.epoch) }
+        return MockScope(id: mockID, session: self, expectedEpoch: epoch)
     }
 
     public func snapshot() -> SessionSnapshot {

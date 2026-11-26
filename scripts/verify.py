@@ -146,6 +146,10 @@ def main():
     effectful_subscript_generated = generated.with_name("EffectfulSubscriptDirectoryMock.swift")
     run("effectful-subscript-generation", generate(
         tool, effectful_subscript_source, effectful_subscript_generated, "EffectfulSubscriptDirectory"))
+    type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
+    type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
+    run("type-subscript-generation", generate(
+        tool, type_subscript_source, type_subscript_generated, "TypeSubscriptDirectory"))
     generic_subscript_source = source.with_name("GenericSubscriptDirectory.swift")
     generic_subscript_generated = generated.with_name("GenericSubscriptDirectoryMock.swift")
     generic_subscript_specializations = ("get_subscript(_:)=Int", "get_subscript(_:)=String",
@@ -191,6 +195,18 @@ def main():
     run("subscript-label-normalization", generate(
         tool, relocated_subscript, repeated_subscript, "SubscriptDirectory"))
     assert subscript_generated.read_bytes() == repeated_subscript.read_bytes()
+    repeated_type_subscript = temp / "RepeatedTypeSubscript.swift"
+    run("type-subscript-generation-repeat", generate(
+        tool, type_subscript_source, repeated_type_subscript, "TypeSubscriptDirectory"))
+    assert type_subscript_generated.read_bytes() == repeated_type_subscript.read_bytes()
+    rejected_type_projection = temp / "RejectedTypeSubscriptProjection.swift"
+    sentinel = "sentinel: preserve generated output\n"
+    rejected_type_projection.write_text(sentinel)
+    run("type-subscript-reject-projection", generate(
+        tool, type_subscript_source, rejected_type_projection, "TypeSubscriptDirectory",
+        projections=("get_subscript(_:)",)), fails=True,
+        patterns=[r"BPM001", r":\d+:\d+: error:", r"cannot be combined with generated projected mock types"])
+    assert rejected_type_projection.read_text() == sentinel
     repeated_generic_subscript = temp / "RepeatedGenericSubscript.swift"
     run("generic-subscript-generation-repeat", generate(
         tool, generic_subscript_source, repeated_generic_subscript, "GenericSubscriptDirectory",
@@ -308,10 +324,11 @@ def main():
         "GenericSubscript": r"Generic subscripts require explicit specialization",
         "GenericSubscriptSetter": r"Generic specialization requires a synchronous read-only",
         "GenericSubscriptNestedResult": r"Generic subscript results must be concrete or exactly the generic index type",
-        "StaticSubscript": r"Static and class subscripts require a scoped type-level adapter",
+        "StaticSubscript": r"Type-level subscript scopes require a concrete synchronous Sendable static subscript",
+        "GenericStaticSubscript": r"Type-level subscript scopes require a concrete synchronous Sendable static subscript",
         "EffectfulSubscriptSetter": r"Effectful subscript getters require read-only subscripts",
         "BorrowingSubscript": r"Subscript indices require.*without ownership",
-        "VariadicSubscript": r"Static and class subscripts require a scoped type-level adapter",
+        "VariadicSubscript": r"Type-level subscript scopes require a concrete synchronous Sendable static subscript",
         "VariadicSubscriptDescriptorCollision": r"Variadic overloads with identical lowered matcher signatures",
         "VariadicDescriptorCollision": r"Variadic overloads with identical lowered matcher signatures",
         "SubscriptDescriptorCollision": r"methods that collide with accessor descriptors",
@@ -374,6 +391,7 @@ def main():
         "ThrowForAsync": r"has no member 'willThrow'",
         "ThrowingAnswerForAsync": r"to non-throwing function type",
         "ThrowForNever": r"has no member 'willThrow'",
+        "TypeSubscriptWrongNewValue": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "ValueForNever": r"cannot convert value of type 'String'.*'Never'",
         "AsyncAnswerForSyncThrowing": r"to parameter expecting synchronous function type",
         "GenericSubscriptWrongConstraint": r"requires that 'UnhashableKey' conform to 'Hashable'",
@@ -431,6 +449,17 @@ def main():
         modules / "consumer-demo", "--missing-generic-specialization"], fails=True,
         patterns=[r"MOCK ISSUE: " + unlisted, r"Fatal error: " + unlisted])
     assert fatal_log.index("MOCK ISSUE:") < fatal_log.index("Fatal error:")
+    type_scope = r"Missing type-level mock scope for schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:"
+    detached = run("type-subscript-detached-reject", [modules / "consumer-demo", "--type-subscript-detached"],
+                   fails=True, patterns=[r"TypeSubscriptDirectory.swift:\d+:\d+: error: BlueprintMocking: " + type_scope,
+                                         r"Fatal error: " + type_scope])
+    assert detached.index("error: BlueprintMocking:") < detached.index("Fatal error:")
+    run("type-subscript-unbound-setter", [modules / "consumer-demo", "--type-subscript-unbound-setter"],
+        patterns=[type_scope + r".*\.set", r"PASS: unbound type setter returned after diagnosis"])
+    stale_scope = r"Cannot call schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:.*with a stale type-level mock scope"
+    stale = run("type-subscript-stale-reject", [modules / "consumer-demo", "--type-subscript-stale"], fails=True,
+                patterns=[r"MOCK ISSUE: " + stale_scope, r"Fatal error: " + stale_scope])
+    assert stale.index("MOCK ISSUE:") < stale.index("Fatal error:")
     run_swift("runtime-only-consumer", [
         "run", "--package-path", "Fixtures/RuntimeOnly", "RuntimeOnly"],
         patterns=[r"PASS: runtime-only consumer"])
@@ -473,6 +502,7 @@ def main():
         "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
         "subscriptGeneratedSHA256": hashlib.sha256(subscript_generated.read_bytes()).hexdigest(),
         "effectfulSubscriptGeneratedSHA256": hashlib.sha256(effectful_subscript_generated.read_bytes()).hexdigest(),
+        "typeSubscriptGeneratedSHA256": hashlib.sha256(type_subscript_generated.read_bytes()).hexdigest(),
         "genericSubscriptGeneratedSHA256": hashlib.sha256(generic_subscript_generated.read_bytes()).hexdigest(),
         "variadicSubscriptGeneratedSHA256": hashlib.sha256(variadic_subscript_generated.read_bytes()).hexdigest(),
         "variadicGeneratedSHA256": hashlib.sha256(variadic_generated.read_bytes()).hexdigest(),

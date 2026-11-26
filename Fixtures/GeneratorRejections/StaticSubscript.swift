@@ -1,3 +1,3 @@
 public protocol StaticSubscript: Sendable {
-    static subscript(_ index: Int) -> String { get }
+    static subscript(_ index: Int) -> String { get async throws }
 }

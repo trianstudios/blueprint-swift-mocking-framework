@@ -22,6 +22,34 @@ import ConsumerDoubles
             let service = GenericSubscriptClient(directory: mock)
             _ = service.read(true)
         }
+        if CommandLine.arguments.contains("--type-subscript-unbound-setter") {
+            TypeSubscriptDirectoryMock[7] = 20
+            print("PASS: unbound type setter returned after diagnosis")
+            return
+        }
+        if CommandLine.arguments.contains("--type-subscript-detached") {
+            let scope = TypeSubscriptDirectoryMock.makeTypeScope(failureReporter: reporter) { stubs in
+                stubs.get_subscript(.any).willReturn(12)
+            }
+            await scope.withValue {
+                let detached = Task.detached {
+                    TypeSubscriptClient.read(7, using: TypeSubscriptDirectoryMock.self)
+                }
+                _ = await detached.value
+            }
+        }
+        if CommandLine.arguments.contains("--type-subscript-stale") {
+            let session = MockSession()
+            let reporter = FailureReporter { issue in
+                precondition(session.snapshot().events.isEmpty)
+                FileHandle.standardError.write(Data("MOCK ISSUE: \(issue.message)\n".utf8))
+            }
+            let scope = TypeSubscriptDirectoryMock.makeTypeScope(failureReporter: reporter, session: session) { stubs in
+                stubs.get_subscript(.any).willReturn(12)
+            }
+            try session.resetHistory()
+            _ = scope.withValue { TypeSubscriptClient.read(7, using: TypeSubscriptDirectoryMock.self) }
+        }
         if CommandLine.arguments.contains("--missing-never") {
             let mock = EffectEdgesMock(failureReporter: reporter) { _ in }
             mock.stop(id: "unstubbed")

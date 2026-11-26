@@ -1,5 +1,16 @@
+import Foundation
+
 // A compile-time generated-code/runtime schema marker. This is not a release version.
-public enum BlueprintRuntimeSchemaV1 {}
+public enum BlueprintRuntimeSchemaV1 {
+    /// Reports a generated type-level call that had no bound mock scope.
+    @discardableResult
+    public static func reportMissingTypeScope(_ id: EndpointID, source: SourceLocation) -> String {
+        let message = "Missing type-level mock scope for \(id.diagnosticName)"
+        let diagnostic = "\(source.filePath):\(source.line):\(source.column): error: BlueprintMocking: \(message)\n"
+        try? FileHandle.standardError.write(contentsOf: Data(diagnostic.utf8))
+        return message
+    }
+}
 
 /// The process-local identity and readable diagnostic name of a concrete type argument.
 public struct EndpointSpecialization: Sendable, Equatable {
@@ -217,7 +228,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         // Lock order is session, then this endpoint. No operation holds two endpoint locks.
         let (result, wake) = scope.session.withLock {
             session -> ((admission: JournalAdmission, configuration: Configuration)?, SessionObservationDelivery?) in
-            guard !session.isFinished else { return (nil, nil) }
+            guard scope.admissionRejection(in: session) == nil else { return (nil, nil) }
             let result = state.withLock {
                 $0.nextID += 1
                 let id = $0.nextID
@@ -359,8 +370,9 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func verification(matching matcher: Matcher<Input>, phase: CallPhase) -> Verification<Input> {
-        let epoch = scope.session.withLock { $0.epoch }
-        return Verification(journal: self, matcher: matcher, phase: phase, epoch: epoch)
+        let epoch = scope.expectedEpoch ?? scope.session.withLock { $0.epoch }
+        return Verification(journal: self, matcher: matcher, phase: phase, epoch: epoch,
+                            isEpochBound: scope.expectedEpoch != nil)
     }
 
     func report(_ issue: MockIssue) {
@@ -394,8 +406,11 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func reportFinishedCall(source: SourceLocation) -> MockIssue {
+        // Use the same refusal check as admission. A stale epoch cannot become current,
+        // and a finished session cannot reset, so the reason is stable after rejection.
+        let rejection = scope.session.withLock { scope.admissionRejection(in: $0) } ?? .finished
         let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
-                              message: "Cannot call \(endpoint.diagnosticName) in a finished mock session",
+                              message: rejection.message(for: endpoint),
                               source: source, watermark: state.withLock { $0.nextID })
         report(issue)
         return issue
@@ -440,6 +455,7 @@ public struct Verification<Input: Sendable>: Sendable {
     fileprivate let matcher: Matcher<Input>
     fileprivate let phase: CallPhase
     fileprivate let epoch: SessionEpoch
+    fileprivate let isEpochBound: Bool
 
     @discardableResult
     public func wasCalled(_ count: CallCount, fileID: String = #fileID,
@@ -459,10 +475,11 @@ public struct Verification<Input: Sendable>: Sendable {
     private func verifyCount(_ count: CallCount, source: @autoclosure () -> SourceLocation) -> VerificationResult {
         let prefix = journal.snapshot(validating: epoch)
         if prefix.isStale {
-            journal.report(MockIssue(
-                kind: .verificationFailed, endpoint: journal.endpoint,
-                message: "Verification belongs to an earlier session epoch. Create a new descriptor after resetting history.",
-                source: source(), watermark: prefix.watermark))
+            let message = isEpochBound
+                ? "Verification belongs to an earlier type-level mock scope. Create a new scope after resetting history."
+                : "Verification belongs to an earlier session epoch. Create a new descriptor after resetting history."
+            journal.report(MockIssue(kind: .verificationFailed, endpoint: journal.endpoint,
+                                     message: message, source: source(), watermark: prefix.watermark))
             return VerificationResult(passed: false, observed: 0, watermark: prefix.watermark,
                                       invocationIDs: [], epoch: epoch, isStale: true)
         }
