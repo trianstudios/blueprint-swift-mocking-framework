@@ -285,14 +285,32 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         return revision
     }
 
-    private func swapConfiguration(_ configuration: Configuration) -> (RuleRevision, Configuration) {
-        state.withLock {
-            let retired = $0.configuration
-            let revision = RuleRevision(rawValue: $0.revision.rawValue + 1)
-            $0.configuration = configuration
-            $0.revision = revision
-            return (revision, retired)
+    func replaceConfigurationWhenQuiescent(_ configuration: Configuration, within timeout: Duration)
+        async throws -> RuleRevision {
+        try await scope.session.replaceWhenQuiescent(within: timeout, expectedEpoch: scope.expectedEpoch) {
+            clock, deadline in
+            self.state.withLock { state -> (RuleRevision, any Sendable)? in
+                // Both admission and endpoint locks are held. A continuous deadline
+                // can elapse while this request waits to acquire the endpoint lock.
+                guard clock.elapsed < deadline else { return nil }
+                let (revision, retired) = Self.swapConfiguration(configuration, in: &state)
+                return (revision, retired)
+            }
         }
+    }
+
+    private func swapConfiguration(_ configuration: Configuration) -> (RuleRevision, Configuration) {
+        state.withLock { Self.swapConfiguration(configuration, in: &$0) }
+    }
+
+    private static func swapConfiguration(
+        _ configuration: Configuration, in state: inout State
+    ) -> (RuleRevision, Configuration) {
+        let retired = state.configuration
+        let revision = RuleRevision(rawValue: state.revision.rawValue + 1)
+        state.configuration = configuration
+        state.revision = revision
+        return (revision, retired)
     }
 
     func update(_ admission: JournalAdmission, replacing input: Input) {
@@ -884,6 +902,12 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         try journal.replaceConfigurationIfQuiescent(configuration.publish(for: sessionID))
     }
 
+    func replaceConfigurationWhenQuiescent(
+        _ configuration: AsyncThrowingConfiguration<Input, Output, Failure>, within timeout: Duration
+    ) async throws -> RuleRevision {
+        try await journal.replaceConfigurationWhenQuiescent(configuration.publish(for: sessionID), within: timeout)
+    }
+
     func snapshot() -> JournalSnapshot<History> { journal.snapshot() }
 
     func prepareArgumentStability<Result: Sendable>(
@@ -1004,6 +1028,18 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
     public func replaceConfigurationIfQuiescent(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>)
         throws(QuiescentConfigurationError) -> RuleRevision {
         try dispatch.replaceConfigurationIfQuiescent(configuration)
+    }
+
+    /// Installs the plan at a zero-active session boundary strictly before the timeout
+    /// on the session clock. The published revision is visible to the next admission.
+    /// A timeout must be positive. A closed or stale scope, deadline, or cancellation
+    /// ends an uncommitted request. An installed revision remains the result after cancellation.
+    /// Call from outside any invocation whose completion this request will await.
+    @discardableResult
+    public func replaceConfigurationWhenQuiescent(
+        _ configuration: AsyncThrowingConfiguration<Input, Output, Failure>, within timeout: Duration
+    ) async throws -> RuleRevision {
+        try await dispatch.replaceConfigurationWhenQuiescent(configuration, within: timeout)
     }
 
     /// Supplies a typed handle for a structural forwarding link.

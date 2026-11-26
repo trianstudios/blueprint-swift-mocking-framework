@@ -10,6 +10,12 @@ public enum QuiescentConfigurationError: Error, Equatable, Sendable {
     case staleScope
 }
 
+/// The deadline-based configuration replacement could not publish in its time window.
+public enum QuiescentConfigurationWaitError: Error, Equatable, Sendable {
+    case invalidDuration
+    case deadlineExceeded
+}
+
 typealias SessionQuiescenceContinuation = AsyncStream<SessionSnapshot>.Continuation
 
 enum SessionQuiescenceRegistration: Sendable {
@@ -20,8 +26,10 @@ enum SessionQuiescenceRegistration: Sendable {
 struct SessionQuiescenceDelivery: Sendable {
     let snapshot: SessionSnapshot
     let waiters: [SessionQuiescenceContinuation]
+    let replacements: [QuiescentReplacementDelivery]
 
     func publish() {
+        for replacement in replacements { replacement.publish() }
         for waiter in waiters {
             waiter.yield(snapshot)
             waiter.finish()

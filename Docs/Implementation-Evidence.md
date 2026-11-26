@@ -105,3 +105,11 @@ On macOS, `FailureReporter.flushXCTestOrphans(_:in:)` claims the neutral buffer 
 The native SwiftPM fixture waits for A’s `testCaseDidFinish` observation, releases A’s callback from B, and verifies both case runs finish with zero failures. The suite records the orphan and SwiftPM exits 1. A deliberate control replays the same captured issue through the ambient adapter while B is active. The control records a B case failure and no suite-owned issue. A separate enabled fixture verifies overflow and a repeated flush.
 
 The checked profile is Apple Swift 6.4 on arm64 macOS 27.0.1. Exercising an active suite on other native XCTest profiles and a portable transport after the runner exits remains outstanding.
+
+## Deadline-based quiescent replacement
+
+`AsyncThrowingEndpoint.replaceConfigurationWhenQuiescent(_:within:)` prepares the replacement before entering the session gate. A registered plan publishes at a zero-active boundary before the next admission. The exclusive deadline is checked under the session and endpoint locks, and uses the session’s continuous or manual clock.
+
+The tests cover expiry exactly at the deadline, cancellation before publication, publication that wins a cancellation race, FIFO waiting, and reset with an active call in a detached epoch. The external SwiftPM demo uses the public API. The iOS 17.5 smoke probe exercises it through the NSLock fallback.
+
+Managed teardown and detection of a replacement awaited by its own active invocation remain open. Callers must request a replacement outside the work it awaits. Full native certification remains outstanding.

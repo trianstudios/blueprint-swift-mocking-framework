@@ -187,10 +187,11 @@ public final class MockSession: Sendable {
     /// Moves a manual session clock forward without adding an event. Observers are
     /// notified after the new clock reading is published.
     public func advanceClock(by duration: Duration) throws(SessionClockError) {
-        let wake = try state.withLock { (state: inout State) throws(SessionClockError) in
+        let (wake, replacements) = try state.withLock { (state: inout State) throws(SessionClockError) in
             try state.advanceClock(by: duration)
-            return state.observationWake()
+            return (state.observationWake(), state.resolveQuiescentReplacements(publishAtIdle: false))
         }
+        for replacement in replacements { replacement.publish() }
         wake?.publish()
     }
 
@@ -212,10 +213,12 @@ public final class MockSession: Sendable {
     @discardableResult
     public func resetHistory(_ mode: SessionResetMode = .requireQuiescence)
         throws(SessionResetError) -> SessionEpoch {
-        let (retirement, wake) = try state.withLock { (state: inout State) throws(SessionResetError) in
+        let (retirement, wake, replacements) = try state.withLock {
+            (state: inout State) throws(SessionResetError) in
             let retirement = try state.resetHistory(mode)
-            return (retirement, state.closeObservations())
+            return (retirement, state.closeObservations(), state.resolveQuiescentReplacements(publishAtIdle: false))
         }
+        for replacement in replacements { replacement.publish() }
         wake?.publish()
         // User destructors and last-owner journal destruction may reenter this session.
         withExtendedLifetime(retirement) {}
@@ -268,12 +271,15 @@ public final class MockSession: Sendable {
         private var journals: [WeakSessionJournal] = []
         private var nextQuiescenceWaiter: UInt64 = 0
         private var quiescenceWaiters: [UInt64: SessionQuiescenceContinuation] = [:]
+        private var quiescentReplacements: [QuiescentReplacement] = []
         private var nextObservationID: UInt64 = 0
         private var observations: [UInt64: SessionObservationContinuation] = [:]
 
         var observationCount: Int { observations.count }
 
         var quiescenceWaiterCount: Int { quiescenceWaiters.count }
+
+        var quiescentReplacementCount: Int { quiescentReplacements.count }
 
         fileprivate init(sessionID: SessionID, clock: SessionClockState) {
             self.clock = clock
@@ -412,6 +418,57 @@ public final class MockSession: Sendable {
             quiescenceWaiters.removeValue(forKey: id)
         }
 
+        mutating func registerQuiescentReplacement(
+            token: QuiescentReplacementToken, timeout: Duration, expectedEpoch: SessionEpoch?,
+            continuation: CheckedContinuation<QuiescentReplacementOutcome, Never>,
+            commit: @escaping QuiescentConfigurationCommit
+        ) -> QuiescentReplacementRegistration {
+            let now = clock.elapsed
+            let request = QuiescentReplacement(token: token, deadline: now + timeout, expectedEpoch: expectedEpoch,
+                                               continuation: continuation, commit: commit)
+            if Task.isCancelled { return .settled(request.settle(.cancelled)) }
+            if let outcome = replacementFailure(request, at: now) { return .settled(request.settle(outcome)) }
+            if active.isEmpty { return .settled(request.publishConfiguration(using: clock)) }
+
+            quiescentReplacements.append(request)
+            return .waiting(until: clock.continuousInstant(at: request.deadline))
+        }
+
+        mutating func cancelQuiescentReplacement(
+            _ token: QuiescentReplacementToken
+        ) -> QuiescentReplacementDelivery? {
+            guard let index = quiescentReplacements.firstIndex(where: { $0.token === token }) else { return nil }
+            return quiescentReplacements.remove(at: index).settle(.cancelled)
+        }
+
+        private func replacementFailure(
+            _ request: QuiescentReplacement, at elapsed: Duration
+        ) -> QuiescentReplacementOutcome? {
+            if let expected = request.expectedEpoch, expected != epoch { return .invalidated(.staleScope) }
+            if isFinished { return .invalidated(.finishedSession) }
+            return elapsed >= request.deadline ? .deadlineExceeded : nil
+        }
+
+        mutating func resolveQuiescentReplacements(
+            publishAtIdle: Bool, at elapsed: Duration? = nil
+        ) -> [QuiescentReplacementDelivery] {
+            guard !quiescentReplacements.isEmpty else { return [] }
+            let now = elapsed ?? clock.elapsed
+            var pending: [QuiescentReplacement] = []
+            var deliveries: [QuiescentReplacementDelivery] = []
+            for request in quiescentReplacements {
+                if let outcome = replacementFailure(request, at: now) {
+                    deliveries.append(request.settle(outcome))
+                } else if publishAtIdle {
+                    deliveries.append(request.publishConfiguration(using: clock))
+                } else {
+                    pending.append(request)
+                }
+            }
+            quiescentReplacements = pending
+            return deliveries
+        }
+
         mutating func complete(
             _ invocationID: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil
         ) -> (event: SessionEvent, delivery: SessionQuiescenceDelivery?) {
@@ -428,9 +485,13 @@ public final class MockSession: Sendable {
             histories[admission.epoch]!.activeInvocationCount -= 1
             histories[admission.epoch]!.events.append(event)
 
-            guard active.isEmpty, !quiescenceWaiters.isEmpty else { return (event, nil) }
+            guard active.isEmpty else { return (event, nil) }
+            // Publication is part of the zero-active transaction, before any next admission.
+            let replacements = resolveQuiescentReplacements(publishAtIdle: true, at: event.elapsed)
+            guard !quiescenceWaiters.isEmpty || !replacements.isEmpty else { return (event, nil) }
             let delivery = SessionQuiescenceDelivery(snapshot: snapshot(epoch: epoch)!,
-                                                     waiters: Array(quiescenceWaiters.values))
+                                                     waiters: Array(quiescenceWaiters.values),
+                                                     replacements: replacements)
             quiescenceWaiters.removeAll()
             return (event, delivery)
         }

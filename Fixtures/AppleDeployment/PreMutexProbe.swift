@@ -63,11 +63,17 @@ struct PreMutexProbe {
 
         let replacement = AsyncThrowingStubbing<Int, Int, ProbeFailure>()
         replacement.matching(.any).willReturn(100)
-        let revision = try endpoint.replaceConfigurationIfQuiescent(replacement.finish())
+        let replacementPlan = replacement.finish()
+        let revision = try endpoint.replaceConfigurationIfQuiescent(replacementPlan)
         let updated = try await endpoint.invoke(5)
         precondition(revision.rawValue == 1 && updated == 100)
         precondition(endpoint.invocations.map(\.configurationRevision.rawValue) == [0, 0, 1])
         print("PASS RUN-035 quiescent replacement on pre-Mutex iOS")
+        let awaited = try await endpoint.replaceConfigurationWhenQuiescent(replacementPlan, within: .seconds(5))
+        let latest = try await endpoint.invoke(5)
+        precondition(awaited.rawValue == 2 && latest == 100)
+        precondition(endpoint.invocations.last?.configurationRevision == awaited)
+        print("PASS RUN-035 deadline-based replacement on pre-Mutex iOS")
 
         let local = LocalValue()
         let actorStubs = MainActorAsyncThrowingStubbing<LocalValue, LocalValue, ProbeFailure>()

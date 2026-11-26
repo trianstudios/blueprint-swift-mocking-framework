@@ -52,4 +52,9 @@ func verifyQuiescentConfiguration(reporter: FailureReporter) async throws {
     precondition(replacement.rawValue == 2 && answer == 3)
     precondition(endpoint.invocations.map(\.configurationRevision.rawValue) == [3])
     print("PASS: RUN035 retired configuration reentered both locks and published the next revision")
+    let deadlineRevision = try await endpoint.replaceConfigurationWhenQuiescent(returning(4), within: .seconds(5))
+    let latest = try await endpoint.invoke(5)
+    precondition(deadlineRevision.rawValue == 4 && latest == 4)
+    precondition(endpoint.invocations.map(\.configurationRevision.rawValue) == [3, 4])
+    print("PASS: RUN035 installed an awaited configuration through the public SwiftPM product")
 }

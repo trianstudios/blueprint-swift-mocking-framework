@@ -108,6 +108,8 @@ Await `session.waitForQuiescence(until: deadline, clock: clock)` to observe a sn
 
 Use `try endpoint.replaceConfigurationIfQuiescent(plan)` on a direct `AsyncThrowingEndpoint` when replacing its stubs requires an idle session. The idle check and publication are atomic. The check includes active calls from earlier epochs. It throws `QuiescentConfigurationError` for active calls, a finished session, or a stale epoch-bound scope.
 
+Use `try await endpoint.replaceConfigurationWhenQuiescent(plan, within: .seconds(2))` to let existing calls finish. It publishes before the next admission at an eligible idle boundary. The deadline uses the session clock and is exclusive. A timeout or cancellation before publication leaves the current plan intact. Request the update outside calls the update needs to drain.
+
 After your tasks have finished, call `try session.finishIfQuiescent()` to close admission and preserve the final timeline. Active calls cause a typed error. A later mock call reports through its original endpoint reporter and uses the endpoint's legal fallback, error mapping or termination behavior. It leaves final history unchanged. This operation does not join application tasks.
 
 Share an `OrphanFailureBuffer` with `MockSession(orphanFailures: buffer)` to collect rejected calls from closed sessions. In an active Swift Testing run, import `BlueprintMockingTesting` and call `await FailureReporter.flushSwiftTestingOrphans(buffer)`. The flush reports the batch at run level and includes original session and source information. Join known producers before the final flush. Custom harnesses can claim a batch with `buffer.drain()` and use its dropped count when determining the run result.

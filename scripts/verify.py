@@ -605,7 +605,8 @@ def main():
                   r"PASS: XCTest routes buffered orphan failures to the suite"])
     run("quiescent-configuration-retirement", [
         modules / "consumer-demo", "--quiescent-configuration"], timeout=20,
-        patterns=[r"PASS: RUN035 retired configuration reentered both locks and published the next revision"])
+        patterns=[r"PASS: RUN035 retired configuration reentered both locks and published the next revision",
+                  r"PASS: RUN035 installed an awaited configuration through the public SwiftPM product"])
     fatal_signal = {"arm64": signal.SIGTRAP, "x86_64": signal.SIGILL}[platform.machine()]
 
     def run_fatal(name, flag, message, *, issue_prefix=r"^MOCK ISSUE: "):
