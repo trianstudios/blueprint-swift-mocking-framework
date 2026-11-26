@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """One entry point for the supported local prototype profile; no network dependencies."""
-import csv
 import hashlib
 import json
 import os
@@ -11,6 +10,7 @@ import signal
 import subprocess
 import sys
 
+from check_release import read_registry
 from fatal_child import check_fatal_child
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -109,11 +109,9 @@ def main():
                    env=swift_environment | (extra_environment or {}), **expectations)
 
     matrix = ROOT / "Docs/Acceptance-Status.csv"
-    with matrix.open(encoding="utf-8") as roadmap:
-        rows = list(csv.DictReader(roadmap))
-    ids = [row["Feature ID"] for row in rows]
-    if len(ids) < 125 or len(ids) != len(set(ids)):
-        raise ValueError("The acceptance roadmap must retain the original 125 unique contracts")
+    rows, registry_errors = read_registry(matrix)
+    if registry_errors:
+        raise ValueError("Invalid acceptance matrix:\n" + "\n".join(registry_errors))
     source = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDomain/UserRepository.swift"
     generated = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/UserRepositoryMock.swift"
     generation_environment = swift_environment | {
@@ -652,12 +650,27 @@ def main():
     runtime_bin = Path(run_swift("runtime-only-bin-path", [
         "build", "--package-path", "Fixtures/RuntimeOnly", "--show-bin-path"]).strip())
     linkage = run("runtime-only-linkage", ["otool", "-L", runtime_bin / "RuntimeOnly"])
-    assert not any(name in linkage for name in ["SwiftSyntax", "SwiftParser", "Testing.framework", "XCTest"])
+    excluded_libraries = ("SwiftSyntax", "SwiftParser", "SourceKit", "Testing.framework", "XCTest")
+    assert not any(name in linkage for name in excluded_libraries)
     dependencies = json.loads(run_swift("runtime-dependencies", ["package", "show-dependencies", "--format", "json"]))
     assert dependencies.get("dependencies") == []
+    runtime_consumer = json.loads(run_swift("runtime-only-consumer-dependencies", [
+        "package", "--package-path", "Fixtures/RuntimeOnly", "show-dependencies", "--format", "json"]))
+    runtime_dependency, = runtime_consumer["dependencies"]
+    assert runtime_dependency["name"] == "BluepringMockingFramework"
+    assert runtime_dependency["dependencies"] == []
     runtime_sources = list((ROOT / "Sources/BlueprintMocking").glob("*.swift"))
-    assert all("import Testing" not in p.read_text() and "import XCTest" not in p.read_text()
-               and "import SwiftSyntax" not in p.read_text() for p in runtime_sources)
+    excluded_imports = ("SwiftSyntax", "SwiftParser", "SourceKit", "Testing", "XCTest")
+    assert all(not any(f"import {module}" in p.read_text() for module in excluded_imports) for p in runtime_sources)
+
+    check_swiftpm_plugin = os.environ.get("BLUEPRINT_VERIFY_SWIFTPM_PLUGIN") == "1"
+    if check_swiftpm_plugin:
+        run("swiftpm-build-plugin-consumer", [
+            sys.executable, "Fixtures/PluginConsumer/verify.py", "--swift", swift,
+            "--evidence-dir", EVIDENCE, "--cache-path", ROOT / ".build/dx004-swiftpm-cache",
+            "--jobs", "4",
+        ], env=swift_environment, timeout=900,
+            patterns=[r"PASS: DX004 SwiftPM plugin clean build, regeneration, and incremental stability"])
     source_after = checkout_state()
     exact_revision = (
         source_before["revision"]
@@ -679,6 +692,7 @@ def main():
         "architecture": platform.machine(), "deploymentTarget": f"macOS {deployment_target}",
         "defaultIsolation": "compiler default (nonisolated); no upcoming feature flags",
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
+        "swiftPMBuildPluginVerified": check_swiftpm_plugin,
         "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
         "mainActorGeneratedSHA256": hashlib.sha256(actor_baseline).hexdigest(),
         "effectsGeneratedSHA256": hashlib.sha256(effect_generated.read_bytes()).hexdigest(),

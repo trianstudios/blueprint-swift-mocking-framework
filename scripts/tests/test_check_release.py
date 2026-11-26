@@ -59,7 +59,7 @@ class ReleaseCheckTests(unittest.TestCase):
     def prepare_claim(self, *, gate=None, result=None, manifest_digest=None, profile=None):
         row = self.rows[0]
         row["Implementation status"] = "Complete"
-        row["Implementation references"] = "Tooling/GenerateMocks.swift"
+        row["Implementation references"] = "Packages/Tooling/Sources/BlueprintMockingCLI/main.swift"
         row["Evidence checks"] = "consumer-tests"
         gate = gate if gate is not None else row["Acceptance gate"]
         profile = profile if profile is not None else PROFILE
@@ -114,7 +114,7 @@ class ReleaseCheckTests(unittest.TestCase):
 
     def test_completed_claim_requires_evidence_and_profiles(self):
         self.rows[0]["Implementation status"] = "Complete"
-        self.rows[0]["Implementation references"] = "Tooling/GenerateMocks.swift"
+        self.rows[0]["Implementation references"] = "Packages/Tooling/Sources/BlueprintMockingCLI/main.swift"
         self.rows[0]["Evidence checks"] = "consumer-tests"
         exit_code, result = self.run_check()
         self.assertEqual(exit_code, 2)

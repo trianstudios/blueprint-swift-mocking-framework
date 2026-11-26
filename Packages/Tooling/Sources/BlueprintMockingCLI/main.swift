@@ -231,10 +231,14 @@ struct Member {
 
 func generate(
     input: String, module: String, selected: String, projections: [String], variadicForwarding: [String],
-    subscriptSpecializations: [String], spy: Bool
+    subscriptSpecializations: [String], spy: Bool, parsedTree: SourceFileSyntax? = nil
 ) throws -> String {
-    let source = try String(contentsOfFile: input, encoding: .utf8)
-    let tree = Parser.parse(source: source)
+    let tree: SourceFileSyntax
+    if let parsedTree {
+        tree = parsedTree
+    } else {
+        tree = Parser.parse(source: try String(contentsOfFile: input, encoding: .utf8))
+    }
     let converter = SourceLocationConverter(fileName: input, tree: tree)
     func reject(_ node: some SyntaxProtocol, _ message: String) throws -> Never {
         let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
@@ -430,15 +434,23 @@ func generate(
         }
     }
 
+    func accessorModifiers(_ accessor: AccessorDeclSyntax) -> [String] {
+        // SwiftSyntax 600 stores a single modifier; newer parsers use a list.
+        accessor.children(viewMode: .sourceAccurate).flatMap { child -> [String] in
+            if let modifier = child.as(DeclModifierSyntax.self) { return [modifier.name.text] }
+            return child.as(DeclModifierListSyntax.self)?.map(\.name.text) ?? []
+        }
+    }
+
     func isNonmutatingSetter(_ accessor: AccessorDeclSyntax) -> Bool {
-        accessor.accessorSpecifier.text == "set" && accessor.modifiers.map(\.name.text) == ["nonmutating"]
+        accessor.accessorSpecifier.text == "set" && accessorModifiers(accessor) == ["nonmutating"]
     }
 
     func getterAndSetter(_ accessors: AccessorDeclListSyntax, at node: some SyntaxProtocol)
         throws -> (AccessorDeclSyntax, AccessorDeclSyntax?) {
         let setter = accessors.first(where: { $0.accessorSpecifier.text == "set" })
         guard accessors.allSatisfy({ $0.body == nil && $0.attributes.isEmpty && $0.parameters == nil
-                                     && ($0.modifiers.isEmpty || isNonmutatingSetter($0)) }),
+                                     && (accessorModifiers($0).isEmpty || isNonmutatingSetter($0)) }),
               let getter = accessors.first(where: { $0.accessorSpecifier.text == "get" }),
               accessors.count == (setter == nil ? 1 : 2) else {
             try reject(node, "Use an unmodified getter and an optional unmodified or nonmutating setter")
@@ -483,8 +495,8 @@ func generate(
         guard isolation == .sendable, setter == nil, !effect.isAsync, effect.failure == nil,
               decl.genericWhereClause == nil,
               let genericClause = decl.genericParameterClause, genericClause.parameters.count == 1,
-              let key = genericClause.parameters.first, key.specifier == nil,
-              key.attributes.isEmpty, simple(key.name.text),
+              let key = genericClause.parameters.first, key.attributes.isEmpty,
+              key.firstToken(viewMode: .sourceAccurate)?.id == key.name.id, simple(key.name.text),
               indices.count == 1, let index = indices.first,
               !index.isVariadic, index.type == key.name.text else {
             try reject(decl, "Generic specialization requires a synchronous read-only Sendable instance subscript with one generic index and inline constraints")
@@ -1170,8 +1182,12 @@ func generate(
     return output + "}\n"
 }
 
-do {
-    let arguments = Array(CommandLine.arguments.dropFirst())
+private func run(_ arguments: [String]) throws {
+    if arguments.first == "generate" && arguments.dropFirst().first == "--config" {
+        try generateBuildOutputs(arguments: arguments.dropFirst())
+        return
+    }
+    let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
     let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy]")
     guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
           arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
@@ -1202,6 +1218,10 @@ do {
                               subscriptSpecializations: subscriptSpecializations, spy: spy)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.write(toFile: arguments[7], atomically: true, encoding: .utf8)
+}
+
+do {
+    try run(Array(CommandLine.arguments.dropFirst()))
 } catch {
     FileHandle.standardError.write(Data("\(error)\n".utf8))
     exit(1)

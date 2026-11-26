@@ -20,6 +20,41 @@ swift test --package-path Fixtures/ProtocolConsumer
 swift run --package-path Fixtures/ProtocolConsumer consumer-demo
 ```
 
+### SwiftPM build-tool generation
+
+To build mocks from source in a SwiftPM test or test-support target, add the runtime and tooling packages from a local checkout of this repository. Set the target’s dependencies to include the protocol’s Swift source target and the runtime product. Attach `BlueprintMockingBuildPlugin` from the tooling package.
+
+```swift
+.package(name: "BluepringMockingFramework", path: "../blueprint-swift-mocking"),
+.package(name: "BlueprintMockingTools", path: "../blueprint-swift-mocking/Packages/Tooling"),
+```
+
+```swift
+.testTarget(
+    name: "AppTests",
+    dependencies: [
+        "AppDomain",
+        .product(name: "BluepringMockingFramework", package: "BluepringMockingFramework"),
+    ],
+    plugins: [.plugin(name: "BlueprintMockingBuildPlugin", package: "BlueprintMockingTools")]
+)
+```
+
+Create `blueprint-mocking.json` at the consumer package root. Use the Swift module name and select top-level public protocols that the generator supports.
+
+```json
+{
+  "schemaVersion": 1,
+  "selections": [{"module": "AppDomain", "type": "UserRepository", "kind": "protocol"}]
+}
+```
+
+An ordinary `swift test` or `swift build` builds the generator and compiles the generated mock with the attached target. Source membership comes from direct Swift targets in the consumer package. The current profile emits a single Swift shard and its index in SwiftPM’s plugin work directory.
+
+Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsumer PluginProbe`. Use `BLUEPRINT_VERIFY_SWIFTPM_PLUGIN=1 python3 scripts/verify.py` for clean-build, incremental and rejection checks. The opt-in tooling package resolves pinned SwiftSyntax 600.0.1. Local checkout installation is verified on Apple Swift 6.4. Separate remote tooling distribution and other native profiles remain open.
+
+### Standalone generation
+
 The generated source is included so the consumer can build directly. Regenerate it with:
 
 ```sh

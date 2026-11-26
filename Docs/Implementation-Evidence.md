@@ -9,7 +9,7 @@ The target is Blueprint Mocking Full Product Architecture edition 1.0 (6 October
 | Package.swift | Runtime-only dependency graph; optional Swift Testing reporting product |
 | Sources/BlueprintMocking/Runtime.swift | Typed sync and async-throwing endpoints, immutable setup, checked Sendable journals, matchers, count verification, neutral issues |
 | Sources/BlueprintMockingTesting/Reporter.swift | Swift Testing issue reporting using the verification caller's source location |
-| Tooling/GenerateMocks.swift | SwiftParser frontend, restricted validated declarations, sorted endpoint identities, witness/setup/verification emission |
+| Packages/Tooling/Sources/BlueprintMockingCLI/main.swift | SwiftParser frontend, restricted validated declarations, sorted endpoint identities, witness/setup/verification emission |
 | scripts/generate.sh | Explicit SDK/target host compilation using toolchain-bundled parser libraries |
 | Fixtures/ProtocolConsumer | Separate production module, generated doubles, executable service example, overload/typed-error/MainActor-consumer tests |
 | Fixtures/RuntimeOnly | Runtime consumer with no generator or runner product dependency |
@@ -113,3 +113,13 @@ The checked profile is Apple Swift 6.4 on arm64 macOS 27.0.1. Exercising an acti
 The tests cover expiry exactly at the deadline, cancellation before publication, publication that wins a cancellation race, FIFO waiting, and reset with an active call in a detached epoch. The external SwiftPM demo uses the public API. The iOS 17.5 smoke probe exercises it through the NSLock fallback.
 
 Managed teardown and detection of a replacement awaited by its own active invocation remain open. Callers must request a replacement outside the work it awaits. Full native certification remains outstanding.
+
+## Source-built SwiftPM build plugin
+
+DX-004 now has local evidence from an independent consumer. The root package supplies the runtime. The separate `Packages/Tooling` package supplies `blueprint-mocking` and `BlueprintMockingBuildPlugin` and pins SwiftSyntax 600.0.1. The standalone script and the package executable compile the same generator source.
+
+The plugin derives input membership from direct Swift targets in the consumer package. It declares the configuration and source files as build inputs and uses one ordinary build command. The command emits one Swift shard and a stable index in SwiftPM’s plugin work directory. Input membership is sorted and included in the command. Unrelated source membership changes update the index without rewriting the mock shard. The index references the shard’s content marker.
+
+The clean fixture compiles and runs a typed generated mock, proves an unchanged repeat skips generation, and checks addition, deletion, edits and renames. Unsupported syntax and a missing selected protocol stop the build before any output changes. The runtime-only consumer still resolves a single package with no transitive dependencies and links without parser or runner libraries.
+
+The checked profile is Apple Swift 6.4 on arm64 macOS. Separately hosted tooling distribution, complete compiler context, configurable sharding, prepared offline and other native profiles remain open.

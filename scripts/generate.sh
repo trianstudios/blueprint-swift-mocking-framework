@@ -8,6 +8,8 @@ GENERATOR_HOST_TARGET="15.0"
 HOST="$(dirname "$SWIFTC")/../lib/swift/host"
 mkdir -p "$ROOT/.build/prototype-tooling"
 "$SWIFTC" -target "$(uname -m)-apple-macos$GENERATOR_HOST_TARGET" -sdk "$SDK_PATH" -swift-version 6 -I "$HOST" -L "$HOST" -lSwiftSyntax -lSwiftParser \
-  -Xlinker -rpath -Xlinker "$HOST" "$ROOT/Tooling/GenerateMocks.swift" \
+  -Xlinker -rpath -Xlinker "$HOST" \
+  "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/main.swift" \
+  "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/PluginGeneration.swift" \
   -o "$ROOT/.build/prototype-tooling/generate"
 "$ROOT/.build/prototype-tooling/generate" "$@"

@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "selections": [
+    {"module": "PluginDomain", "type": "Lookup", "kind": "protocol"}
+  ]
+}

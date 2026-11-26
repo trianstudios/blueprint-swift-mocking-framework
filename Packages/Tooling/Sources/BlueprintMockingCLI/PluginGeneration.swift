@@ -1,0 +1,143 @@
+import Foundation
+import SwiftParser
+import SwiftSyntax
+
+private struct BuildConfiguration: Decodable {
+    struct Selection: Decodable {
+        let module: String
+        let type: String
+        let kind: String
+    }
+
+    let schemaVersion: Int
+    let selections: [Selection]
+}
+
+private func invalid(_ message: String) -> GenerationError {
+    GenerationError(description: "error: BPM002: \(message)")
+}
+
+private func loadConfiguration(_ url: URL) throws -> BuildConfiguration {
+    let data = try Data(contentsOf: url)
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+          Set(object.keys) == ["schemaVersion", "selections"],
+          let selections = object["selections"] as? [[String: Any]],
+          selections.allSatisfy({ Set($0.keys) == ["module", "type", "kind"] }) else {
+        throw invalid("Expected schemaVersion and selections with module, type and kind in \(url.lastPathComponent)")
+    }
+    let configuration = try JSONDecoder().decode(BuildConfiguration.self, from: data)
+    guard configuration.schemaVersion == 1 else {
+        throw invalid("Unsupported generation configuration schema \(configuration.schemaVersion)")
+    }
+    guard configuration.selections.allSatisfy({ $0.kind == "protocol" }) else {
+        throw invalid("SwiftPM source generation supports protocol selections")
+    }
+    let types = Set(configuration.selections.map(\.type))
+    guard types.count == configuration.selections.count,
+          types.isDisjoint(with: types.map { $0 + "Mock" }) else {
+        throw invalid("Selected protocols would produce conflicting generated names")
+    }
+    return configuration
+}
+
+private struct BuildGenerationRequest {
+    let config: URL
+    let output: URL
+    let inputSetID: String
+    let sources: [String: [String]]
+
+    init(arguments: ArraySlice<String>) throws {
+        let usage = invalid("usage: blueprint-mocking generate --config PATH --output DIRECTORY "
+                            + "--input-set-id HEX [--source MODULE FILE]...")
+        var arguments = arguments
+        guard arguments.popFirst() == "--config", let configPath = arguments.popFirst(),
+              arguments.popFirst() == "--output", let outputPath = arguments.popFirst(),
+              arguments.popFirst() == "--input-set-id", let inputSetID = arguments.popFirst(),
+              (1...16).contains(inputSetID.count), inputSetID.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) })
+        else { throw usage }
+
+        var sources: [String: [String]] = [:]
+        var seen: Set<String> = []
+        while let option = arguments.popFirst() {
+            guard option == "--source", let module = arguments.popFirst(), let path = arguments.popFirst() else {
+                throw usage
+            }
+            guard seen.insert(path).inserted else { throw invalid("Duplicate Swift source input \(path)") }
+            sources[module, default: []].append(path)
+        }
+        self.config = URL(fileURLWithPath: configPath)
+        self.output = URL(fileURLWithPath: outputPath, isDirectory: true)
+        self.inputSetID = inputSetID
+        self.sources = sources
+    }
+}
+
+private func fingerprint(_ contents: String) -> String {
+    // Stable identity for the generated index. Artifact verification uses other digests.
+    let hash = contents.utf8.reduce(UInt64(0xcbf29ce484222325)) { ($0 ^ UInt64($1)) &* 0x100000001b3 }
+    return String(hash, radix: 16)
+}
+
+private func writeIfChanged(_ data: Data, to url: URL) throws {
+    if (try? Data(contentsOf: url)) != data {
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+func generateBuildOutputs(arguments: ArraySlice<String>) throws {
+    let request = try BuildGenerationRequest(arguments: arguments)
+    let configuration = try loadConfiguration(request.config)
+    let selections = configuration.selections.sorted { ($0.module, $0.type) < ($1.module, $1.type) }
+    var generated: [String] = []
+
+    for module in Set(selections.map(\.module)).sorted() {
+        let moduleSelections = selections.filter { $0.module == module }
+        let selectedNames = Set(moduleSelections.map(\.type))
+        var declarations: [String: [(path: String, tree: SourceFileSyntax)]] = [:]
+        for path in (request.sources[module] ?? []).sorted() {
+            let tree = Parser.parse(source: try String(contentsOfFile: path, encoding: .utf8))
+            guard !tree.hasError else {
+                throw GenerationError(description: "\(path):1:1: error: BPM001: Malformed Swift source")
+            }
+            for item in tree.statements {
+                if let declaration = item.item.as(ProtocolDeclSyntax.self), selectedNames.contains(declaration.name.text) {
+                    declarations[declaration.name.text, default: []].append((path, tree))
+                }
+            }
+        }
+
+        for selection in moduleSelections {
+            guard let candidates = declarations[selection.type], candidates.count == 1,
+                  let declaration = candidates.first else {
+                throw GenerationError(description: "\(request.config.path):1:1: error: BPM001: "
+                    + "Expected one top-level protocol \(module).\(selection.type) in the SwiftPM source inputs")
+            }
+            generated.append(try generate(
+                input: declaration.path, module: module, selected: selection.type, projections: [],
+                variadicForwarding: [], subscriptSpecializations: [], spy: false, parsedTree: declaration.tree
+            ))
+        }
+    }
+
+    let body = generated.joined(separator: "\n")
+    let marker = "BlueprintMockingShard_" + fingerprint(body)
+    let header = "// Generated by Blueprint Mocking. Do not edit.\n"
+    let shard = header + body + "\nenum \(marker) {}\n"
+    let index = header + "// SwiftPM input set: \(request.inputSetID)\n"
+        + "enum BlueprintMockingGeneratedIndex { typealias Shard = \(marker) }\n"
+    let outputs = [
+        (request.output.appendingPathComponent("BlueprintMocks.generated.swift"), shard),
+        (request.output.appendingPathComponent("BlueprintMockingIndex.generated.swift"), index),
+    ]
+    for (url, _) in outputs {
+        guard (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            throw invalid("Generated output is a symbolic link: \(url.lastPathComponent)")
+        }
+    }
+    // Complete validation before writing. Publish the index last so a mixed pair fails to compile.
+    try FileManager.default.createDirectory(at: request.output, withIntermediateDirectories: true)
+    for (url, text) in outputs {
+        try writeIfChanged(Data(text.utf8), to: url)
+    }
+    print("Blueprint Mocking: generated \(generated.count) protocol mock(s)")
+}
