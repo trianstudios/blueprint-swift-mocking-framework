@@ -54,3 +54,44 @@ import ConsumerDoubles
     #expect(mock.verify.greeting(for: .any).wasCalled(.once).passed)
     #expect(mock.verify.greeting(.any).wasCalled(.once).passed)
 }
+
+private actor SequenceAnswer {
+    private var calls = 0
+
+    func name(for id: String) -> String {
+        calls += 1
+        return "User \(id), response \(calls)"
+    }
+}
+
+@Test func RUN012_generatedTypedSequenceRepeatsItsLastAnswerThroughTheService() async throws {
+    let answer = SequenceAnswer()
+    let mock = UserRepositoryMock(failureReporter: .swiftTesting) { stubs in
+        stubs.fetchUser(id: .equal("42")).willSequence(
+            .throwing(.offline),
+            .returning("Cached Ada"),
+            .answering { id async throws(RepositoryError) in
+                await answer.name(for: id)
+            },
+            policy: .repeatLast
+        )
+    }
+    let service = UserService(repository: mock)
+
+    do throws(RepositoryError) {
+        _ = try await service.load(id: "42")
+        Issue.record("Expected the first sequence step to throw RepositoryError.offline")
+    } catch {
+        #expect(error == .offline)
+    }
+    #expect(try await service.load(id: "42") == "Cached Ada")
+    #expect(try await service.load(id: "42") == "User 42, response 1")
+    #expect(try await service.load(id: "42") == "User 42, response 2")
+
+    let admitted = mock.verify.fetchUser(id: .equal("42")).wasCalled(.exactly(4))
+    let thrown = mock.verify.fetchUser(id: .equal("42"), phase: .threw).wasCalled(.once)
+    let returned = mock.verify.fetchUser(id: .equal("42"), phase: .returned).wasCalled(.exactly(3))
+    #expect(admitted.passed && thrown.passed && returned.passed)
+    #expect(thrown.invocationIDs == Array(admitted.invocationIDs.prefix(1)))
+    #expect(returned.invocationIDs == Array(admitted.invocationIDs.dropFirst()))
+}

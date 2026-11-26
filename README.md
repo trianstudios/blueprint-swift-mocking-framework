@@ -54,6 +54,8 @@ The runtime manifest declares macOS 13, iOS 16, tvOS 16, watchOS 9 and visionOS 
 
 Direct users of the checked Sendable `AsyncThrowingEndpoint` can publish a new configuration with `replaceConfiguration(_:)`. Each call keeps the plan and revision it received at admission through completion. The generated mock API still configures each mock during initialization.
 
+Sendable async-throwing stubs support `willSequence(.throwing(.offline), .returning(value), policy: .repeatLast)`. A sequence can also use typed `.answering` steps. The default finite policy reports exhaustion through the endpoint's configured failure behavior. Use `.repeatLast` or `.cycle` to continue after the final step. Each installed revision has its own cursor, and a step stays reserved if its answer throws or is cancelled.
+
 Pass the same `MockSession` to multiple generated Sendable mocks to inspect a shared, ordered timeline with `session.snapshot()`. Each mock keeps its own typed history and has its own identity. A generated Sendable mock creates a private session when none is supplied.
 
 Use `try session.resetHistory()` to clear history once all calls have completed, or `try session.resetHistory(.detachActive)` to start a fresh epoch while old calls finish. Detachment keeps the old epoch's event metadata. Typed arguments are discarded from endpoint history, and old calls do not update the new epoch's counts. Reset keeps configured rules and stored property values. Build a new verification descriptor after reset. An old descriptor fails as stale and does not evaluate its matcher.

@@ -39,7 +39,7 @@ public struct SourceLocation: Sendable, Equatable {
 }
 
 public struct MockIssue: Sendable {
-    public enum Kind: Sendable { case unexpectedCall, verificationFailed }
+    public enum Kind: Sendable { case unexpectedCall, verificationFailed, sequenceExhausted }
     public let kind: Kind
     public let endpoint: EndpointID
     public let message: String
@@ -119,6 +119,11 @@ private protocol VerificationJournal<Input>: Sendable {
     var endpoint: EndpointID { get }
     func snapshot(validating expectedEpoch: SessionEpoch?) -> JournalSnapshot<Input>
     func report(_ issue: MockIssue)
+}
+
+fileprivate enum UnansweredCallReason {
+    case noMatchingStub
+    case exhaustedSequence
 }
 
 typealias Journal<Input: Sendable> = ConfiguredJournal<Input, Void>
@@ -228,9 +233,25 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func reportMissingCall(_ admission: JournalAdmission, phase: CallPhase? = nil, source: SourceLocation) -> MockIssue {
+        reportUnansweredCall(admission, phase: phase, source: source, reason: .noMatchingStub)
+    }
+
+    fileprivate func reportUnansweredCall(
+        _ admission: JournalAdmission, phase: CallPhase? = nil,
+        source: SourceLocation, reason: UnansweredCallReason
+    ) -> MockIssue {
         if let phase { complete(admission, phase: phase) }
-        let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint,
-                              message: "No matching stub for \(endpoint.rawValue)",
+        let kind: MockIssue.Kind
+        let message: String
+        switch reason {
+        case .noMatchingStub:
+            kind = .unexpectedCall
+            message = "No matching stub for \(endpoint.rawValue)"
+        case .exhaustedSequence:
+            kind = .sequenceExhausted
+            message = "Stub answer sequence exhausted for \(endpoint.rawValue)"
+        }
+        let issue = MockIssue(kind: kind, endpoint: endpoint, message: message,
                               source: source, watermark: admission.id)
         report(issue)
         return issue
@@ -393,18 +414,48 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
 private typealias AsyncAnswer<Input, Output, Failure: Error> =
     @Sendable (Input) async -> Result<Output, Failure>
 
-public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    fileprivate let rules: [Rule<Input, AsyncAnswer<Input, Output, Failure>>]
+/// A legal step for a Sendable async endpoint's exact input, result, and thrown error.
+public struct AsyncThrowingSequenceStep<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    fileprivate let answer: AsyncAnswer<Input, Output, Failure>
+
+    public static func returning(_ output: Output) -> Self {
+        Self(answer: { _ in .success(output) })
+    }
+
+    public static func throwing(_ failure: Failure) -> Self {
+        Self(answer: { _ in .failure(failure) })
+    }
+
+    public static func answering(_ body: @escaping @Sendable (Input) async throws(Failure) -> Output) -> Self {
+        Self(answer: { input in
+            do throws(Failure) { return .success(try await body(input)) }
+            catch { return .failure(error) }
+        })
+    }
 }
+
+public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    fileprivate let rules: [Rule<Input, PlannedAnswer<AsyncAnswer<Input, Output, Failure>>>]
+
+    fileprivate func publish() -> PublishedAsyncThrowingConfiguration<Input, Output, Failure> {
+        PublishedAsyncThrowingConfiguration(
+            rules: rules.map { Rule(matcher: $0.matcher, answer: $0.answer.publish()) }
+        )
+    }
+}
+
+private struct PublishedAsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    let rules: [Rule<Input, PublishedAnswer<AsyncAnswer<Input, Output, Failure>>>]
+}
+
 public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Failure: Error> {
-    private var rules: [Rule<Input, AsyncAnswer<Input, Output, Failure>>] = []
+    private var rules: [Rule<Input, PlannedAnswer<AsyncAnswer<Input, Output, Failure>>>] = []
     private var finished = false
     public init() {}
     public func matching(_ matcher: Matcher<Input>) -> AsyncThrowingStub<Input, Output, Failure> {
         AsyncThrowingStub(owner: self, matcher: matcher)
     }
-    fileprivate func add(_ matcher: Matcher<Input>,
-                         _ answer: @escaping AsyncAnswer<Input, Output, Failure>) {
+    fileprivate func add(_ matcher: Matcher<Input>, _ answer: PlannedAnswer<AsyncAnswer<Input, Output, Failure>>) {
         precondition(!finished, "Setup is already published; live reconfiguration is not implemented")
         rules.append(Rule(matcher: matcher, answer: answer))
     }
@@ -417,33 +468,43 @@ public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Fail
 public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Error> {
     fileprivate let owner: AsyncThrowingStubbing<Input, Output, Failure>
     fileprivate let matcher: Matcher<Input>
-    public func willReturn(_ output: Output) { owner.add(matcher) { _ in .success(output) } }
+    public func willReturn(_ output: Output) {
+        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.returning(output).answer))
+    }
     public func willThrow(_ error: Failure) {
-        owner.add(matcher) { _ in .failure(error) }
+        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.throwing(error).answer))
     }
     public func willAnswer(_ answer: @escaping @Sendable (Input) async throws(Failure) -> Output) {
-        owner.add(matcher) { input in
-            do throws(Failure) { return .success(try await answer(input)) }
-            catch { return .failure(error) }
-        }
+        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.answering(answer).answer))
+    }
+
+    /// Reserves one step for each matching call. An exhausted finite sequence
+    /// reports a failure instead of falling through to an earlier rule.
+    public func willSequence(
+        _ first: AsyncThrowingSequenceStep<Input, Output, Failure>,
+        _ remaining: AsyncThrowingSequenceStep<Input, Output, Failure>...,
+        policy: StubSequencePolicy = .finite
+    ) {
+        owner.add(matcher, .sequence([first.answer] + remaining.map(\.answer), policy))
     }
 }
 
 public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    private let journal: ConfiguredJournal<Input, AsyncThrowingConfiguration<Input, Output, Failure>>
+    private let journal: ConfiguredJournal<Input, PublishedAsyncThrowingConfiguration<Input, Output, Failure>>
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
     public init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
                 failureReporter: FailureReporter,
                 scope: MockScope = MockSession().makeMock(),
                 failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
         self.failureMapping = failureMapping
-        self.journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope, configuration: configuration)
+        self.journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
+                                         configuration: configuration.publish())
     }
 
     /// Atomically replaces the plan for subsequent admissions. Existing invocations keep their admitted plan.
     @discardableResult
     public func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {
-        journal.replaceConfiguration(configuration)
+        journal.replaceConfiguration(configuration.publish())
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
@@ -453,8 +514,9 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
             fatalError(issue.message)
         }
         defer { withExtendedLifetime(configuration) {} }
-        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            switch await rule.answer(input) {
+        let winningRule = configuration.rules.reversed().first { $0.matcher.matches(input) }
+        if let answer = winningRule?.answer.reserve() {
+            switch await answer(input) {
             case .success(let result):
                 journal.complete(admission, phase: .returned)
                 return result
@@ -463,13 +525,14 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
                 throw error
             }
         }
+        let reason: UnansweredCallReason = winningRule == nil ? .noMatchingStub : .exhaustedSequence
         if let failureMapping {
-            let issue = journal.reportMissingCall(admission, source: source)
+            let issue = journal.reportUnansweredCall(admission, source: source, reason: reason)
             let error = failureMapping(issue)
             journal.complete(admission, phase: .threw)
             throw error
         }
-        let issue = journal.reportMissingCall(admission, phase: .terminated, source: source)
+        let issue = journal.reportUnansweredCall(admission, phase: .terminated, source: source, reason: reason)
         fatalError(issue.message)
     }
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
