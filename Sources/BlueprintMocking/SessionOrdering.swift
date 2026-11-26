@@ -24,12 +24,14 @@ public enum SessionOrderMode: Sendable {
 public enum SessionOrderResult: Equatable, Sendable {
     case matched([SessionEvent])
     case notMatched
+    /// No match is provable in the retained events, and earlier events were discarded.
+    case historyUnavailable
     /// The selector belongs to another session and cannot be ordered in this snapshot.
     case foreignMock(MockID)
 }
 
 public extension SessionSnapshot {
-    /// Finds the earliest match within this snapshot's epoch and committed event order.
+    /// Finds the earliest provable match in the snapshot's retained events.
     ///
     /// Every selector uses the same phase. An empty selection succeeds with no matched events.
     /// This operation reads metadata only and leaves the history untouched.
@@ -43,13 +45,14 @@ public extension SessionSnapshot {
         }
         guard !selectors.isEmpty else { return .matched([]) }
 
+        let miss: SessionOrderResult = prunedThrough == nil ? .notMatched : .historyUnavailable
         let phaseEvents = events.filter { $0.phase == phase }
-        guard selectors.count <= phaseEvents.count else { return .notMatched }
+        guard selectors.count <= phaseEvents.count else { return miss }
         let matched = switch mode {
         case .relative: matchRelativeOrder(selectors, in: phaseEvents)
         case .strict: matchStrictOrder(selectors, in: phaseEvents)
         }
-        return matched.map(SessionOrderResult.matched) ?? .notMatched
+        return matched.map(SessionOrderResult.matched) ?? miss
     }
 }
 

@@ -47,6 +47,8 @@ public struct SessionSnapshot: Equatable, Sendable {
     public let events: [SessionEvent]
     public let activeInvocationCount: Int
     public let watermark: UInt64
+    /// Highest event ordinal removed from this epoch, or nil when none were removed.
+    public let prunedThrough: UInt64?
     public let isFinished: Bool
 }
 
@@ -146,6 +148,7 @@ public final class MockSession: Sendable {
         private struct EpochHistory: Sendable {
             var events: [SessionEvent] = []
             var activeInvocationCount = 0
+            var prunedThrough: UInt64?
         }
 
         private(set) var epoch: SessionEpoch
@@ -177,8 +180,23 @@ public final class MockSession: Sendable {
             return SessionSnapshot(
                 sessionID: epoch.sessionID, epoch: epoch,
                 events: history.events, activeInvocationCount: history.activeInvocationCount,
-                watermark: lastEventOrdinal, isFinished: isFinished
+                watermark: lastEventOrdinal, prunedThrough: history.prunedThrough, isFinished: isFinished
             )
+        }
+
+        /// Returns true when the retained prefix changed. Call only under the session gate.
+        mutating func discardEvents(through checkpoint: SessionCheckpoint) throws(SessionCheckpointError) -> Bool {
+            try checkpoint.validate(for: epoch)
+            guard !isFinished else { throw .finishedSession }
+            let events = histories[epoch]!.events
+            let firstRetained = events.firstEventIndex(after: checkpoint.watermark)
+            guard firstRetained > events.startIndex else { return false }
+
+            // A checkpoint watermark is session-wide and may refer to an archived epoch.
+            // The last event actually removed is the only evidence of lost history.
+            histories[epoch]!.prunedThrough = events[firstRetained - 1].ordinal
+            histories[epoch]!.events = Array(events[firstRetained...])
+            return true
         }
 
         fileprivate mutating func register(_ journal: any SessionJournalRegistration) {
