@@ -1,0 +1,30 @@
+name: Swift verification on macOS
+
+"on":
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify Swift runtime and generator
+        run: python3 scripts/verify.py
+
+      - name: Test release checks
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+      - name: Report release readiness
+        run: python3 scripts/check_release.py --report-only
+
+      - name: Check for generated source drift
+        run: git diff --exit-code HEAD --
