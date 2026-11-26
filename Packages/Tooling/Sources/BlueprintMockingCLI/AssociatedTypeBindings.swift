@@ -1,12 +1,25 @@
 import Foundation
 import SwiftSyntax
 
+struct AssociatedTypeBinding: Codable {
+    let name: String
+    let type: String
+}
+
+extension AssociatedTypeBinding {
+    init?(argument: String) {
+        let parts = argument.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return nil }
+        self.init(name: String(parts[0]), type: String(parts[1]))
+    }
+}
+
 struct ConcreteAssociatedTypeBindings {
     let types: [String: String]
     private let visibleNames: [SyntaxIdentifier: Set<String>]
 
     init(
-        options: [String],
+        options: [AssociatedTypeBinding],
         root: IndexedProtocol,
         inheritance: ResolvedProtocolInheritance,
         index: ProtocolSourceIndex
@@ -92,12 +105,8 @@ struct ConcreteAssociatedTypeBindings {
 
         var concrete: [String: String] = [:]
         for option in options {
-            let parts = option.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-            guard parts.count == 2 else {
-                try reject(root.declaration, "Use --bind-associated-type 'Name=Type'")
-            }
-            let name = parts[0].trimmingCharacters(in: .whitespaces)
-            let spelling = parts[1].trimmingCharacters(in: .whitespaces)
+            let name = option.name.trimmingCharacters(in: .whitespaces)
+            let spelling = option.type.trimmingCharacters(in: .whitespaces)
             guard Self.isSimple(name), let associated = associatedByName[name] else {
                 try reject(root.declaration, "Unknown associated type '\(name)'")
             }

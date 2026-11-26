@@ -49,6 +49,24 @@ Create `blueprint-mocking.json` at the consumer package root. Use the Swift modu
 }
 ```
 
+A schema 1 selection can supply explicit associated-type bindings. Use one entry per associated type.
+
+```json
+{
+  "schemaVersion": 1,
+  "selections": [
+    {
+      "module": "AppDomain",
+      "type": "Repository",
+      "kind": "protocol",
+      "associatedTypeBindings": [{"name": "Element", "type": "String"}]
+    }
+  ]
+}
+```
+
+The plugin uses the same binding validation as standalone generation. Changing the configured type regenerates the mock and its index. A conflicting binding causes the normal SwiftPM build to fail before running the consumer. `inspect` reports the canonical type, such as `Swift.String`.
+
 An ordinary `swift test` or `swift build` builds the generator and compiles the generated mock with the attached target. Source membership comes from direct Swift targets in the consumer package. The current profile emits a single Swift shard and its index in SwiftPM’s plugin work directory.
 
 Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsumer PluginProbe`. Use `BLUEPRINT_VERIFY_SWIFTPM_PLUGIN=1 python3 scripts/verify.py` for clean-build, incremental and rejection checks. Local checkout installation is verified on Apple Swift 6.4. Separate remote tooling distribution and other native profiles remain open.
@@ -126,7 +144,7 @@ bash scripts/generate.sh \
   --bind-associated-type Element=String
 ```
 
-This profile supports ordinary instance methods on `Sendable` protocols, with `Swift.Bool`, `Swift.Int`, or `Swift.String` bindings and optional `Sendable` constraints. Bind each associated type once. Overloads need distinct argument labels. Dependent constraints, defaults, cross-module associated types, and SwiftPM configuration bindings remain open.
+This profile supports ordinary instance methods on `Sendable` protocols, with `Swift.Bool`, `Swift.Int`, or `Swift.String` bindings and optional `Sendable` constraints. Bind each associated type once. Overloads need distinct argument labels. Dependent constraints, defaults, and cross-module associated types remain open.
 
 For supported Sendable methods, add `--project 'fetch(id:)'` and any other `--project` selectors to generate a separate `<Protocol>ProjectedMock`. Synchronous nonthrowing and async-throwing methods can opt in. A selector uses the declaration's argument labels, including `_:` for unlabeled arguments. If overloads share the same labels, use the canonical endpoint ID listed in the diagnostic.
 

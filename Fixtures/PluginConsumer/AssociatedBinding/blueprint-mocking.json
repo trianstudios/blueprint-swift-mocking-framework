@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "selections": [
+    {
+      "module": "AssociatedPluginDomain",
+      "type": "AssociatedLookup",
+      "kind": "protocol",
+      "associatedTypeBindings": [{"name": "Element", "type": "String"}]
+    }
+  ]
+}

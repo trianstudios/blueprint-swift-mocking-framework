@@ -5,6 +5,7 @@ private struct BuildConfiguration: Codable {
         let module: String
         let type: String
         let kind: String
+        let associatedTypeBindings: [AssociatedTypeBinding]?
     }
 
     let schemaVersion: Int
@@ -17,11 +18,21 @@ private func invalid(_ message: String) -> GenerationError {
 
 private func loadConfiguration(_ url: URL) throws -> BuildConfiguration {
     let data = try Data(contentsOf: url)
+    let requiredSelectionKeys: Set<String> = ["module", "type", "kind"]
+    let selectionKeys = requiredSelectionKeys.union(["associatedTypeBindings"])
     guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
           Set(object.keys) == ["schemaVersion", "selections"],
           let selections = object["selections"] as? [[String: Any]],
-          selections.allSatisfy({ Set($0.keys) == ["module", "type", "kind"] }) else {
+          selections.allSatisfy({ requiredSelectionKeys.isSubset(of: $0.keys) && Set($0.keys).isSubset(of: selectionKeys) }) else {
         throw invalid("Expected schemaVersion and selections with module, type and kind in \(url.lastPathComponent)")
+    }
+    for selection in selections {
+        guard let bindings = selection["associatedTypeBindings"] else { continue }
+        guard let entries = bindings as? [[String: Any]], entries.allSatisfy({
+            Set($0.keys) == ["name", "type"] && $0["name"] is String && $0["type"] is String
+        }) else {
+            throw invalid("Expected associatedTypeBindings to contain name and type strings in \(url.lastPathComponent)")
+        }
     }
     let configuration = try JSONDecoder().decode(BuildConfiguration.self, from: data)
     guard configuration.schemaVersion == 1 else {
@@ -103,16 +114,20 @@ private struct BuildGenerationPlan {
     init(request: BuildGenerationRequest) throws {
         let loaded = try loadConfiguration(request.config)
         let sorted = loaded.selections.sorted { ($0.module, $0.type) < ($1.module, $1.type) }
-        configuration = BuildConfiguration(schemaVersion: loaded.schemaVersion, selections: sorted)
-
         let sourceIndex = ProtocolSourceIndex(sources: request.sources)
         let resolved = try sorted.map { selection in
             let root = try sourceIndex.select(selection.type, in: selection.module, diagnosticFile: request.config.path)
             let mock = try generate(index: sourceIndex, root: root, projections: [],
-                                    variadicForwarding: [], subscriptSpecializations: [], spy: false)
-            return Selection(selected: selection, origin: root.origin, mock: mock)
+                                    variadicForwarding: [], subscriptSpecializations: [], spy: false,
+                                    associatedTypeBindings: selection.associatedTypeBindings ?? [])
+            let normalized = BuildConfiguration.Selection(
+                module: selection.module, type: selection.type, kind: selection.kind,
+                associatedTypeBindings: mock.associatedTypeBindings.isEmpty ? nil : mock.associatedTypeBindings
+            )
+            return Selection(selected: normalized, origin: root.origin, mock: mock)
         }
         selections = resolved
+        configuration = BuildConfiguration(schemaVersion: loaded.schemaVersion, selections: resolved.map(\.selected))
 
         let body = resolved.map { $0.mock.source }.joined(separator: "\n")
         let marker = "BlueprintMockingShard_" + fingerprint(body)

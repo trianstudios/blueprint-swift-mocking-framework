@@ -281,6 +281,47 @@ def main():
         tool, associated_source, qualified_binding, "AssociatedDirectory",
         sources=associated_parents, associated_bindings=("Element=Swift.String",)))
     assert qualified_binding.read_bytes() == associated_generated.read_bytes()
+    associated_config = temp / "associated-blueprint-mocking.json"
+    associated_selection = {
+        "module": "ConsumerDomain", "type": "AssociatedDirectory", "kind": "protocol",
+        "associatedTypeBindings": [{"name": "Element", "type": "String"}],
+    }
+    associated_config.write_text(json.dumps({"schemaVersion": 1, "selections": [associated_selection]}))
+    associated_batch = temp / "associated-config-batch"
+    associated_config_args = [
+        "--config", associated_config, "--output", associated_batch, "--input-set-id", "3",
+        "--source", "ConsumerDomain", associated_source,
+        "--source", "ConsumerDomain", associated_parents[0][1],
+    ]
+    associated_inspection = json.loads(run("associated-config-inspection", [
+        tool, "inspect", *associated_config_args, "--format", "json",
+    ]))
+    normalized_selection, = associated_inspection["configuration"]["selections"]
+    assert normalized_selection == associated_selection | {
+        "associatedTypeBindings": [{"name": "Element", "type": "Swift.String"}],
+    }
+    run("associated-config-generation", [tool, "generate", *associated_config_args],
+        patterns=[r"Blueprint Mocking: generated 1 protocol mock"])
+    assert associated_generated.read_text() in (associated_batch / "BlueprintMocks.generated.swift").read_text()
+    last_valid_associated_outputs = {
+        file.name: file.read_bytes() for file in associated_batch.glob("*.generated.swift")
+    }
+    run("associated-config-verify-generated", [tool, "verify-generated", *associated_config_args],
+        patterns=[r"Blueprint Mocking: verified 2 generated file"])
+    binding, = associated_selection["associatedTypeBindings"]
+    invalid_selection = associated_selection | {"associatedTypeBindings": [binding | {"typo": True}]}
+    associated_config.write_text(json.dumps({"schemaVersion": 1, "selections": [invalid_selection]}))
+    run("reject-associated-config-binding-shape", [tool, "generate", *associated_config_args],
+        fails=True, patterns=[r"BPM002: Expected associatedTypeBindings to contain name and type strings"])
+    conflicting_selection = associated_selection | {
+        "associatedTypeBindings": [binding, {"name": "Element", "type": "Int"}],
+    }
+    associated_config.write_text(json.dumps({"schemaVersion": 1, "selections": [conflicting_selection]}))
+    run("reject-associated-config-conflict", [tool, "verify-generated", *associated_config_args],
+        fails=True, patterns=[r"BPM001: Conflicting explicit bindings for associated type 'Element'"])
+    assert {file.name: file.read_bytes() for file in associated_batch.glob("*.generated.swift")} == (
+        last_valid_associated_outputs
+    )
     assert baseline == (temp / "Repeated.swift").read_bytes()
     actor_repeated = temp / "RepeatedMainActor.swift"
     run("main-actor-generation-repeat",
@@ -860,6 +901,13 @@ def main():
             "--jobs", "4",
         ], env=swift_environment, timeout=900,
             patterns=[r"PASS: DX004 SwiftPM plugin clean build, regeneration, and incremental stability"])
+    check_configured_binding_plugin = os.environ.get("BLUEPRINT_VERIFY_CONFIGURED_BINDING_PLUGIN") == "1"
+    if check_configured_binding_plugin:
+        run("swiftpm-configured-binding-plugin", [
+            sys.executable, "Fixtures/PluginConsumer/verify_associated_binding.py", "--swift", swift,
+            "--host-tool", tool, "--evidence-dir", EVIDENCE, "--jobs", "4",
+        ], env=swift_environment, timeout=300,
+            patterns=[r"PASS: GEN008 configured binding compiled and ran through the SwiftPM build plugin"])
     source_after = checkout_state()
     exact_revision = (
         source_before["revision"]
@@ -882,6 +930,7 @@ def main():
         "defaultIsolation": "compiler default (nonisolated); no upcoming feature flags",
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
         "swiftPMBuildPluginVerified": check_swiftpm_plugin,
+        "swiftPMConfiguredBindingPluginVerifiedWithBundledParser": check_configured_binding_plugin,
         "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
         "inheritedProtocolGeneratedSHA256": hashlib.sha256(inherited_mock.encode()).hexdigest(),
         "mainActorGeneratedSHA256": hashlib.sha256(actor_baseline).hexdigest(),

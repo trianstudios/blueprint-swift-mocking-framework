@@ -178,4 +178,13 @@ GEN-008 adds explicit scalar bindings to standalone generation. The resolver ret
 
 A separate SwiftPM consumer calls an `any AssociatedDirectory<String>` with the generated mock and verifies inherited and selected methods. The compiler rejects a stub with an `Int` result. `Element=String` and `Element=Swift.String` emit identical bytes. Missing, duplicate, conflicting, unknown or unsupported bindings, unrelated nominal names, collapsed overloads and foreign associated sources fail before replacing output.
 
-Independent generic parameters, dependent same-type constraints, inherited parameterized parents, imported associated types and SwiftPM configuration bindings remain open.
+Independent generic parameters, dependent same-type constraints, inherited parameterized parents and imported associated types remain open.
+
+
+## Associated-type bindings in the SwiftPM configuration
+
+A schema-1 selection accepts an optional `associatedTypeBindings` array of `name` and `type` records. The standalone flag and configured request use one validation path. Inspection reports the normalized concrete type. Drift verification and the build plugin use the same plan. A malformed binding record or conflicting values fail validation before the generator writes either output.
+
+The isolated SwiftPM consumer uses the production build plugin with the Xcode-bundled parser executable in a local artifact bundle. The same consumer source builds and runs with `String` and `Int`, and changing only the configuration changes the mock shard and index. An unchanged run preserves both files. A conflict and an unchanged retry both fail a normal `swift run` before the consumer runs and preserve the bytes, paths and modification times of the last valid outputs. Restoring the valid configuration runs the consumer with those outputs.
+
+Run `BLUEPRINT_VERIFY_CONFIGURED_BINDING_PLUGIN=1 python3 scripts/verify.py` to include this host lane. The packaged SwiftSyntax build, parity and additional native profiles remain separate checks.

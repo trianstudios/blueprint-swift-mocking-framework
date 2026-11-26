@@ -232,11 +232,12 @@ struct Member {
 struct GeneratedProtocolMock {
     let typeName: String
     let source: String
+    let associatedTypeBindings: [AssociatedTypeBinding]
 }
 
 func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
-    subscriptSpecializations: [String], spy: Bool, associatedTypeBindings: [String] = []
+    subscriptSpecializations: [String], spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
 ) throws -> GeneratedProtocolMock {
     let input = root.origin.path
     let module = root.origin.module
@@ -887,8 +888,11 @@ func generate(
         private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
 
     """
-    for (name, bound) in bindings.types.sorted(by: { $0.key < $1.key }) {
-        output += "    public typealias \(name) = \(bound)\n"
+    let resolvedBindings = bindings.types.sorted { $0.key < $1.key }.map {
+        AssociatedTypeBinding(name: $0.key, type: $0.value)
+    }
+    for binding in resolvedBindings {
+        output += "    public typealias \(binding.name) = \(binding.type)\n"
     }
     let specializedEndpoints = Dictionary(grouping: members.indices.filter {
         if case .specializedSubscriptGetter = members[$0].kind { return true }
@@ -1279,7 +1283,7 @@ func generate(
             continue
         }
     }
-    return GeneratedProtocolMock(typeName: name, source: output + "}\n")
+    return GeneratedProtocolMock(typeName: name, source: output + "}\n", associatedTypeBindings: resolvedBindings)
 }
 
 private func run(_ arguments: [String]) throws {
@@ -1303,7 +1307,7 @@ private func run(_ arguments: [String]) throws {
     var projections: [String] = []
     var variadicForwarding: [String] = []
     var subscriptSpecializations: [String] = []
-    var associatedTypeBindings: [String] = []
+    var bindingArguments: [String] = []
     var spy = false
     var sourcePaths: [String: [String]] = [:]
     while let flag = options.popFirst() {
@@ -1325,7 +1329,7 @@ private func run(_ arguments: [String]) throws {
             subscriptSpecializations.append(specialization)
         case "--bind-associated-type":
             guard let binding = options.popFirst() else { throw usage }
-            associatedTypeBindings.append(binding)
+            bindingArguments.append(binding)
         default: throw usage
         }
     }
@@ -1336,6 +1340,12 @@ private func run(_ arguments: [String]) throws {
     let root = try index.select(arguments[5], in: module, diagnosticFile: input)
     guard URL(fileURLWithPath: root.origin.path).standardizedFileURL == URL(fileURLWithPath: input).standardizedFileURL else {
         throw GenerationError(description: "\(input):1:1: error: BPM001: The selected protocol must be declared in --input")
+    }
+    let associatedTypeBindings = try bindingArguments.map { argument in
+        guard let binding = AssociatedTypeBinding(argument: argument) else {
+            throw GenerationError(description: "\(root.origin): error: BPM001: Use --bind-associated-type 'Name=Type'")
+        }
+        return binding
     }
     let output = try generate(index: index, root: root, projections: projections,
                               variadicForwarding: variadicForwarding,
