@@ -8,3 +8,9 @@ Use Swift 6 language mode and a macOS Xcode toolchain that provides SwiftParser 
 4. Commit and push each verified milestone as a coherent change. For contributions, push to your branch or fork and open a pull request with the failing and passing test evidence.
 
 Keep runtime behavior, code generation, and test runner reporting in their existing modules. Source specifications and local build evidence are outside the public tree. Include concise reproduction steps and sanitized diagnostics when reporting a failure.
+
+To check the roadmap with its current evidence, run `python3 scripts/check_release.py --report-only`.
+Run `python3 scripts/check_release.py` as the strict release gate. It returns a failure until every original
+contract has an implementation and passing evidence for all of its required profiles. The script documents the
+certification plan and artifact format. A reviewer must confirm that the planned profiles and checks satisfy the
+acceptance gate before trusting a certification report.
