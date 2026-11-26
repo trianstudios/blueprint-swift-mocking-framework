@@ -5,6 +5,23 @@ import SwiftSyntax
 struct GenerationError: Error, CustomStringConvertible {
     let description: String
 }
+
+struct ExplicitSourceConditions {
+    private(set) var values: [String: [String: Bool]] = [:]
+
+    mutating func read(from arguments: inout ArraySlice<String>) throws {
+        guard let module = arguments.popFirst(), let flag = arguments.popFirst(),
+              let value = arguments.popFirst(),
+              ProtocolSourceIndex.isConditionIdentifier(module), ProtocolSourceIndex.isConditionIdentifier(flag),
+              value == "true" || value == "false" else {
+            throw GenerationError(description: "error: BPM002: Expected --source-condition MODULE FLAG true|false")
+        }
+        guard values[module]?[flag] == nil else {
+            throw GenerationError(description: "error: BPM002: Duplicate source condition '\(flag)' for module '\(module)'")
+        }
+        values[module, default: [:]][flag] = value == "true"
+    }
+}
 enum Isolation {
     case sendable
     case mainActor
@@ -277,8 +294,11 @@ func generate(
         }
     }
 
+    let activeMembers = try inheritance.declarations.map { declaration in
+        (declarationID: declaration.declaration.id, items: try index.activeMembers(of: declaration))
+    }
     let bindings = try ConcreteAssociatedTypeBindings(
-        options: associatedTypeBindings, root: root, inheritance: inheritance, index: index)
+        options: associatedTypeBindings, root: root, inheritance: inheritance, activeMembers: activeMembers, index: index)
     let hasBindings = !bindings.types.isEmpty
     if hasBindings && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || !subscriptSpecializations.isEmpty) {
         try reject(proto, "Concrete associated-type bindings support ordinary witnesses without forwarding, projections or generic specializations")
@@ -634,7 +654,7 @@ func generate(
         }
     }
 
-    for item in declarations.flatMap({ $0.declaration.memberBlock.members }) {
+    for item in activeMembers.flatMap({ $0.items }) {
         if item.decl.is(AssociatedTypeDeclSyntax.self) { continue }
         if hasBindings && !item.decl.is(FunctionDeclSyntax.self) {
             try reject(item, "Concrete associated-type bindings currently support ordinary instance methods")
@@ -1303,7 +1323,7 @@ private func run(_ arguments: [String]) throws {
         return
     }
     let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
-    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']...")
+    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
     guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
           arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
     var options = arguments.dropFirst(8)
@@ -1313,6 +1333,7 @@ private func run(_ arguments: [String]) throws {
     var bindingArguments: [String] = []
     var spy = false
     var sourcePaths: [String: [String]] = [:]
+    var sourceConditions = ExplicitSourceConditions()
     while let flag = options.popFirst() {
         switch flag {
         case "--spy":
@@ -1321,6 +1342,8 @@ private func run(_ arguments: [String]) throws {
         case "--source":
             guard let module = options.popFirst(), let path = options.popFirst() else { throw usage }
             sourcePaths[module, default: []].append(path)
+        case "--source-condition":
+            try sourceConditions.read(from: &options)
         case "--project":
             guard let selector = options.popFirst() else { throw usage }
             projections.append(selector)
@@ -1339,7 +1362,7 @@ private func run(_ arguments: [String]) throws {
     let input = arguments[1]
     let module = arguments[3]
     sourcePaths[module, default: []].append(input)
-    let index = ProtocolSourceIndex(sources: sourcePaths)
+    let index = ProtocolSourceIndex(sources: sourcePaths, conditions: sourceConditions.values)
     let root = try index.select(arguments[5], in: module, diagnosticFile: input)
     guard URL(fileURLWithPath: root.origin.path).standardizedFileURL == URL(fileURLWithPath: input).standardizedFileURL else {
         throw GenerationError(description: "\(input):1:1: error: BPM001: The selected protocol must be declared in --input")

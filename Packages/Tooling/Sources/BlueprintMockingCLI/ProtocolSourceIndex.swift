@@ -92,11 +92,67 @@ final class ProtocolSourceIndex {
     private typealias ModuleDeclarations = [String: [Candidate]]
 
     private let pathsByModule: [String: [String]]
+    private let conditions: [String: [String: Bool]]
     private var filesByRoot: [SyntaxIdentifier: SourceFile] = [:]
     private var modules: [String: ModuleDeclarations] = [:]
 
-    init(sources: [String: [String]]) {
+    init(sources: [String: [String]], conditions: [String: [String: Bool]] = [:]) {
         pathsByModule = sources
+        self.conditions = conditions
+    }
+
+    /// Selects the original syntax nodes in the active clauses of a protocol's member block.
+    func activeMembers(of declaration: IndexedProtocol) throws -> [MemberBlockItemSyntax] {
+        let module = declaration.origin.module
+        var active: [MemberBlockItemSyntax] = []
+
+        func collect(_ members: MemberBlockItemListSyntax) throws {
+            for member in members {
+                guard let directive = member.decl.as(IfConfigDeclSyntax.self) else {
+                    active.append(member)
+                    continue
+                }
+                let clauses = Array(directive.clauses)
+                guard let first = clauses.first, first.poundKeyword.text == "#if" else {
+                    throw Self.error(at: origin(of: directive), "Unsupported conditional compilation directive. "
+                                     + "Use #if with an optional #else.")
+                }
+                if let unexpected = clauses.dropFirst().first(where: { $0.poundKeyword.text != "#else" }) {
+                    throw Self.error(at: origin(of: unexpected.poundKeyword),
+                                     "Unsupported conditional compilation directive. Use #if with an optional #else.")
+                }
+                guard clauses.count <= 2, clauses.dropFirst().first?.condition == nil else {
+                    throw Self.error(at: origin(of: directive), "Unsupported conditional compilation directive. "
+                                     + "Use #if with an optional #else.")
+                }
+                guard let expression = first.condition,
+                      let reference = expression.as(DeclReferenceExprSyntax.self),
+                      reference.argumentNames == nil,
+                      case .identifier(let flag) = reference.baseName.tokenKind,
+                      Self.isConditionIdentifier(flag) else {
+                    let site = first.condition.map { origin(of: $0) } ?? origin(of: first.poundKeyword)
+                    throw Self.error(at: site, "Unsupported compilation condition. Use one bare custom identifier in #if.")
+                }
+                guard let enabled = conditions[module]?[flag] else {
+                    throw Self.error(at: origin(of: expression), "Missing compilation condition '\(flag)' for source module "
+                                     + "'\(module)'. Supply --source-condition \(module) \(flag) true or false.")
+                }
+                let selected = enabled ? first : clauses.dropFirst().first
+                guard let branch = selected, let payload = branch.elements else { continue }
+                guard case .decls(let nested) = payload else {
+                    throw Self.error(at: origin(of: branch), "Expected a protocol member block in the selected clause.")
+                }
+                try collect(nested)
+            }
+        }
+
+        try collect(declaration.declaration.memberBlock.members)
+        return active
+    }
+
+    static func isConditionIdentifier(_ name: String) -> Bool {
+        guard let first = name.first, first.isLetter || first == "_" else { return false }
+        return name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
     }
 
     private func load(_ module: String) throws -> ModuleDeclarations {

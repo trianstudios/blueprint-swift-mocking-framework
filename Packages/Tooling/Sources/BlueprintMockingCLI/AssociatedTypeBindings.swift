@@ -44,6 +44,7 @@ struct ConcreteAssociatedTypeBindings {
         options: [AssociatedTypeBinding],
         root: IndexedProtocol,
         inheritance: ResolvedProtocolInheritance,
+        activeMembers: [(declarationID: SyntaxIdentifier, items: [MemberBlockItemSyntax])],
         index: ProtocolSourceIndex
     ) throws {
         func reject(_ node: some SyntaxProtocol, _ message: String) throws -> Never {
@@ -51,9 +52,9 @@ struct ConcreteAssociatedTypeBindings {
         }
 
         let declarations = inheritance.declarations
-        let associatedDeclarations = declarations.flatMap { declaration in
-            declaration.declaration.memberBlock.members.compactMap { item in
-                item.decl.as(AssociatedTypeDeclSyntax.self).map { (declaration.declaration.id, $0) }
+        let associatedDeclarations = activeMembers.flatMap { entry in
+            entry.items.compactMap { item in
+                item.decl.as(AssociatedTypeDeclSyntax.self).map { (entry.declarationID, $0) }
             }
         }
         let usesPrimaryTypes = declarations.contains { $0.declaration.primaryAssociatedTypeClause != nil }

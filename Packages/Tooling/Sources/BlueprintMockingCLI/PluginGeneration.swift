@@ -54,10 +54,11 @@ private struct BuildGenerationRequest {
     let output: URL
     let inputSetID: String
     let sources: [String: [String]]
+    let sourceConditions: [String: [String: Bool]]
 
     init(arguments: ArraySlice<String>, command: String) throws {
         let usage = invalid("usage: blueprint-mocking \(command) --config PATH --output DIRECTORY "
-                            + "--input-set-id HEX [--source MODULE FILE]..."
+                            + "--input-set-id HEX [--source MODULE FILE]... [--source-condition MODULE FLAG true|false]..."
                             + (command == "inspect" ? " [--format json]" : ""))
         var arguments = arguments
         guard arguments.popFirst() == "--config", let configPath = arguments.popFirst(),
@@ -67,12 +68,17 @@ private struct BuildGenerationRequest {
         else { throw usage }
 
         var sources: [String: [String]] = [:]
+        var conditions = ExplicitSourceConditions()
         var seen: Set<String> = []
         var hasFormat = false
         while let option = arguments.popFirst() {
             if command == "inspect", option == "--format" {
                 guard !hasFormat, arguments.popFirst() == "json" else { throw usage }
                 hasFormat = true
+                continue
+            }
+            if option == "--source-condition" {
+                try conditions.read(from: &arguments)
                 continue
             }
             guard option == "--source", let module = arguments.popFirst(), let path = arguments.popFirst() else {
@@ -85,6 +91,7 @@ private struct BuildGenerationRequest {
         self.output = URL(fileURLWithPath: outputPath, isDirectory: true)
         self.inputSetID = inputSetID
         self.sources = sources
+        self.sourceConditions = conditions.values
     }
 }
 
@@ -114,7 +121,7 @@ private struct BuildGenerationPlan {
     init(request: BuildGenerationRequest) throws {
         let loaded = try loadConfiguration(request.config)
         let sorted = loaded.selections.sorted { ($0.module, $0.type) < ($1.module, $1.type) }
-        let sourceIndex = ProtocolSourceIndex(sources: request.sources)
+        let sourceIndex = ProtocolSourceIndex(sources: request.sources, conditions: request.sourceConditions)
         let resolved = try sorted.map { selection in
             let root = try sourceIndex.select(selection.type, in: selection.module, diagnosticFile: request.config.path)
             let mock = try generate(index: sourceIndex, root: root, projections: [],
@@ -156,6 +163,7 @@ private struct BuildInspection: Encodable {
     struct Inputs: Encodable {
         let configuration: String
         let sources: [Input]
+        let sourceConditions: [String: [String: Bool]]?
     }
 
     struct Declaration: Encodable {
@@ -200,7 +208,8 @@ private struct BuildInspection: Encodable {
             let paths = Set((request.sources[module] ?? []).map { reportPath(URL(fileURLWithPath: $0)) })
             return paths.sorted().map { Input(module: module, path: $0) }
         }
-        inputs = Inputs(configuration: reportPath(config), sources: sources)
+        inputs = Inputs(configuration: reportPath(config), sources: sources,
+                        sourceConditions: request.sourceConditions.isEmpty ? nil : request.sourceConditions)
         declarations = plan.selections.map { selection in
             Declaration(module: selection.selected.module, type: selection.selected.type,
                         kind: selection.selected.kind, file: reportPath(URL(fileURLWithPath: selection.origin.path)),

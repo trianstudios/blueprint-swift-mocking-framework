@@ -84,6 +84,66 @@ def result_document():
     return (json.dumps(RESULTS, indent=2) + "\n").encode("utf-8")
 
 
+def verify_conditional_generation(tool, temp):
+    source = ROOT / "Fixtures/ConditionalConsumer/Sources/ConditionalDomain/ConditionalDirectory.swift"
+    flag = "BLUEPRINT_DOMAIN_INT"
+    module = "ConditionalDomain"
+    selection = {"schemaVersion": 1, "selections": [
+        {"module": module, "type": "ConditionalDirectory", "kind": "protocol"},
+    ]}
+    configuration = temp / "conditional-blueprint-mocking.json"
+    configuration.write_text(json.dumps(selection))
+    output = temp / "conditional-batch"
+    arguments = [
+        "--config", configuration, "--output", output, "--input-set-id", "7", "--source", module, source,
+    ]
+    true_context = ["--source-condition", module, flag, "true"]
+    false_context = ["--source-condition", module, flag, "false"]
+    report = json.loads(run("conditional-config-inspection", [
+        tool, "inspect", *arguments, *true_context, "--format", "json",
+    ]))
+    assert report["inputs"]["sourceConditions"] == {module: {flag: True}}
+
+    files = [output / "BlueprintMocks.generated.swift", output / "BlueprintMockingIndex.generated.swift"]
+    run("conditional-config-int", [tool, "generate", *arguments, *true_context])
+    previous = [file.read_bytes() for file in files]
+    assert b"public func value() -> Int {" in previous[0] and b"#if" not in previous[0]
+    assert b'line: 3, column: 1' in previous[0]
+    run("conditional-config-string", [tool, "generate", *arguments, *false_context])
+    current = [(file.read_bytes(), file.stat().st_mtime_ns) for file in files]
+    assert b"public func value() -> String {" in current[0][0] and b"#if" not in current[0][0]
+    assert b'line: 5, column: 1' in current[0][0]
+    assert all(old != new for old, (new, _) in zip(previous, current, strict=True))
+
+    run("reject-conditional-config-missing", [
+        tool, "generate", *arguments, "--source-condition", "ConditionalProbe", flag, "true",
+    ], fails=True, patterns=[rf"BPM001: Missing compilation condition '{flag}' for source module '{module}'"])
+    run("reject-conditional-config-duplicate", [
+        tool, "generate", *arguments, *true_context, *false_context,
+    ], fails=True, patterns=[rf"BPM002: Duplicate source condition '{flag}' for module '{module}'"])
+    assert [(file.read_bytes(), file.stat().st_mtime_ns) for file in files] == current
+
+    nested_source = temp / "ConditionalDirectory.swift"
+    original = source.read_text()
+    nested = original.replace("    func value() -> String", (
+        "#if BLUEPRINT_NESTED\n    func value() -> Bool\n#else\n    func value() -> String\n#endif"
+    ))
+    assert nested != original
+    nested_source.write_text(nested)
+    nested_arguments = [*arguments[:-1], nested_source]
+    run("conditional-inactive-nested", [tool, "generate", *nested_arguments, *true_context])
+    assert b"public func value() -> Int {" in files[0].read_bytes()
+    run("reject-conditional-active-nested-missing", [tool, "generate", *nested_arguments, *false_context],
+        fails=True, patterns=[rf"BPM001: Missing compilation condition 'BLUEPRINT_NESTED' for source module '{module}'"])
+
+    compound = original.replace(f"#if {flag}", f"#if {flag} && BLUEPRINT_NESTED")
+    nested_source.write_text(compound)
+    last_valid = [file.read_bytes() for file in files]
+    run("reject-conditional-unsupported-expression", [tool, "generate", *nested_arguments, *true_context],
+        fails=True, patterns=[r"BPM001: Unsupported compilation condition. Use one bare custom identifier"])
+    assert [file.read_bytes() for file in files] == last_valid
+
+
 def main():
     source_before = checkout_state()
     swift = Path(xcrun("--find", "swift"))
@@ -261,6 +321,7 @@ def main():
         projections=("sample(_:)",), forwarding=("sample(_:)",)))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
+    verify_conditional_generation(tool, temp)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
 
     repeated_inheritance = temp / "RepeatedInherited.swift"
@@ -1082,6 +1143,13 @@ def main():
             "--host-tool", tool, "--evidence-dir", EVIDENCE, "--jobs", "4",
         ], env=swift_environment, timeout=300,
             patterns=[r"PASS: GEN008 configured binding compiled and ran through the SwiftPM build plugin"])
+    check_explicit_conditional_consumer = os.environ.get("BLUEPRINT_VERIFY_CONDITIONAL_CONSUMER") == "1"
+    if check_explicit_conditional_consumer:
+        run("swiftpm-explicit-conditional-consumer", [
+            sys.executable, "Fixtures/ConditionalConsumer/verify.py", "--swift", swift,
+            "--tool", tool, "--evidence-dir", EVIDENCE, "--jobs", "4",
+        ], env=swift_environment, timeout=400,
+            patterns=[r"PASS: GEN004-A explicit domain conditions select native SwiftPM witnesses"])
     source_after = checkout_state()
     exact_revision = (
         source_before["revision"]
@@ -1104,6 +1172,7 @@ def main():
         "defaultIsolation": "compiler default (nonisolated); no upcoming feature flags",
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
         "swiftPMBuildPluginVerified": check_swiftpm_plugin,
+        "swiftPMExplicitConditionalConsumerVerified": check_explicit_conditional_consumer,
         "swiftPMConfiguredBindingPluginVerifiedWithBundledParser": check_configured_binding_plugin,
         "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
         "inheritedProtocolGeneratedSHA256": hashlib.sha256(inherited_mock.encode()).hexdigest(),
