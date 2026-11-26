@@ -24,8 +24,10 @@ import ConsumerDoubles
 
     #expect(mock.verify.display(for: .any).wasCalled(.exactly(2)).passed)
     #expect(mock.verify.display(for: .equal("shared")).wasCalled(.once).passed)
+    #expect(mock.verify.display(for: .equal("shared"), phase: .returned, origin: .forwarded).wasCalled(.never).passed)
+    #expect(mock.verify.display(for: .equal("direct"), phase: .returned, origin: .forwarded).wasCalled(.once).passed)
     #expect(mock.verify.cached(id: .equal("cached-offline"), phase: .threw).wasCalled(.once).passed)
-    #expect(mock.verify.fetch(id: .equal("remote-offline"), phase: .threw).wasCalled(.once).passed)
+    #expect(mock.verify.fetch(id: .equal("remote-offline"), phase: .threw, origin: .forwarded).wasCalled(.once).passed)
 
     let snapshot = session.snapshot()
     let admissions = snapshot.events.filter { $0.phase == .admitted }

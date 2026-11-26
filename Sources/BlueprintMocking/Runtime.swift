@@ -378,10 +378,11 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         }
     }
 
-    func verification(matching matcher: Matcher<Input>, phase: CallPhase) -> Verification<Input> {
+    func verification(matching matcher: Matcher<Input>, phase: CallPhase, origin: CallOrigin? = nil)
+        -> Verification<Input> {
         let epoch = scope.expectedEpoch ?? scope.session.withLock { $0.epoch }
         return Verification(journal: self, matcher: matcher, phase: phase, epoch: epoch,
-                            isEpochBound: scope.expectedEpoch != nil)
+                            isEpochBound: scope.expectedEpoch != nil, origin: origin)
     }
 
     func report(_ issue: MockIssue) {
@@ -465,6 +466,7 @@ public struct Verification<Input: Sendable>: Sendable {
     fileprivate let phase: CallPhase
     fileprivate let epoch: SessionEpoch
     fileprivate let isEpochBound: Bool
+    fileprivate let origin: CallOrigin?
 
     @discardableResult
     public func wasCalled(_ count: CallCount, fileID: String = #fileID,
@@ -493,7 +495,8 @@ public struct Verification<Input: Sendable>: Sendable {
                                       invocationIDs: [], epoch: epoch, isStale: true)
         }
         let matches = prefix.calls.filter {
-            (phase == .admitted || $0.phase == phase) && matcher.matches($0.input)
+            (phase == .admitted || $0.phase == phase) &&
+                (origin == nil || $0.origin == origin) && matcher.matches($0.input)
         }
         let failure = count.failureMessage(observed: matches.count)
         if let failure {
@@ -614,6 +617,11 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     }
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
         journal.verification(matching: matcher, phase: phase)
+    }
+
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted,
+                             origin: CallOrigin?) -> Verification<Input> {
+        journal.verification(matching: matcher, phase: phase, origin: origin)
     }
     public var invocations: [Invocation<Input>] { journal.snapshot().calls }
 }
@@ -784,8 +792,9 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         try journal.consumeProjected(selection, matchingArgument: matcher, phase: phase, in: scope)
     }
 
-    func verification(matching matcher: Matcher<History>, phase: CallPhase) -> Verification<History> {
-        journal.verification(matching: matcher, phase: phase)
+    func verification(matching matcher: Matcher<History>, phase: CallPhase, origin: CallOrigin? = nil)
+        -> Verification<History> {
+        journal.verification(matching: matcher, phase: phase, origin: origin)
     }
 
     func invoke(
@@ -877,6 +886,11 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
 
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
         dispatch.verification(matching: matcher, phase: phase)
+    }
+
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted,
+                             origin: CallOrigin?) -> Verification<Input> {
+        dispatch.verification(matching: matcher, phase: phase, origin: origin)
     }
 
     public var invocations: [Invocation<Input>] { dispatch.snapshot().calls }

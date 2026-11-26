@@ -2,6 +2,19 @@
 private typealias MainActorSyncThrowingAnswer<Input, Output, Failure: Error> =
     @MainActor (Input) -> Result<Output, Failure>
 
+/// A real implementation for a main-actor-isolated synchronous throwing endpoint.
+@MainActor
+public struct MainActorSyncThrowingForwarding<Input, Output, Failure: Error> {
+    fileprivate let answer: MainActorSyncThrowingAnswer<Input, Output, Failure>
+
+    public init(_ body: @escaping @MainActor (Input) throws(Failure) -> Output) {
+        self.answer = { input in
+            do throws(Failure) { return .success(try body(input)) }
+            catch { return .failure(error) }
+        }
+    }
+}
+
 @MainActor
 public struct MainActorSyncThrowingConfiguration<Input, Output, Failure: Error> {
     fileprivate let rules: [MainActorRule<Input, MainActorSyncThrowingAnswer<Input, Output, Failure>>]
@@ -47,27 +60,34 @@ public struct MainActorSyncThrowingStub<Input, Output, Failure: Error> {
 public final class MainActorSyncThrowingEndpoint<Input, Output, Failure: Error> {
     private let configuration: MainActorSyncThrowingConfiguration<Input, Output, Failure>
     private let journal: MainActorJournal<Input>
+    private let forwarding: MainActorSyncThrowingForwarding<Input, Output, Failure>?
     private let failureMapping: (@MainActor (MockIssue) -> Failure)?
 
+    public convenience init(
+        id: EndpointID, configuration: MainActorSyncThrowingConfiguration<Input, Output, Failure>,
+        failureReporter: FailureReporter, failureMapping: (@MainActor (MockIssue) -> Failure)? = nil
+    ) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  forwarding: nil, failureMapping: failureMapping)
+    }
+
+    /// Calls the real implementation on a stub miss if supplied.
     public init(id: EndpointID, configuration: MainActorSyncThrowingConfiguration<Input, Output, Failure>,
                 failureReporter: FailureReporter,
+                forwarding: MainActorSyncThrowingForwarding<Input, Output, Failure>?,
                 failureMapping: (@MainActor (MockIssue) -> Failure)? = nil) {
         self.configuration = configuration
         self.journal = MainActorJournal(endpoint: id, reporter: failureReporter)
+        self.forwarding = forwarding
         self.failureMapping = failureMapping
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) throws(Failure) -> Output {
         let id = journal.begin(input)
-        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            switch rule.answer(input) {
-            case .success(let result):
-                journal.complete(id, phase: .returned)
-                return result
-            case .failure(let error):
-                journal.complete(id, phase: .threw)
-                throw error
-            }
+        let rule = configuration.rules.reversed().first { $0.matcher.matches(input) }
+        if let answer = rule?.answer ?? forwarding?.answer {
+            let result = answer(input)
+            return try journal.finish(id, result: result, origin: rule == nil ? .forwarded : nil)
         }
         if let failureMapping {
             let issue = journal.unexpectedCall(id, phase: .threw, source: source)
@@ -79,7 +99,13 @@ public final class MainActorSyncThrowingEndpoint<Input, Output, Failure: Error> 
 
     public func verification(matching matcher: MainActorMatcher<Input>,
                              phase: CallPhase = .admitted) -> MainActorVerification<Input> {
-        journal.verification(matching: matcher, phase: phase)
+        journal.verification(matching: matcher, phase: phase, origin: nil)
+    }
+
+    public func verification(
+        matching matcher: MainActorMatcher<Input>, phase: CallPhase = .admitted, origin: CallOrigin?
+    ) -> MainActorVerification<Input> {
+        journal.verification(matching: matcher, phase: phase, origin: origin)
     }
 
     public var invocations: [MainActorInvocation<Input>] { journal.calls }
@@ -89,8 +115,15 @@ extension MainActorSyncThrowingEndpoint where Failure == any Error {
     /// Uses a reported `UnexpectedInvocationError` for an unstubbed ordinary throwing call.
     public convenience init(id: EndpointID, configuration: MainActorSyncThrowingConfiguration<Input, Output, Failure>,
                             failureReporter: FailureReporter) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter, forwarding: nil)
+    }
+
+    public convenience init(
+        id: EndpointID, configuration: MainActorSyncThrowingConfiguration<Input, Output, Failure>,
+        failureReporter: FailureReporter, forwarding: MainActorSyncThrowingForwarding<Input, Output, Failure>?
+    ) {
         self.init(id: id, configuration: configuration, failureReporter: failureReporter,
-                  failureMapping: { UnexpectedInvocationError(issue: $0) })
+                  forwarding: forwarding, failureMapping: { UnexpectedInvocationError(issue: $0) })
     }
 }
 
@@ -98,8 +131,15 @@ extension MainActorAsyncThrowingEndpoint where Failure == any Error {
     /// Uses a reported `UnexpectedInvocationError` for an unstubbed ordinary throwing call.
     public convenience init(id: EndpointID, configuration: MainActorAsyncThrowingConfiguration<Input, Output, Failure>,
                             failureReporter: FailureReporter) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter, forwarding: nil)
+    }
+
+    public convenience init(
+        id: EndpointID, configuration: MainActorAsyncThrowingConfiguration<Input, Output, Failure>,
+        failureReporter: FailureReporter, forwarding: MainActorAsyncThrowingForwarding<Input, Output, Failure>?
+    ) {
         self.init(id: id, configuration: configuration, failureReporter: failureReporter,
-                  failureMapping: { UnexpectedInvocationError(issue: $0) })
+                  forwarding: forwarding, failureMapping: { UnexpectedInvocationError(issue: $0) })
     }
 }
 
@@ -143,22 +183,34 @@ public struct MainActorAsyncStub<Input, Output> {
 public final class MainActorAsyncEndpoint<Input, Output> {
     private let configuration: MainActorAsyncConfiguration<Input, Output>
     private let journal: MainActorJournal<Input>
+    private let forwarding: (@MainActor (Input) async -> Output)?
     private let fallback: (@MainActor (MockIssue) -> Output)?
 
-    /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
+    public convenience init(
+        id: EndpointID, configuration: MainActorAsyncConfiguration<Input, Output>,
+        failureReporter: FailureReporter, fallback: (@MainActor (MockIssue) -> Output)? = nil
+    ) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  forwarding: nil, fallback: fallback)
+    }
+
+    /// Calls the real implementation on a stub miss if supplied.
     public init(id: EndpointID, configuration: MainActorAsyncConfiguration<Input, Output>,
                 failureReporter: FailureReporter,
+                forwarding: (@MainActor (Input) async -> Output)?,
                 fallback: (@MainActor (MockIssue) -> Output)? = nil) {
         self.configuration = configuration
         self.journal = MainActorJournal(endpoint: id, reporter: failureReporter)
+        self.forwarding = forwarding
         self.fallback = fallback
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async -> Output {
         let id = journal.begin(input)
-        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            let result = await rule.answer(input)
-            journal.complete(id, phase: .returned)
+        let rule = configuration.rules.reversed().first { $0.matcher.matches(input) }
+        if let answer = rule?.answer ?? forwarding {
+            let result = await answer(input)
+            journal.complete(id, phase: .returned, origin: rule == nil ? .forwarded : nil)
             return result
         }
         return journal.resolveMissingNonthrowingCall(id, source: source, fallback: fallback)
@@ -166,7 +218,13 @@ public final class MainActorAsyncEndpoint<Input, Output> {
 
     public func verification(matching matcher: MainActorMatcher<Input>,
                              phase: CallPhase = .admitted) -> MainActorVerification<Input> {
-        journal.verification(matching: matcher, phase: phase)
+        journal.verification(matching: matcher, phase: phase, origin: nil)
+    }
+
+    public func verification(
+        matching matcher: MainActorMatcher<Input>, phase: CallPhase = .admitted, origin: CallOrigin?
+    ) -> MainActorVerification<Input> {
+        journal.verification(matching: matcher, phase: phase, origin: origin)
     }
 
     public var invocations: [MainActorInvocation<Input>] { journal.calls }

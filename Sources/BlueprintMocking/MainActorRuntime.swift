@@ -22,6 +22,8 @@ public struct MainActorInvocation<Input> {
     public let id: UInt64
     public let input: Input
     public fileprivate(set) var phase: CallPhase
+    /// The origin of an invocation that completed through the real implementation.
+    public fileprivate(set) var origin: CallOrigin?
 }
 
 @MainActor
@@ -37,16 +39,33 @@ final class MainActorJournal<Input> {
 
     func begin(_ input: Input) -> UInt64 {
         let id = UInt64(calls.count) + 1
-        calls.append(MainActorInvocation(id: id, input: input, phase: .admitted))
+        calls.append(MainActorInvocation(id: id, input: input, phase: .admitted, origin: nil))
         return id
     }
 
-    func complete(_ id: UInt64, phase: CallPhase) {
-        calls[Int(id - 1)].phase = phase
+    func complete(_ id: UInt64, phase: CallPhase, origin: CallOrigin? = nil) {
+        let index = Int(id - 1)
+        calls[index].phase = phase
+        calls[index].origin = origin
     }
 
-    func verification(matching matcher: MainActorMatcher<Input>, phase: CallPhase) -> MainActorVerification<Input> {
-        MainActorVerification(journal: self, matcher: matcher, phase: phase)
+    func finish<Output, Failure: Error>(
+        _ id: UInt64, result: Result<Output, Failure>, origin: CallOrigin?
+    ) throws(Failure) -> Output {
+        switch result {
+        case .success(let value):
+            complete(id, phase: .returned, origin: origin)
+            return value
+        case .failure(let error):
+            complete(id, phase: .threw, origin: origin)
+            throw error
+        }
+    }
+
+    func verification(
+        matching matcher: MainActorMatcher<Input>, phase: CallPhase, origin: CallOrigin?
+    ) -> MainActorVerification<Input> {
+        MainActorVerification(journal: self, matcher: matcher, phase: phase, origin: origin)
     }
 
     func unexpectedCall(_ id: UInt64, phase: CallPhase? = nil, source: SourceLocation) -> MockIssue {
@@ -85,6 +104,7 @@ public struct MainActorVerification<Input> {
     fileprivate let journal: MainActorJournal<Input>
     fileprivate let matcher: MainActorMatcher<Input>
     fileprivate let phase: CallPhase
+    fileprivate let origin: CallOrigin?
 
     @discardableResult
     public func wasCalled(_ count: CallCount, fileID: String = #fileID,
@@ -105,7 +125,9 @@ public struct MainActorVerification<Input> {
         let snapshot = journal.calls
         let watermark = UInt64(snapshot.count)
         let ids = snapshot.lazy.filter {
-            (phase == .admitted || $0.phase == phase) && matcher.matches($0.input)
+            (phase == .admitted || $0.phase == phase)
+                && (origin == nil || $0.origin == origin)
+                && matcher.matches($0.input)
         }.map(\.id)
         let invocationIDs = Array(ids)
         let observed = invocationIDs.count
@@ -187,22 +209,34 @@ public struct MainActorSyncStub<Input, Output> {
 public final class MainActorSyncEndpoint<Input, Output> {
     private let configuration: MainActorSyncConfiguration<Input, Output>
     private let journal: MainActorJournal<Input>
+    private let forwarding: (@MainActor (Input) -> Output)?
     private let fallback: (@MainActor (MockIssue) -> Output)?
 
-    /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
+    public convenience init(
+        id: EndpointID, configuration: MainActorSyncConfiguration<Input, Output>,
+        failureReporter: FailureReporter, fallback: (@MainActor (MockIssue) -> Output)? = nil
+    ) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  forwarding: nil, fallback: fallback)
+    }
+
+    /// Calls the real implementation on a stub miss if supplied.
     public init(id: EndpointID, configuration: MainActorSyncConfiguration<Input, Output>,
                 failureReporter: FailureReporter,
+                forwarding: (@MainActor (Input) -> Output)?,
                 fallback: (@MainActor (MockIssue) -> Output)? = nil) {
         self.configuration = configuration
         self.journal = MainActorJournal(endpoint: id, reporter: failureReporter)
+        self.forwarding = forwarding
         self.fallback = fallback
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) -> Output {
         let id = journal.begin(input)
-        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            let result = rule.answer(input)
-            journal.complete(id, phase: .returned)
+        let rule = configuration.rules.reversed().first { $0.matcher.matches(input) }
+        if let answer = rule?.answer ?? forwarding {
+            let result = answer(input)
+            journal.complete(id, phase: .returned, origin: rule == nil ? .forwarded : nil)
             return result
         }
         return journal.resolveMissingNonthrowingCall(id, source: source, fallback: fallback)
@@ -210,10 +244,29 @@ public final class MainActorSyncEndpoint<Input, Output> {
 
     public func verification(matching matcher: MainActorMatcher<Input>,
                              phase: CallPhase = .admitted) -> MainActorVerification<Input> {
-        MainActorVerification(journal: journal, matcher: matcher, phase: phase)
+        journal.verification(matching: matcher, phase: phase, origin: nil)
+    }
+
+    public func verification(
+        matching matcher: MainActorMatcher<Input>, phase: CallPhase = .admitted, origin: CallOrigin?
+    ) -> MainActorVerification<Input> {
+        journal.verification(matching: matcher, phase: phase, origin: origin)
     }
 
     public var invocations: [MainActorInvocation<Input>] { journal.calls }
+}
+
+/// A real implementation for a main-actor-isolated async throwing endpoint.
+@MainActor
+public struct MainActorAsyncThrowingForwarding<Input, Output, Failure: Error> {
+    fileprivate let answer: MainActorAsyncAnswer<Input, Output, Failure>
+
+    public init(_ body: @escaping @MainActor (Input) async throws(Failure) -> Output) {
+        self.answer = { input in
+            do throws(Failure) { return .success(try await body(input)) }
+            catch { return .failure(error) }
+        }
+    }
 }
 
 @MainActor
@@ -264,27 +317,34 @@ public struct MainActorAsyncThrowingStub<Input, Output, Failure: Error> {
 public final class MainActorAsyncThrowingEndpoint<Input, Output, Failure: Error> {
     private let configuration: MainActorAsyncThrowingConfiguration<Input, Output, Failure>
     private let journal: MainActorJournal<Input>
+    private let forwarding: MainActorAsyncThrowingForwarding<Input, Output, Failure>?
     private let failureMapping: (@MainActor (MockIssue) -> Failure)?
 
+    public convenience init(
+        id: EndpointID, configuration: MainActorAsyncThrowingConfiguration<Input, Output, Failure>,
+        failureReporter: FailureReporter, failureMapping: (@MainActor (MockIssue) -> Failure)? = nil
+    ) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  forwarding: nil, failureMapping: failureMapping)
+    }
+
+    /// Calls the real implementation on a stub miss if supplied.
     public init(id: EndpointID, configuration: MainActorAsyncThrowingConfiguration<Input, Output, Failure>,
                 failureReporter: FailureReporter,
+                forwarding: MainActorAsyncThrowingForwarding<Input, Output, Failure>?,
                 failureMapping: (@MainActor (MockIssue) -> Failure)? = nil) {
         self.configuration = configuration
         self.journal = MainActorJournal(endpoint: id, reporter: failureReporter)
+        self.forwarding = forwarding
         self.failureMapping = failureMapping
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
         let id = journal.begin(input)
-        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            switch await rule.answer(input) {
-            case .success(let result):
-                journal.complete(id, phase: .returned)
-                return result
-            case .failure(let error):
-                journal.complete(id, phase: .threw)
-                throw error
-            }
+        let rule = configuration.rules.reversed().first { $0.matcher.matches(input) }
+        if let answer = rule?.answer ?? forwarding?.answer {
+            let result = await answer(input)
+            return try journal.finish(id, result: result, origin: rule == nil ? .forwarded : nil)
         }
 
         if let failureMapping {
@@ -297,7 +357,13 @@ public final class MainActorAsyncThrowingEndpoint<Input, Output, Failure: Error>
 
     public func verification(matching matcher: MainActorMatcher<Input>,
                              phase: CallPhase = .admitted) -> MainActorVerification<Input> {
-        MainActorVerification(journal: journal, matcher: matcher, phase: phase)
+        journal.verification(matching: matcher, phase: phase, origin: nil)
+    }
+
+    public func verification(
+        matching matcher: MainActorMatcher<Input>, phase: CallPhase = .admitted, origin: CallOrigin?
+    ) -> MainActorVerification<Input> {
+        journal.verification(matching: matcher, phase: phase, origin: origin)
     }
 
     public var invocations: [MainActorInvocation<Input>] { journal.calls }

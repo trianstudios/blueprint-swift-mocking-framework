@@ -138,6 +138,11 @@ public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failu
         journal.verification(matching: matcher, phase: phase)
     }
 
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted,
+                             origin: CallOrigin?) -> Verification<Input> {
+        journal.verification(matching: matcher, phase: phase, origin: origin)
+    }
+
     public var invocations: [Invocation<Input>] { journal.snapshot().calls }
 }
 
@@ -249,6 +254,11 @@ public final class AsyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
 
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
         journal.verification(matching: matcher, phase: phase)
+    }
+
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted,
+                             origin: CallOrigin?) -> Verification<Input> {
+        journal.verification(matching: matcher, phase: phase, origin: origin)
     }
 
     public var invocations: [Invocation<Input>] { journal.snapshot().calls }

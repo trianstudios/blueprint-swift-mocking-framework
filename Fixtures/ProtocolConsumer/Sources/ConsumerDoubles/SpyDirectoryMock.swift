@@ -56,28 +56,28 @@ public final class SpyDirectoryMock: SpyDirectory {
 
     public struct Verification: Sendable {
         fileprivate let __endpoint0: SyncThrowingEndpoint<String, String, SpyDirectoryFailure>
-        public func cached(id matcher: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<String> {
-            __endpoint0.verification(matching: matcher, phase: phase)
+        public func cached(id matcher: Matcher<String>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<String> {
+            __endpoint0.verification(matching: matcher, phase: phase, origin: origin)
         }
         fileprivate let __endpoint1: SyncEndpoint<String, String>
-        public func display(for matcher: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<String> {
-            __endpoint1.verification(matching: matcher, phase: phase)
+        public func display(for matcher: Matcher<String>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<String> {
+            __endpoint1.verification(matching: matcher, phase: phase, origin: origin)
         }
         fileprivate let __endpoint2: AsyncThrowingEndpoint<String, String, SpyDirectoryFailure>
-        public func fetch(id matcher: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<String> {
-            __endpoint2.verification(matching: matcher, phase: phase)
+        public func fetch(id matcher: Matcher<String>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<String> {
+            __endpoint2.verification(matching: matcher, phase: phase, origin: origin)
         }
         fileprivate let __endpoint3: SyncEndpoint<Void, String>
-        public func get_displayPrefix(phase: CallPhase = .admitted) -> BlueprintMocking.Verification<Void> {
-            __endpoint3.verification(matching: .any, phase: phase)
+        public func get_displayPrefix(phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<Void> {
+            __endpoint3.verification(matching: .any, phase: phase, origin: origin)
         }
         fileprivate let __endpoint4: AsyncEndpoint<String, String>
-        public func refresh(_ matcher: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<String> {
-            __endpoint4.verification(matching: matcher, phase: phase)
+        public func refresh(_ matcher: Matcher<String>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<String> {
+            __endpoint4.verification(matching: matcher, phase: phase, origin: origin)
         }
         fileprivate let __endpoint5: SyncEndpoint<(Int, String), String>
-        public func get_subscript(_ matcher0: Matcher<Int>, region matcher1: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(Int, String)> {
-            __endpoint5.verification(matching: Matcher<(Int, String)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+        public func get_subscript(_ matcher0: Matcher<Int>, region matcher1: Matcher<String>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<(Int, String)> {
+            __endpoint5.verification(matching: Matcher<(Int, String)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
         }
     }
 

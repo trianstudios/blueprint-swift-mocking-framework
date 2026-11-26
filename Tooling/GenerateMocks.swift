@@ -184,8 +184,9 @@ struct Member {
         "\(name)(\(descriptorParameters.joined(separator: ", ")))"
     }
 
-    var verificationSignature: String {
-        let descriptor = descriptorParameters + ["phase: CallPhase = .admitted"]
+    func verificationSignature(includeOrigin: Bool = false) -> String {
+        var descriptor = descriptorParameters + ["phase: CallPhase = .admitted"]
+        if includeOrigin { descriptor.append("origin: CallOrigin? = nil") }
         return "\(name)(\(descriptor.joined(separator: ", ")))"
     }
 
@@ -238,9 +239,6 @@ func generate(
     }
 
     if spy {
-        guard isolation == .sendable else {
-            try reject(proto, "Direct spy forwarding currently requires a Sendable protocol")
-        }
         guard projections.isEmpty, variadicForwarding.isEmpty, subscriptSpecializations.isEmpty else {
             try reject(proto, "Direct spy forwarding cannot be combined with projections, variadic adapters or generic specializations")
         }
@@ -781,7 +779,8 @@ func generate(
                 """
             }
         } else {
-            output += "        public func \(m.verificationSignature) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.inputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression), phase: phase)\n        }\n"
+            let origin = spy ? ", origin: origin" : ""
+            output += "        public func \(m.verificationSignature(includeOrigin: spy)) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.inputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression), phase: phase\(origin))\n        }\n"
         }
     }
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
@@ -828,10 +827,11 @@ func generate(
         default: preconditionFailure("The spy profile filters unsupported witnesses before emission")
         }
         let input = member.parameters.isEmpty ? "_" : "input"
+        let isolationAttribute = isolation == .sendable ? "@Sendable" : "@MainActor"
         let effects = (member.effect.isAsync ? " async" : "") +
             (member.effect.runtimeFailure.map { " throws(\($0.type))" } ?? "")
         let wrapper = member.effect.runtimeFailure == nil ? "" : "\(member.family)Forwarding<\(member.genericArguments)> "
-        return ", forwarding: forwardingTo.map { target in\n                \(wrapper){ @Sendable \(input)\(effects) in \(member.effect.callPrefix)\(call) }\n            }"
+        return ", forwarding: forwardingTo.map { target in\n                \(wrapper){ \(isolationAttribute) \(input)\(effects) in \(member.effect.callPrefix)\(call) }\n            }"
     }
 
     for i in instanceIndices {
@@ -870,7 +870,7 @@ func generate(
         for i in typeIndices {
             let member = members[i]
             output += "        fileprivate let __endpoint\(i): \(endpointType(i))\n"
-            output += "        public func \(member.verificationSignature) -> BlueprintMocking.Verification<\(member.inputType)> {\n            __endpoint\(i).verification(matching: \(member.matcherExpression), phase: phase)\n        }\n"
+            output += "        public func \(member.verificationSignature()) -> BlueprintMocking.Verification<\(member.inputType)> {\n            __endpoint\(i).verification(matching: \(member.matcherExpression), phase: phase)\n        }\n"
         }
         output += "    }\n\n"
         output += """

@@ -151,6 +151,9 @@ def main():
     spy_source = source.with_name("SpyDirectory.swift")
     spy_generated = generated.with_name("SpyDirectoryMock.swift")
     run("spy-generation", generate(tool, spy_source, spy_generated, "SpyDirectory", spy=True))
+    actor_spy_source = source.with_name("ActorSpyDirectory.swift")
+    actor_spy_generated = generated.with_name("ActorSpyDirectoryMock.swift")
+    run("actor-spy-generation", generate(tool, actor_spy_source, actor_spy_generated, "ActorSpyDirectory", spy=True))
     type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
     run("type-subscript-generation", generate(
@@ -203,6 +206,9 @@ def main():
     repeated_spy = temp / "RepeatedSpy.swift"
     run("spy-generation-repeat", generate(tool, spy_source, repeated_spy, "SpyDirectory", spy=True))
     assert spy_generated.read_bytes() == repeated_spy.read_bytes()
+    repeated_actor_spy = temp / "RepeatedActorSpy.swift"
+    run("actor-spy-generation-repeat", generate(tool, actor_spy_source, repeated_actor_spy, "ActorSpyDirectory", spy=True))
+    assert actor_spy_generated.read_bytes() == repeated_actor_spy.read_bytes()
     repeated_type_subscript = temp / "RepeatedTypeSubscript.swift"
     run("type-subscript-generation-repeat", generate(
         tool, type_subscript_source, repeated_type_subscript, "TypeSubscriptDirectory"))
@@ -291,7 +297,6 @@ def main():
     spy_callback = temp / "CallbackSpy.swift"
     spy_callback.write_text("public protocol CallbackSpy: Sendable { func apply(_ block: (Int) -> Int) }\n")
     spy_rejections = (
-        ("actor-profile", actor_source, "MainActorDirectory", (), "currently requires a Sendable protocol"),
         ("variadic", variadic_source, "VariadicDirectory", (), "cannot splat a Swift variadic argument"),
         ("writable-property", property_source, "PropertyDirectory", (), "writable property requires a reference-constrained setter"),
         ("writable-subscript", subscript_source, "SubscriptDirectory", (), "writable subscript requires a reference-constrained setter"),
@@ -406,6 +411,8 @@ def main():
     patterns = {
         "MainActorAssertionAccess": r"main actor-isolated.*'wasCalled",
         "MainActorAsyncTransport": r"sending 'entry' risks causing data races",
+        "MainActorSpyAsyncTransport": r"sending 'entry' risks causing data races",
+        "MainActorSpyWitnessAccess": r"main actor-isolated.*'display",
         "MainActorStubbingAccess": r"main actor-isolated.*'display",
         "MainActorVerificationAccess": r"main actor-isolated.*'display",
         "MainActorWitnessAccess": r"main actor-isolated.*'display",
@@ -447,10 +454,11 @@ def main():
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
         compiler_stage = ["-typecheck"]
         diagnostic_patterns = [patterns[fixture.stem]]
-        if fixture.stem == "MainActorAsyncTransport":
+        if fixture.stem in {"MainActorAsyncTransport", "MainActorSpyAsyncTransport"}:
             # Swift checks unsafe region transfers during SIL generation.
             compiler_stage = ["-emit-sil", "-o", os.devnull]
-            diagnostic_patterns.append(r"non-Sendable 'DirectoryEntry'-typed result.*main actor-isolated")
+            payload = "DirectoryEntry" if fixture.stem == "MainActorAsyncTransport" else "ActorSpyEntry"
+            diagnostic_patterns.append(rf"non-Sendable '{payload}'-typed result.*main actor-isolated")
         compiler_command = [
             swiftc, "-swift-version", "6", "-target",
             f"{platform.machine()}-apple-macos{deployment_target}", "-sdk", sdk, *compiler_stage,
@@ -459,8 +467,8 @@ def main():
         check_name = "compile-reject-" + fixture.stem
         run(check_name, [*compiler_command, fixture], env=swift_environment,
             fails=True, patterns=diagnostic_patterns)
-        if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess",
-                            "MainActorVerificationAccess"}:
+        if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess", "MainActorVerificationAccess",
+                            "MainActorSpyWitnessAccess", "MainActorSpyAsyncTransport"}:
             run(check_name + "-DefaultIsolation",
                 [*compiler_command, "-default-isolation", "MainActor", fixture],
                 env=swift_environment, fails=True, patterns=diagnostic_patterns)
@@ -534,6 +542,7 @@ def main():
         "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
         "subscriptGeneratedSHA256": hashlib.sha256(subscript_generated.read_bytes()).hexdigest(),
         "effectfulSubscriptGeneratedSHA256": hashlib.sha256(effectful_subscript_generated.read_bytes()).hexdigest(),
+        "actorSpyGeneratedSHA256": hashlib.sha256(actor_spy_generated.read_bytes()).hexdigest(),
         "spyGeneratedSHA256": hashlib.sha256(spy_generated.read_bytes()).hexdigest(),
         "typeSubscriptGeneratedSHA256": hashlib.sha256(type_subscript_generated.read_bytes()).hexdigest(),
         "genericSubscriptGeneratedSHA256": hashlib.sha256(generic_subscript_generated.read_bytes()).hexdigest(),
