@@ -63,11 +63,17 @@ extension Matcher where Input: Equatable {
     public static func equal(_ expected: Input) -> Self { Self { $0 == expected } }
 }
 
+/// The endpoint-local revision that supplied an invocation's immutable stubbing plan.
+public struct RuleRevision: Sendable, Equatable {
+    public let rawValue: UInt64
+}
+
 /// Admission queries include unfinished and throwing calls; terminal phases are explicit.
 public enum CallPhase: Sendable { case admitted, returned, threw, terminated }
 public struct Invocation<Input: Sendable>: Sendable {
     public let id: UInt64
     public let input: Input
+    public let configurationRevision: RuleRevision
     public fileprivate(set) var phase: CallPhase
 }
 public struct VerificationResult: Sendable {
@@ -77,26 +83,58 @@ public struct VerificationResult: Sendable {
     public let invocationIDs: [UInt64]
 }
 
-final class Journal<Input: Sendable>: Sendable {
+private protocol VerificationJournal<Input>: Sendable {
+    associatedtype Input: Sendable
+
+    var endpoint: EndpointID { get }
+    func snapshot() -> (calls: [Invocation<Input>], watermark: UInt64)
+    func report(_ issue: MockIssue)
+}
+
+typealias Journal<Input: Sendable> = ConfiguredJournal<Input, Void>
+
+final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: VerificationJournal {
     private struct State: Sendable {
+        var configuration: Configuration
+        var revision = RuleRevision(rawValue: 0)
         var nextID: UInt64 = 0
         var calls: [Invocation<Input>] = []
         var issues: [MockIssue] = []
     }
-    private let state = CriticalState(State())
+
+    private let state: CriticalState<State>
     let endpoint: EndpointID
     private let reporter: FailureReporter
-    init(endpoint: EndpointID, reporter: FailureReporter) {
-        self.endpoint = endpoint; self.reporter = reporter
+
+    init(endpoint: EndpointID, reporter: FailureReporter, configuration: Configuration) {
+        self.state = CriticalState(State(configuration: configuration))
+        self.endpoint = endpoint
+        self.reporter = reporter
     }
-    func begin(_ input: Input) -> UInt64 {
+
+    func admit(_ input: Input) -> (id: UInt64, configuration: Configuration) {
         state.withLock {
             $0.nextID += 1
             let id = $0.nextID
-            $0.calls.append(Invocation(id: id, input: input, phase: .admitted))
-            return id
+            $0.calls.append(Invocation(id: id, input: input,
+                                      configurationRevision: $0.revision, phase: .admitted))
+            return (id, $0.configuration)
         }
     }
+
+    func replaceConfiguration(_ configuration: Configuration) -> RuleRevision {
+        let (revision, retired) = state.withLock {
+            let retired = $0.configuration
+            let revision = RuleRevision(rawValue: $0.revision.rawValue + 1)
+            $0.configuration = configuration
+            $0.revision = revision
+            return (revision, retired)
+        }
+        // A captured object can run user code in deinit.
+        withExtendedLifetime(retired) {}
+        return revision
+    }
+
     func complete(_ id: UInt64, phase: CallPhase) {
         state.withLock {
             // IDs are one-based, append-only, and endpoint-local in this initial slice.
@@ -140,8 +178,16 @@ final class Journal<Input: Sendable>: Sendable {
     }
 }
 
+extension ConfiguredJournal where Configuration == Void {
+    convenience init(endpoint: EndpointID, reporter: FailureReporter) {
+        self.init(endpoint: endpoint, reporter: reporter, configuration: ())
+    }
+
+    func begin(_ input: Input) -> UInt64 { admit(input).id }
+}
+
 public struct Verification<Input: Sendable>: Sendable {
-    fileprivate let journal: Journal<Input>
+    fileprivate let journal: any VerificationJournal<Input>
     fileprivate let matcher: Matcher<Input>
     fileprivate let phase: CallPhase
     @discardableResult
@@ -281,17 +327,24 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
 }
 
 public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    private let configuration: AsyncThrowingConfiguration<Input, Output, Failure>
-    private let journal: Journal<Input>
+    private let journal: ConfiguredJournal<Input, AsyncThrowingConfiguration<Input, Output, Failure>>
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
     public init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
                 failureReporter: FailureReporter,
                 failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
-        self.configuration = configuration; self.failureMapping = failureMapping
-        self.journal = Journal(endpoint: id, reporter: failureReporter)
+        self.failureMapping = failureMapping
+        self.journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, configuration: configuration)
     }
+
+    /// Atomically replaces the plan for subsequent admissions. Existing invocations keep their admitted plan.
+    @discardableResult
+    public func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {
+        journal.replaceConfiguration(configuration)
+    }
+
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) async throws(Failure) -> Output {
-        let id = journal.begin(input)
+        let (id, configuration) = journal.admit(input)
+        defer { withExtendedLifetime(configuration) {} }
         if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
             switch await rule.answer(input) {
             case .success(let result):
