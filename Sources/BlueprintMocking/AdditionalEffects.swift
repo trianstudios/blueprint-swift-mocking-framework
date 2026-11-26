@@ -67,17 +67,42 @@ public struct SyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Error
     }
 }
 
+/// A real implementation for a checked Sendable synchronous throwing endpoint.
+public struct SyncThrowingForwarding<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    fileprivate let answer: SyncThrowingAnswer<Input, Output, Failure>
+
+    public init(_ body: @escaping @Sendable (Input) throws(Failure) -> Output) {
+        self.answer = { input in
+            do throws(Failure) { return .success(try body(input)) }
+            catch { return .failure(error) }
+        }
+    }
+}
+
 public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
     private let configuration: SyncThrowingConfiguration<Input, Output, Failure>
     private let journal: Journal<Input>
+    private let forwarding: SyncThrowingForwarding<Input, Output, Failure>?
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
 
+    public convenience init(
+        id: EndpointID, configuration: SyncThrowingConfiguration<Input, Output, Failure>,
+        failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+        failureMapping: (@Sendable (MockIssue) -> Failure)? = nil
+    ) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  scope: scope, forwarding: nil, failureMapping: failureMapping)
+    }
+
+    /// Calls the real implementation on a stub miss if supplied.
     public init(id: EndpointID, configuration: SyncThrowingConfiguration<Input, Output, Failure>,
                 failureReporter: FailureReporter,
                 scope: MockScope = MockSession().makeMock(),
+                forwarding: SyncThrowingForwarding<Input, Output, Failure>?,
                 failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
         self.configuration = configuration
         self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
+        self.forwarding = forwarding
         self.failureMapping = failureMapping
     }
 
@@ -87,13 +112,15 @@ public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failu
             if let failureMapping { throw failureMapping(issue) }
             fatalError(issue.message)
         }
-        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            switch rule.answer(input) {
+        let rule = configuration.rules.reversed().first { $0.matcher.matches(input) }
+        if let answer = rule?.answer ?? forwarding?.answer {
+            let origin: CallOrigin? = rule == nil ? .forwarded : nil
+            switch answer(input) {
             case .success(let result):
-                journal.complete(admission, phase: .returned)
+                journal.complete(admission, phase: .returned, origin: origin)
                 return result
             case .failure(let error):
-                journal.complete(admission, phase: .threw)
+                journal.complete(admission, phase: .threw, origin: origin)
                 throw error
             }
         }
@@ -119,7 +146,14 @@ extension SyncThrowingEndpoint where Failure == any Error {
     public convenience init(id: EndpointID, configuration: SyncThrowingConfiguration<Input, Output, Failure>,
                             failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock()) {
         self.init(id: id, configuration: configuration, failureReporter: failureReporter, scope: scope,
-                  failureMapping: { UnexpectedInvocationError(issue: $0) })
+                  forwarding: nil, failureMapping: { UnexpectedInvocationError(issue: $0) })
+    }
+
+    public convenience init(id: EndpointID, configuration: SyncThrowingConfiguration<Input, Output, Failure>,
+                            failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+                            forwarding: SyncThrowingForwarding<Input, Output, Failure>?) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter, scope: scope,
+                  forwarding: forwarding, failureMapping: { UnexpectedInvocationError(issue: $0) })
     }
 }
 
@@ -128,7 +162,14 @@ extension AsyncThrowingEndpoint where Failure == any Error {
     public convenience init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
                             failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock()) {
         self.init(id: id, configuration: configuration, failureReporter: failureReporter, scope: scope,
-                  failureMapping: { UnexpectedInvocationError(issue: $0) })
+                  forwarding: nil, failureMapping: { UnexpectedInvocationError(issue: $0) })
+    }
+
+    public convenience init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
+                            failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+                            forwarding: AsyncThrowingForwarding<Input, Output, Failure>?) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter, scope: scope,
+                  forwarding: forwarding, failureMapping: { UnexpectedInvocationError(issue: $0) })
     }
 }
 
@@ -168,15 +209,28 @@ public struct AsyncStub<Input: Sendable, Output: Sendable> {
 public final class AsyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     private let configuration: AsyncConfiguration<Input, Output>
     private let journal: Journal<Input>
+    private let forwarding: AsyncNonthrowingAnswer<Input, Output>?
     private let fallback: (@Sendable (MockIssue) -> Output)?
 
-    /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
+    /// Reports an unstubbed call before invoking the failure fallback.
+    public convenience init(
+        id: EndpointID, configuration: AsyncConfiguration<Input, Output>,
+        failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+        fallback: (@Sendable (MockIssue) -> Output)? = nil
+    ) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  scope: scope, forwarding: nil, fallback: fallback)
+    }
+
+    /// Calls the real implementation on a stub miss if supplied.
     public init(id: EndpointID, configuration: AsyncConfiguration<Input, Output>,
                 failureReporter: FailureReporter,
                 scope: MockScope = MockSession().makeMock(),
+                forwarding: (@Sendable (Input) async -> Output)?,
                 fallback: (@Sendable (MockIssue) -> Output)? = nil) {
         self.configuration = configuration
         self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
+        self.forwarding = forwarding
         self.fallback = fallback
     }
 
@@ -184,9 +238,10 @@ public final class AsyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
         guard let admission = journal.begin(input) else {
             return journal.resolveFinishedNonthrowingCall(source: source, fallback: fallback)
         }
-        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
-            let result = await rule.answer(input)
-            journal.complete(admission, phase: .returned)
+        let rule = configuration.rules.reversed().first { $0.matcher.matches(input) }
+        if let answer = rule?.answer ?? forwarding {
+            let result = await answer(input)
+            journal.complete(admission, phase: .returned, origin: rule == nil ? .forwarded : nil)
             return result
         }
         return journal.resolveMissingNonthrowingCall(admission, source: source, fallback: fallback)

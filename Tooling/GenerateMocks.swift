@@ -200,7 +200,7 @@ struct Member {
 
 func generate(
     input: String, module: String, selected: String, projections: [String], variadicForwarding: [String],
-    subscriptSpecializations: [String]
+    subscriptSpecializations: [String], spy: Bool
 ) throws -> String {
     let source = try String(contentsOfFile: input, encoding: .utf8)
     let tree = Parser.parse(source: source)
@@ -235,6 +235,15 @@ func generate(
         isolation = .mainActor
     } else {
         try reject(proto, "Use a public Sendable protocol without attributes or a public @MainActor protocol without inheritance")
+    }
+
+    if spy {
+        guard isolation == .sendable else {
+            try reject(proto, "Direct spy forwarding currently requires a Sendable protocol")
+        }
+        guard projections.isEmpty, variadicForwarding.isEmpty, subscriptSpecializations.isEmpty else {
+            try reject(proto, "Direct spy forwarding cannot be combined with projections, variadic adapters or generic specializations")
+        }
     }
 
     // The consumer compiler resolves aliases and validates the conformance. Reject type
@@ -347,6 +356,14 @@ func generate(
             // A single name on a subscript index is local. A method's is external.
             let label = forSubscript && parameter.secondName == nil ? "_" : parameter.firstName.text
             let isVariadic = parameter.ellipsis != nil
+            if spy {
+                if isVariadic {
+                    try reject(parameter, "Direct spy call-through cannot splat a Swift variadic argument; use --forward-variadic with an array-taking provider")
+                }
+                if parameter.type.tokens(viewMode: .sourceAccurate).contains(where: { ["inout", "->"].contains($0.text) }) {
+                    try reject(parameter, "Direct spy call-through requires a call-scoped provider for inout and callback arguments")
+                }
+            }
             guard let type = supportedType(parameter.type),
                   parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
                   parameter.defaultValue == nil,
@@ -382,6 +399,9 @@ func generate(
             try reject(property, "Use a public protocol property with a supported type and explicit get and optional set accessors")
         }
         let (getter, setter) = try getterAndSetter(accessors, at: property)
+        if spy, let setter {
+            try reject(setter, "Direct spy forwarding of a writable property requires a reference-constrained setter or an explicit adapter")
+        }
         let getterEffects = getter.effectSpecifiers
         let effect = try methodEffect(getterEffects?.asyncSpecifier, getterEffects?.throwsClause, at: getter)
         if let setter, effect.isAsync || effect.failure != nil || setter.effectSpecifiers != nil {
@@ -450,6 +470,17 @@ func generate(
         }
         let indices = try parseParameters(decl.parameterClause.parameters, forSubscript: true)
         let (getter, setter) = try getterAndSetter(accessors, at: decl)
+        if spy {
+            guard !isTypeLevel else {
+                try reject(decl, "Direct spy forwarding cannot dispatch static subscripts through an instance; use a metatype seam")
+            }
+            guard decl.genericParameterClause == nil, decl.genericWhereClause == nil else {
+                try reject(decl, "Direct spy forwarding for a generic subscript requires a polymorphic provider")
+            }
+            if let setter {
+                try reject(setter, "Direct spy forwarding of a writable subscript requires a reference-constrained setter or an explicit adapter")
+            }
+        }
         let effects = getter.effectSpecifiers
         let effect = try methodEffect(effects?.asyncSpecifier, effects?.throwsClause, at: getter)
         if isTypeLevel {
@@ -757,6 +788,7 @@ func generate(
         instanceIndices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
     output += "    public init(failureReporter: FailureReporter,\n"
     if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
+    if spy { output += "                forwardingTo: (any \(selected))? = nil,\n" }
     if !failureIndices.isEmpty {
         output += "                failureMappings: FailureMappings = .init(),\n"
     }
@@ -783,9 +815,29 @@ func generate(
         output += "        forwarding.__install\(i)?(setup\(i))\n"
     }
     output += "        configure(Stubs(" + instanceIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
+    func spyForwardingArgument(_ member: Member) -> String {
+        let arguments = member.parameters.enumerated().map { index, parameter in
+            let value = member.parameters.count == 1 ? "input" : "input.\(index)"
+            return parameter.label == "_" ? value : "\(parameter.label): \(value)"
+        }.joined(separator: ", ")
+        let call: String
+        switch member.kind {
+        case .method: call = "target.\(member.name)(\(arguments))"
+        case .getter(let property): call = "target.\(property)"
+        case .subscriptGetter: call = "target[\(arguments)]"
+        default: preconditionFailure("The spy profile filters unsupported witnesses before emission")
+        }
+        let input = member.parameters.isEmpty ? "_" : "input"
+        let effects = (member.effect.isAsync ? " async" : "") +
+            (member.effect.runtimeFailure.map { " throws(\($0.type))" } ?? "")
+        let wrapper = member.effect.runtimeFailure == nil ? "" : "\(member.family)Forwarding<\(member.genericArguments)> "
+        return ", forwarding: forwardingTo.map { target in\n                \(wrapper){ @Sendable \(input)\(effects) in \(member.effect.callPrefix)\(call) }\n            }"
+    }
+
     for i in instanceIndices {
         let m = members[i]
         var mapping = isolation == .sendable ? ", scope: scope" : ""
+        if spy { mapping += spyForwardingArgument(m) }
         if let failure = m.effect.runtimeFailure {
             mapping += ", failureMapping: failureMappings.__mapping\(i)"
             if failure.isOrdinary {
@@ -954,19 +1006,34 @@ func generate(
 
 do {
     let arguments = Array(CommandLine.arguments.dropFirst())
-    let options = stride(from: 8, to: arguments.count, by: 2)
-    guard arguments.count >= 8, arguments.count.isMultiple(of: 2), arguments[0] == "--input",
-          arguments[2] == "--module", arguments[4] == "--protocol", arguments[6] == "--output",
-          options.allSatisfy({ arguments[$0] == "--project" || arguments[$0] == "--forward-variadic" ||
-                               arguments[$0] == "--specialize-subscript" }) else {
-        throw GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']...")
+    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy]")
+    guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
+          arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
+    var options = arguments.dropFirst(8)
+    var projections: [String] = []
+    var variadicForwarding: [String] = []
+    var subscriptSpecializations: [String] = []
+    var spy = false
+    while let flag = options.popFirst() {
+        switch flag {
+        case "--spy":
+            guard !spy else { throw usage }
+            spy = true
+        case "--project":
+            guard let selector = options.popFirst() else { throw usage }
+            projections.append(selector)
+        case "--forward-variadic":
+            guard let selector = options.popFirst() else { throw usage }
+            variadicForwarding.append(selector)
+        case "--specialize-subscript":
+            guard let specialization = options.popFirst() else { throw usage }
+            subscriptSpecializations.append(specialization)
+        default: throw usage
+        }
     }
-    let projections = options.filter { arguments[$0] == "--project" }.map { arguments[$0 + 1] }
-    let variadicForwarding = options.filter { arguments[$0] == "--forward-variadic" }.map { arguments[$0 + 1] }
-    let subscriptSpecializations = options.filter { arguments[$0] == "--specialize-subscript" }.map { arguments[$0 + 1] }
     let output = try generate(input: arguments[1], module: arguments[3], selected: arguments[5],
                               projections: projections, variadicForwarding: variadicForwarding,
-                              subscriptSpecializations: subscriptSpecializations)
+                              subscriptSpecializations: subscriptSpecializations, spy: spy)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.write(toFile: arguments[7], atomically: true, encoding: .utf8)
 } catch {

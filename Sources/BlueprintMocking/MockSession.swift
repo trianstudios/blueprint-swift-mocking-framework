@@ -88,6 +88,8 @@ public struct SessionEvent: Equatable, Sendable {
     public let invocationID: SessionInvocationID
     public let configurationRevision: RuleRevision
     public let phase: CallPhase
+    /// The forwarding origin for a terminal event. Admissions have no origin.
+    public let origin: CallOrigin?
 }
 
 /// A copy of one epoch's metadata as of a session-wide event watermark.
@@ -344,7 +346,7 @@ public final class MockSession: Sendable {
             let event = SessionEvent(
                 ordinal: lastEventOrdinal, elapsed: clock.elapsed, epoch: epoch, mockID: mockID, endpoint: endpoint,
                 invocationID: SessionInvocationID(sessionID: epoch.sessionID, rawValue: nextInvocationNumber),
-                configurationRevision: configurationRevision, phase: .admitted
+                configurationRevision: configurationRevision, phase: .admitted, origin: nil
             )
             active[event.invocationID] = event
             histories[epoch]!.activeInvocationCount += 1
@@ -394,7 +396,7 @@ public final class MockSession: Sendable {
         }
 
         mutating func complete(
-            _ invocationID: SessionInvocationID, phase: CallPhase
+            _ invocationID: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil
         ) -> (event: SessionEvent, delivery: SessionQuiescenceDelivery?) {
             precondition(phase != .admitted, "Completion requires a terminal phase")
             guard let admission = active.removeValue(forKey: invocationID) else {
@@ -404,7 +406,7 @@ public final class MockSession: Sendable {
             let event = SessionEvent(
                 ordinal: lastEventOrdinal, elapsed: clock.elapsed, epoch: admission.epoch, mockID: admission.mockID,
                 endpoint: admission.endpoint, invocationID: invocationID,
-                configurationRevision: admission.configurationRevision, phase: phase
+                configurationRevision: admission.configurationRevision, phase: phase, origin: origin
             )
             histories[admission.epoch]!.activeInvocationCount -= 1
             histories[admission.epoch]!.events.append(event)

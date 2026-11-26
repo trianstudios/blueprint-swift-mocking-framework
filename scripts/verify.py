@@ -34,7 +34,7 @@ def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
     return output
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
-             module="ConsumerDomain", forwarding=(), specializations=()):
+             module="ConsumerDomain", forwarding=(), specializations=(), spy=False):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -43,6 +43,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--forward-variadic", method])
     for specialization in specializations:
         arguments.extend(["--specialize-subscript", specialization])
+    if spy:
+        arguments.append("--spy")
     return arguments
 
 def xcrun(*arguments):
@@ -146,6 +148,9 @@ def main():
     effectful_subscript_generated = generated.with_name("EffectfulSubscriptDirectoryMock.swift")
     run("effectful-subscript-generation", generate(
         tool, effectful_subscript_source, effectful_subscript_generated, "EffectfulSubscriptDirectory"))
+    spy_source = source.with_name("SpyDirectory.swift")
+    spy_generated = generated.with_name("SpyDirectoryMock.swift")
+    run("spy-generation", generate(tool, spy_source, spy_generated, "SpyDirectory", spy=True))
     type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
     run("type-subscript-generation", generate(
@@ -195,6 +200,9 @@ def main():
     run("subscript-label-normalization", generate(
         tool, relocated_subscript, repeated_subscript, "SubscriptDirectory"))
     assert subscript_generated.read_bytes() == repeated_subscript.read_bytes()
+    repeated_spy = temp / "RepeatedSpy.swift"
+    run("spy-generation-repeat", generate(tool, spy_source, repeated_spy, "SpyDirectory", spy=True))
+    assert spy_generated.read_bytes() == repeated_spy.read_bytes()
     repeated_type_subscript = temp / "RepeatedTypeSubscript.swift"
     run("type-subscript-generation-repeat", generate(
         tool, type_subscript_source, repeated_type_subscript, "TypeSubscriptDirectory"))
@@ -278,6 +286,29 @@ def main():
     run("projection-canonical-selector", generate(
         tool, ambiguous, disambiguated, "AmbiguousProjection", (canonical,)))
     assert "ProjectedSyncEndpoint<Int, String," in disambiguated.read_text()
+    spy_inout = temp / "InoutSpy.swift"
+    spy_inout.write_text("public protocol InoutSpy: Sendable { func update(_ value: inout Int) }\n")
+    spy_callback = temp / "CallbackSpy.swift"
+    spy_callback.write_text("public protocol CallbackSpy: Sendable { func apply(_ block: (Int) -> Int) }\n")
+    spy_rejections = (
+        ("actor-profile", actor_source, "MainActorDirectory", (), "currently requires a Sendable protocol"),
+        ("variadic", variadic_source, "VariadicDirectory", (), "cannot splat a Swift variadic argument"),
+        ("writable-property", property_source, "PropertyDirectory", (), "writable property requires a reference-constrained setter"),
+        ("writable-subscript", subscript_source, "SubscriptDirectory", (), "writable subscript requires a reference-constrained setter"),
+        ("static", type_subscript_source, "TypeSubscriptDirectory", (), "use a metatype seam"),
+        ("generic", generic_subscript_source, "GenericSubscriptDirectory", (), "requires a polymorphic provider"),
+        ("projection", spy_source, "SpyDirectory", ("display(for:)",), "cannot be combined with projections"),
+        ("inout", spy_inout, "InoutSpy", (), "requires a call-scoped provider for inout and callback"),
+        ("callback", spy_callback, "CallbackSpy", (), "requires a call-scoped provider for inout and callback"),
+    )
+    for label, input_path, protocol, projections, pattern in spy_rejections:
+        rejected = temp / "RejectedSpy.swift"
+        sentinel = "sentinel: preserve generated output\n"
+        rejected.write_text(sentinel)
+        run("spy-reject-" + label, generate(tool, input_path, rejected, protocol, projections, spy=True),
+            fails=True, patterns=[r"BPM001", r":\d+:\d+: error:", pattern])
+        assert rejected.read_text() == sentinel
+
     forwarding_ambiguity = temp / "ForwardingAmbiguity.swift"
     forwarding_ambiguity.write_text(
         "public protocol ForwardingAmbiguity: Sendable {\n"
@@ -398,6 +429,7 @@ def main():
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
         "GenericSubscriptWrongResult": r"cannot convert value of type 'String' to expected argument type 'Int'",
+        "SpyWrongTarget": r"argument type 'UnrelatedDependency' does not conform to expected type 'SpyDirectory'",
         "SubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "SubscriptWrongNewValue": r"cannot convert value of type 'Int' to expected argument type 'String'",
         "SubscriptWrongGetterResult": r"cannot convert value of type 'Int' to expected argument type 'String'",
@@ -502,6 +534,7 @@ def main():
         "propertyAccessorsGeneratedSHA256": hashlib.sha256(property_generated.read_bytes()).hexdigest(),
         "subscriptGeneratedSHA256": hashlib.sha256(subscript_generated.read_bytes()).hexdigest(),
         "effectfulSubscriptGeneratedSHA256": hashlib.sha256(effectful_subscript_generated.read_bytes()).hexdigest(),
+        "spyGeneratedSHA256": hashlib.sha256(spy_generated.read_bytes()).hexdigest(),
         "typeSubscriptGeneratedSHA256": hashlib.sha256(type_subscript_generated.read_bytes()).hexdigest(),
         "genericSubscriptGeneratedSHA256": hashlib.sha256(generic_subscript_generated.read_bytes()).hexdigest(),
         "variadicSubscriptGeneratedSHA256": hashlib.sha256(variadic_subscript_generated.read_bytes()).hexdigest(),

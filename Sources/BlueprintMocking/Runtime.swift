@@ -108,6 +108,10 @@ public struct RuleRevision: Sendable, Equatable {
 
 /// Admission queries include unfinished and throwing calls; terminal phases are explicit.
 public enum CallPhase: Sendable, Equatable { case admitted, returned, threw, terminated }
+
+/// An outcome produced by an explicitly supplied real implementation.
+public enum CallOrigin: Sendable, Equatable { case forwarded }
+
 public struct Invocation<Input: Sendable>: Sendable {
     public let id: UInt64
     public fileprivate(set) var input: Input
@@ -115,6 +119,8 @@ public struct Invocation<Input: Sendable>: Sendable {
     public let sessionInvocationID: SessionInvocationID
     public let epoch: SessionEpoch
     public fileprivate(set) var phase: CallPhase
+    /// The forwarding origin once a forwarded invocation settles.
+    public fileprivate(set) var origin: CallOrigin?
 }
 public struct VerificationResult: Sendable {
     public let passed: Bool
@@ -236,7 +242,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
                                           configurationRevision: $0.revision)
                 $0.calls.append(Invocation(id: id, input: input, configurationRevision: $0.revision,
                                           sessionInvocationID: event.invocationID, epoch: event.epoch,
-                                          phase: .admitted))
+                                          phase: .admitted, origin: nil))
                 if !tracksProjectionTimeline.isEmpty {
                     $0.projectionEvents.append(ProjectionJournalEvent(
                         ordinal: event.ordinal, elapsed: event.elapsed, invocationID: event.invocationID, change: .admitted
@@ -286,14 +292,17 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         withExtendedLifetime(retired) {}
     }
 
-    func complete(_ admission: JournalAdmission, phase: CallPhase, replacing input: Input? = nil) {
+    func complete(
+        _ admission: JournalAdmission, phase: CallPhase, origin: CallOrigin? = nil, replacing input: Input? = nil
+    ) {
         let (delivery, wake, retired) = scope.session.withLock { session in
-            let (terminal, ready) = session.complete(admission.event.invocationID, phase: phase)
+            let (terminal, ready) = session.complete(admission.event.invocationID, phase: phase, origin: origin)
             var retired: Input? = nil
             if admission.event.epoch == session.epoch {
                 retired = state.withLock { history -> Input? in
                     let index = Self.retainedIndex(of: admission, in: history.calls)
                     history.calls[index].phase = phase
+                    history.calls[index].origin = origin
                     if tracksProjectionTimeline.contains(.result) {
                         history.projectionEvents.append(ProjectionJournalEvent(
                             ordinal: terminal.ordinal, elapsed: terminal.elapsed,
@@ -565,16 +574,29 @@ public struct SyncStub<Input: Sendable, Output: Sendable> {
 public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     private let configuration: SyncConfiguration<Input, Output>
     private let journal: Journal<Input>
+    private let forwarding: (@Sendable (Input) -> Output)?
     private let fallback: (@Sendable (MockIssue) -> Output)?
 
-    /// Reports an unstubbed call before invoking the fallback. Without one, it terminates after reporting.
+    /// Reports an unstubbed call before invoking the failure fallback.
+    public convenience init(
+        id: EndpointID, configuration: SyncConfiguration<Input, Output>,
+        failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+        fallback: (@Sendable (MockIssue) -> Output)? = nil
+    ) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  scope: scope, forwarding: nil, fallback: fallback)
+    }
+
+    /// Calls the real implementation on a stub miss if supplied.
     public init(id: EndpointID, configuration: SyncConfiguration<Input, Output>,
                 failureReporter: FailureReporter,
                 scope: MockScope = MockSession().makeMock(),
+                forwarding: (@Sendable (Input) -> Output)?,
                 fallback: (@Sendable (MockIssue) -> Output)? = nil) {
         configuration.validateCaptureSession(scope.session.id)
         self.configuration = configuration
         self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
+        self.forwarding = forwarding
         self.fallback = fallback
     }
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) -> Output {
@@ -582,9 +604,10 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
             return journal.resolveFinishedNonthrowingCall(source: source, fallback: fallback)
         }
         // Last registration wins. Matching and answer execution are outside the journal lock.
-        if let answer = configuration.answer(matching: input, recording: admission.event) {
+        let stub = configuration.answer(matching: input, recording: admission.event)
+        if let answer = stub ?? forwarding {
             let result = answer(input)
-            journal.complete(admission, phase: .returned)
+            journal.complete(admission, phase: .returned, origin: stub == nil ? .forwarded : nil)
             return result
         }
         return journal.resolveMissingNonthrowingCall(admission, source: source, fallback: fallback)
@@ -599,6 +622,18 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
 // The stored Result preserves the public typed error on the original deployment floors.
 private typealias AsyncAnswer<Input, Output, Failure: Error> =
     @Sendable (Input) async -> Result<Output, Failure>
+
+/// A real implementation for a checked Sendable async throwing endpoint.
+public struct AsyncThrowingForwarding<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    fileprivate let answer: AsyncAnswer<Input, Output, Failure>
+
+    public init(_ body: @escaping @Sendable (Input) async throws(Failure) -> Output) {
+        self.answer = { input in
+            do throws(Failure) { return .success(try await body(input)) }
+            catch { return .failure(error) }
+        }
+    }
+}
 
 /// A legal step for a Sendable async endpoint's exact input, result, and thrown error.
 public struct AsyncThrowingSequenceStep<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
@@ -708,12 +743,15 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
 struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, History: Sendable>: Sendable {
     private let journal: ConfiguredJournal<History, PublishedAsyncThrowingConfiguration<Input, Output, Failure>>
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
+    private let forwarding: AsyncThrowingForwarding<Input, Output, Failure>?
     private let sessionID: SessionID
 
     init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
          failureReporter: FailureReporter, scope: MockScope,
+         forwarding: AsyncThrowingForwarding<Input, Output, Failure>? = nil,
          failureMapping: (@Sendable (MockIssue) -> Failure)?, tracksProjectionTimeline: ProjectionTimelineFields = []) {
         self.sessionID = scope.session.id
+        self.forwarding = forwarding
         self.failureMapping = failureMapping
         journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
                                     configuration: configuration.publish(for: sessionID),
@@ -769,15 +807,26 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         let history = projected ?? initialHistory
 
         let winningRule = configuration.rules.reversed().first { $0.matcher.matches(input) }
-        if let winningRule, let answer = winningRule.answer.plan.reserve() {
-            winningRule.answer.capture?.publish(input, admission.event)
+        let answer: AsyncAnswer<Input, Output, Failure>?
+        if let winningRule {
+            answer = winningRule.answer.plan.reserve()
+            if answer != nil { winningRule.answer.capture?.publish(input, admission.event) }
+        } else {
+            answer = forwarding?.answer
+        }
+        if let answer {
+            let origin: CallOrigin? = winningRule == nil ? .forwarded : nil
             switch await answer(input) {
             case .success(let output):
                 // An optional Output may legitimately be nil. The outer .some still identifies a return.
-                journal.complete(admission, phase: .returned, replacing: completionProjection(history, .some(output)))
+                journal.complete(
+                    admission, phase: .returned, origin: origin, replacing: completionProjection(history, .some(output))
+                )
                 return output
             case .failure(let error):
-                journal.complete(admission, phase: .threw, replacing: completionProjection(history, nil))
+                journal.complete(
+                    admission, phase: .threw, origin: origin, replacing: completionProjection(history, nil)
+                )
                 throw error
             }
         }
@@ -797,12 +846,23 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
 public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
     private let dispatch: AsyncThrowingDispatch<Input, Output, Failure, Input>
 
+    public convenience init(
+        id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
+        failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+        failureMapping: (@Sendable (MockIssue) -> Failure)? = nil
+    ) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  scope: scope, forwarding: nil, failureMapping: failureMapping)
+    }
+
+    /// Calls the real implementation on a stub miss if supplied.
     public init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
                 failureReporter: FailureReporter,
                 scope: MockScope = MockSession().makeMock(),
+                forwarding: AsyncThrowingForwarding<Input, Output, Failure>?,
                 failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
         dispatch = AsyncThrowingDispatch(id: id, configuration: configuration, failureReporter: failureReporter,
-                                         scope: scope, failureMapping: failureMapping)
+                                         scope: scope, forwarding: forwarding, failureMapping: failureMapping)
     }
 
     /// Atomically replaces the plan for subsequent admissions. Existing invocations keep their admitted plan.
