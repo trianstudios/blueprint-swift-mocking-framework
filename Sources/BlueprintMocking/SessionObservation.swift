@@ -19,6 +19,7 @@ struct SessionObservationDelivery: Sendable {
 /// after each wake. Use one iterator per lease and cancel it when no longer needed.
 public final class SessionObservation: Sendable {
     public let initialSnapshot: SessionSnapshot
+    let initialElapsed: Duration
     public let checkpoint: SessionCheckpoint
     public let notifications: AsyncStream<Void>
     private let session: MockSession
@@ -28,17 +29,21 @@ public final class SessionObservation: Sendable {
     fileprivate init(
         session: MockSession,
         initialSnapshot: SessionSnapshot,
+        initialElapsed: Duration,
         registrationID: UInt64?,
         notifications: AsyncStream<Void>,
         continuation: SessionObservationContinuation
     ) {
         self.session = session
         self.initialSnapshot = initialSnapshot
+        self.initialElapsed = initialElapsed
         self.checkpoint = SessionCheckpoint(snapshot: initialSnapshot)
         self.registrationID = registrationID
         self.notifications = notifications
         self.continuation = continuation
     }
+
+    func wake() { continuation.yield(()) }
 
     /// Unregisters the observation and closes its notifications. Repeated calls are safe.
     public func cancel() {
@@ -57,7 +62,7 @@ extension MockSession {
     /// diagnose the change. A finished session returns an already closed observation.
     public func observeChanges() -> SessionObservation {
         let (notifications, continuation) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let (snapshot, registrationID) = withLock { $0.registerObservation(continuation) }
+        let (snapshot, elapsed, registrationID) = withLock { $0.registerObservation(continuation) }
         if let registrationID {
             continuation.onTermination = { [weak self] _ in
                 self?.unregisterObservation(registrationID)
@@ -65,8 +70,9 @@ extension MockSession {
         } else {
             continuation.finish()
         }
-        return SessionObservation(session: self, initialSnapshot: snapshot, registrationID: registrationID,
-                                  notifications: notifications, continuation: continuation)
+        return SessionObservation(session: self, initialSnapshot: snapshot, initialElapsed: elapsed,
+                                  registrationID: registrationID, notifications: notifications,
+                                  continuation: continuation)
     }
 
     fileprivate func unregisterObservation(_ id: UInt64) {

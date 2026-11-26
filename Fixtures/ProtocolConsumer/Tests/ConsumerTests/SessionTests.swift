@@ -52,3 +52,37 @@ import ConsumerDoubles
     #expect(mock.verify.cachedName(id: .equal("before")).wasCalled(.once).passed)
     #expect(mock.verify.cachedName(id: .equal("after")).wasCalled(.never).passed)
 }
+
+@Test(.timeLimit(.minutes(1)))
+func RUN031_RUN032_generatedSelectorsDriveTimedMetadataAssertions() async throws {
+    let session = MockSession()
+    let mock = UserRepositoryMock(failureReporter: .swiftTesting, session: session) { stubs in
+        stubs.greeting(for: .any).willReturn("selected")
+        stubs.greeting(.any).willReturn("other overload")
+    }
+    #expect(mock.greeting(for: "call") == "selected")
+    #expect(mock.greeting("call") == "other overload")
+
+    let snapshot = session.snapshot()
+    let returned = snapshot.events.filter { $0.phase == .returned }
+    try #require(returned.count == 2)
+    #expect(returned[0].mockID == returned[1].mockID)
+    #expect(returned[0].endpoint != returned[1].endpoint)
+    let selector = SessionCallSelector(mockID: returned[0].mockID, endpoint: returned[0].endpoint)
+    let window = Duration.milliseconds(5)
+
+    do {
+        _ = try await session.until(.never, for: selector, phase: .returned, for: window)
+        Issue.record("Expected the interval to reject its initial metadata count")
+    } catch SessionTimedObservationError.violated(let mismatch) {
+        #expect(mismatch.observed == 1)
+        #expect(mismatch.epoch == snapshot.epoch)
+        #expect(mismatch.watermark == snapshot.watermark)
+    }
+
+    let stable = try await session.stable(.once, for: selector, phase: .returned, for: window, within: .seconds(1))
+    #expect(stable.observed == 1)
+    #expect(stable.epoch == snapshot.epoch)
+    #expect(stable.watermark == snapshot.watermark)
+    #expect(stable.elapsed >= window)
+}

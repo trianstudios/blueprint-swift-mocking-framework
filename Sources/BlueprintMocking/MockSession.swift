@@ -32,6 +32,8 @@ public struct MockScope: Sendable {
 /// Metadata about an admission or terminal outcome. Arguments remain in the endpoint's typed history.
 public struct SessionEvent: Equatable, Sendable {
     public let ordinal: UInt64
+    /// Monotonic elapsed time sampled when this event was committed.
+    public let elapsed: Duration
     public let epoch: SessionEpoch
     public let mockID: MockID
     public let endpoint: EndpointID
@@ -90,10 +92,14 @@ public final class MockSession: Sendable {
     public let id: SessionID
     private let state: CriticalState<State>
 
-    public init() {
+    public convenience init() {
+        self.init(clock: .continuous)
+    }
+
+    public init(clock: SessionClockMode) {
         let id = SessionID(rawValue: UUID())
         self.id = id
-        state = CriticalState(State(sessionID: id))
+        state = CriticalState(State(sessionID: id, clock: SessionClockState(clock)))
     }
 
     public func makeMock() -> MockScope {
@@ -103,6 +109,24 @@ public final class MockSession: Sendable {
 
     public func snapshot() -> SessionSnapshot {
         state.withLock { $0.snapshot(epoch: $0.epoch)! }
+    }
+
+    /// Moves a manual session clock forward without adding an event. Observers are
+    /// notified after the new clock reading is published.
+    public func advanceClock(by duration: Duration) throws(SessionClockError) {
+        let wake = try state.withLock { (state: inout State) throws(SessionClockError) in
+            try state.advanceClock(by: duration)
+            return state.observationWake()
+        }
+        wake?.publish()
+    }
+
+    func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
+        state.withLock { $0.timedSnapshot() }
+    }
+
+    func continuousInstant(at elapsed: Duration) -> ContinuousClock.Instant? {
+        state.withLock { $0.continuousInstant(at: elapsed) }
     }
 
     /// Returns nil for a foreign epoch or an epoch discarded by a destructive reset.
@@ -157,7 +181,10 @@ public final class MockSession: Sendable {
         }
 
         private(set) var epoch: SessionEpoch
-        private(set) var isFinished = false
+        private var clock: SessionClockState
+        private var finishedElapsed: Duration?
+
+        var isFinished: Bool { finishedElapsed != nil }
         private var nextMockNumber: UInt64 = 0
         private var nextInvocationNumber: UInt64 = 0
         private var lastEventOrdinal: UInt64 = 0
@@ -173,7 +200,8 @@ public final class MockSession: Sendable {
 
         var quiescenceWaiterCount: Int { quiescenceWaiters.count }
 
-        fileprivate init(sessionID: SessionID) {
+        fileprivate init(sessionID: SessionID, clock: SessionClockState) {
+            self.clock = clock
             let initialEpoch = SessionEpoch(sessionID: sessionID, rawValue: 0)
             epoch = initialEpoch
             histories = [initialEpoch: EpochHistory()]
@@ -191,6 +219,18 @@ public final class MockSession: Sendable {
                 events: history.events, activeInvocationCount: history.activeInvocationCount,
                 watermark: lastEventOrdinal, prunedThrough: history.prunedThrough, isFinished: isFinished
             )
+        }
+
+        fileprivate func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
+            (snapshot(epoch: epoch)!, finishedElapsed ?? clock.elapsed)
+        }
+
+        fileprivate func continuousInstant(at elapsed: Duration) -> ContinuousClock.Instant? {
+            clock.continuousInstant(at: elapsed)
+        }
+
+        fileprivate mutating func advanceClock(by duration: Duration) throws(SessionClockError) {
+            try clock.advance(by: duration)
         }
 
         /// Returns true when the retained prefix changed. Call only under the session gate.
@@ -219,7 +259,7 @@ public final class MockSession: Sendable {
             nextInvocationNumber += 1
             lastEventOrdinal += 1
             let event = SessionEvent(
-                ordinal: lastEventOrdinal, epoch: epoch, mockID: mockID, endpoint: endpoint,
+                ordinal: lastEventOrdinal, elapsed: clock.elapsed, epoch: epoch, mockID: mockID, endpoint: endpoint,
                 invocationID: SessionInvocationID(sessionID: epoch.sessionID, rawValue: nextInvocationNumber),
                 configurationRevision: configurationRevision, phase: .admitted
             )
@@ -231,12 +271,12 @@ public final class MockSession: Sendable {
 
         mutating func registerObservation(
             _ continuation: SessionObservationContinuation
-        ) -> (SessionSnapshot, UInt64?) {
-            let initial = snapshot(epoch: epoch)!
-            guard !isFinished else { return (initial, nil) }
+        ) -> (snapshot: SessionSnapshot, elapsed: Duration, registrationID: UInt64?) {
+            let (initial, elapsed) = timedSnapshot()
+            guard !isFinished else { return (initial, elapsed, nil) }
             nextObservationID += 1
             observations[nextObservationID] = continuation
-            return (initial, nextObservationID)
+            return (initial, elapsed, nextObservationID)
         }
 
         mutating func removeObservation(_ id: UInt64) -> SessionObservationContinuation? {
@@ -279,7 +319,7 @@ public final class MockSession: Sendable {
             }
             lastEventOrdinal += 1
             let event = SessionEvent(
-                ordinal: lastEventOrdinal, epoch: admission.epoch, mockID: admission.mockID,
+                ordinal: lastEventOrdinal, elapsed: clock.elapsed, epoch: admission.epoch, mockID: admission.mockID,
                 endpoint: admission.endpoint, invocationID: invocationID,
                 configurationRevision: admission.configurationRevision, phase: phase
             )
@@ -295,7 +335,8 @@ public final class MockSession: Sendable {
 
         fileprivate mutating func finishIfQuiescent() throws(SessionFinishError) -> SessionSnapshot {
             guard active.isEmpty else { throw .activeInvocations(count: active.count) }
-            isFinished = true
+            // Keep the final cutoff stable even if the clock advances before observers wake.
+            if finishedElapsed == nil { finishedElapsed = clock.elapsed }
             return snapshot(epoch: epoch)!
         }
 
