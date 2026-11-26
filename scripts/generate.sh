@@ -11,5 +11,6 @@ mkdir -p "$ROOT/.build/prototype-tooling"
   -Xlinker -rpath -Xlinker "$HOST" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/main.swift" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/PluginGeneration.swift" \
+  "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/ProtocolSourceIndex.swift" \
   -o "$ROOT/.build/prototype-tooling/generate"
 "$ROOT/.build/prototype-tooling/generate" "$@"

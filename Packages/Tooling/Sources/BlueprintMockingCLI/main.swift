@@ -99,7 +99,7 @@ struct GenericSubscript {
     let constraints: [String]
     let outputType: String
     let usesGenericResult: Bool
-    let line: Int
+    let origin: ProtocolSourceOrigin
 
     var selector: String { "get_subscript(\(label):)" }
 
@@ -131,7 +131,7 @@ struct Member {
     let outputType: String
     let effect: Effect
     let identity: String
-    let line: Int
+    let origin: ProtocolSourceOrigin
     let isolation: Isolation
     let kind: WitnessKind
 
@@ -230,25 +230,16 @@ struct Member {
 }
 
 func generate(
-    input: String, module: String, selected: String, projections: [String], variadicForwarding: [String],
-    subscriptSpecializations: [String], spy: Bool, parsedTree: SourceFileSyntax? = nil
+    index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
+    subscriptSpecializations: [String], spy: Bool
 ) throws -> String {
-    let tree: SourceFileSyntax
-    if let parsedTree {
-        tree = parsedTree
-    } else {
-        tree = Parser.parse(source: try String(contentsOfFile: input, encoding: .utf8))
-    }
-    let converter = SourceLocationConverter(fileName: input, tree: tree)
+    let input = root.origin.path
+    let module = root.origin.module
+    let selected = root.name
+    let proto = root.declaration
     func reject(_ node: some SyntaxProtocol, _ message: String) throws -> Never {
-        let location = converter.location(for: node.positionAfterSkippingLeadingTrivia)
-        throw GenerationError(description: "\(input):\(location.line):\(location.column): error: BPM001: \(message)")
-    }
-    guard !tree.hasError else { try reject(tree, "Malformed Swift source; fix parser errors before generation") }
-    let candidates = tree.statements.compactMap { $0.item.as(ProtocolDeclSyntax.self) }
-        .filter { $0.name.text == selected }
-    guard candidates.count == 1, let proto = candidates.first else {
-        try reject(tree, "Select one top-level protocol; conditional/nested/imported discovery is not supported")
+        let origin = index.origin(of: node)
+        throw GenerationError(description: "\(origin): error: BPM001: \(message)")
     }
     func simple(_ name: String) -> Bool {
         !name.isEmpty && name.first!.isLetter &&
@@ -260,14 +251,17 @@ func generate(
     }
     let conformances = proto.inheritanceClause?.inheritedTypes.map { $0.type.trimmedDescription } ?? []
     let isolation: Isolation
-    if proto.attributes.isEmpty && conformances == ["Sendable"] {
+    let declarations: [IndexedProtocol]
+    if proto.attributes.isEmpty {
         isolation = .sendable
+        declarations = try index.resolveSendable(from: root)
     } else if proto.attributes.count == 1,
               let attribute = proto.attributes.first?.as(AttributeSyntax.self),
               attribute.attributeName.trimmedDescription == "MainActor",
               attribute.leftParen == nil, attribute.arguments == nil,
               conformances.isEmpty {
         isolation = .mainActor
+        declarations = [root]
     } else {
         try reject(proto, "Use a public Sendable protocol without attributes or a public @MainActor protocol without inheritance")
     }
@@ -334,7 +328,7 @@ func generate(
     }
 
     var members: [Member] = []
-    var descriptors: [String: (variadic: Bool, inoutValue: Bool, callback: Bool)] = [:]
+    var descriptors: [String: Member] = [:]
     func addMember(
         name: String, parameters: [Parameter], outputType: String,
         effect: Effect, kind: WitnessKind, at node: some SyntaxProtocol
@@ -355,20 +349,18 @@ func generate(
         default: namespace = ""
         }
         let descriptor = "\(namespace)\(name)(\(matcherTypes)\(specialization))"
-        let isVariadic = parameters.contains { $0.isVariadic }
-        let isInout = parameters.contains(where: \.isInout)
-        let hasCallback = parameters.contains { $0.callback != nil }
-        if let previous = descriptors.updateValue((isVariadic, isInout, hasCallback), forKey: descriptor) {
-            if isVariadic || previous.variadic {
-                try reject(node, "Variadic overloads with identical lowered matcher signatures require distinct argument labels")
+        if let previous = descriptors[descriptor] {
+            let locations = " (previous requirement at \(previous.origin))"
+            if parameters.contains(where: \.isVariadic) || previous.parameters.contains(where: \.isVariadic) {
+                try reject(node, "Variadic overloads with identical lowered matcher signatures require distinct argument labels" + locations)
             }
-            if isInout || previous.inoutValue {
-                try reject(node, "Inout overloads with identical matcher signatures require distinct argument labels")
+            if parameters.contains(where: \.isInout) || previous.usesInout {
+                try reject(node, "Inout overloads with identical matcher signatures require distinct argument labels" + locations)
             }
-            if hasCallback || previous.callback {
-                try reject(node, "Callback overloads with identical ordinary-argument matcher signatures require distinct argument labels")
+            if parameters.contains(where: { $0.callback != nil }) || previous.callback != nil {
+                try reject(node, "Callback overloads with identical ordinary-argument matcher signatures require distinct argument labels" + locations)
             }
-            try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names")
+            try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names" + locations)
         }
         let endpoint: String
         var resultIdentity = outputType
@@ -385,10 +377,11 @@ func generate(
             resultIdentity = declaration.resultIdentity
         }
         let identity = "schema1|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(resultIdentity)|\(isolation.identity)"
-        members.append(Member(name: name, parameters: parameters, outputType: outputType,
-                              effect: effect, identity: identity,
-                              line: converter.location(for: node.positionAfterSkippingLeadingTrivia).line,
-                              isolation: isolation, kind: kind))
+        let member = Member(name: name, parameters: parameters, outputType: outputType,
+                            effect: effect, identity: identity, origin: index.origin(of: node),
+                            isolation: isolation, kind: kind)
+        descriptors[descriptor] = member
+        members.append(member)
     }
 
     func parseParameters(
@@ -497,8 +490,8 @@ func generate(
               let genericClause = decl.genericParameterClause, genericClause.parameters.count == 1,
               let key = genericClause.parameters.first, key.attributes.isEmpty,
               key.firstToken(viewMode: .sourceAccurate)?.id == key.name.id, simple(key.name.text),
-              indices.count == 1, let index = indices.first,
-              !index.isVariadic, index.type == key.name.text else {
+              indices.count == 1, let keyParameter = indices.first,
+              !keyParameter.isVariadic, keyParameter.type == key.name.text else {
             try reject(decl, "Generic specialization requires a synchronous read-only Sendable instance subscript with one generic index and inline constraints")
         }
 
@@ -526,8 +519,8 @@ func generate(
             try reject(decl.returnClause, "Specialized generic subscripts require a value result")
         }
         let declaration = GenericSubscript(
-            label: index.label, constraints: constraints, outputType: output, usesGenericResult: usesGenericResult,
-            line: converter.location(for: getter.positionAfterSkippingLeadingTrivia).line
+            label: keyParameter.label, constraints: constraints, outputType: output, usesGenericResult: usesGenericResult,
+            origin: index.origin(of: getter)
         )
         genericSubscripts.append((declaration, decl))
     }
@@ -580,7 +573,7 @@ func generate(
         }
     }
 
-    for item in proto.memberBlock.members {
+    for item in declarations.flatMap({ $0.declaration.memberBlock.members }) {
         if let decl = item.decl.as(SubscriptDeclSyntax.self) {
             try addSubscript(decl)
             continue
@@ -1110,14 +1103,13 @@ func generate(
         output += "        return TypeScope(" +
             typeIndices.map { "__endpoint\($0): endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n"
     }
-    let fileName = URL(fileURLWithPath: input).lastPathComponent
-    let fileID = module + "/" + fileName
-    func location(_ line: Int) -> String {
-        "SourceLocation(fileID: \(String(reflecting: fileID)), filePath: \(String(reflecting: fileName)), line: \(line), column: 1)"
+    func location(_ origin: ProtocolSourceOrigin) -> String {
+        let fileID = origin.module + "/" + origin.fileName
+        return "SourceLocation(fileID: \(String(reflecting: fileID)), filePath: \(String(reflecting: origin.fileName)), line: \(origin.line), column: 1)"
     }
-    func call(_ index: Int, _ argument: String, line: Int? = nil) -> String {
+    func call(_ index: Int, _ argument: String, origin: ProtocolSourceOrigin? = nil) -> String {
         let member = members[index]
-        return "\(member.effect.callPrefix)__endpoint\(index).invoke(\(argument), source: \(location(line ?? member.line)))"
+        return "\(member.effect.callPrefix)__endpoint\(index).invoke(\(argument), source: \(location(origin ?? member.origin)))"
     }
     for (i, m) in members.enumerated() {
         switch m.kind {
@@ -1150,19 +1142,19 @@ func generate(
                 let type = members[index].inputType
                 output += "        if __BlueprintKey.self == (\(type)).self, let key = input as? \(type) {\n"
                 if declaration.usesGenericResult {
-                    output += "            let value = \(call(index, "key", line: declaration.line))\n"
+                    output += "            let value = \(call(index, "key", origin: declaration.origin))\n"
                     output += "            guard let result = value as? __BlueprintKey else { preconditionFailure(\"Mismatched subscript specialization result\") }\n"
                     output += "            return result\n"
                 } else {
-                    output += "            return \(call(index, "key", line: declaration.line))\n"
+                    output += "            return \(call(index, "key", origin: declaration.origin))\n"
                 }
                 output += "        }\n"
             }
             output += "        __scope.terminateMissingSpecialization(of: \(String(reflecting: m.identity)), for: __BlueprintKey.self,\n"
-            output += "            reporter: __failureReporter, source: \(location(declaration.line)))\n    }\n"
+            output += "            reporter: __failureReporter, source: \(location(declaration.origin)))\n    }\n"
         case .typeSubscriptGetter(let indices):
             func missingScope(_ member: Member) -> String {
-                "BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID(\(String(reflecting: member.identity))), source: \(location(member.line)))"
+                "BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID(\(String(reflecting: member.identity))), source: \(location(member.origin)))"
             }
             output += "\n    public static subscript(\(m.parameterDeclaration)) -> \(m.outputType) {\n"
             output += "        get {\n            guard let scope = __typeScope else {\n"
@@ -1188,7 +1180,7 @@ private func run(_ arguments: [String]) throws {
         return
     }
     let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
-    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy]")
+    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy] [--source MODULE FILE]...")
     guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
           arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
     var options = arguments.dropFirst(8)
@@ -1196,11 +1188,15 @@ private func run(_ arguments: [String]) throws {
     var variadicForwarding: [String] = []
     var subscriptSpecializations: [String] = []
     var spy = false
+    var sourcePaths: [String: [String]] = [:]
     while let flag = options.popFirst() {
         switch flag {
         case "--spy":
             guard !spy else { throw usage }
             spy = true
+        case "--source":
+            guard let module = options.popFirst(), let path = options.popFirst() else { throw usage }
+            sourcePaths[module, default: []].append(path)
         case "--project":
             guard let selector = options.popFirst() else { throw usage }
             projections.append(selector)
@@ -1213,8 +1209,15 @@ private func run(_ arguments: [String]) throws {
         default: throw usage
         }
     }
-    let output = try generate(input: arguments[1], module: arguments[3], selected: arguments[5],
-                              projections: projections, variadicForwarding: variadicForwarding,
+    let input = arguments[1]
+    let module = arguments[3]
+    let index = try ProtocolSourceIndex(module: module, paths: [input] + (sourcePaths[module] ?? []))
+    let root = try index.select(arguments[5], diagnosticFile: input)
+    guard URL(fileURLWithPath: root.origin.path).standardizedFileURL == URL(fileURLWithPath: input).standardizedFileURL else {
+        throw GenerationError(description: "\(input):1:1: error: BPM001: The selected protocol must be declared in --input")
+    }
+    let output = try generate(index: index, root: root, projections: projections,
+                              variadicForwarding: variadicForwarding,
                               subscriptSpecializations: subscriptSpecializations, spy: spy)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.write(toFile: arguments[7], atomically: true, encoding: .utf8)

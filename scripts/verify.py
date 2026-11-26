@@ -41,7 +41,7 @@ def record_result(name, output, returncode, valid, *, expected_failure):
     return output
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
-             module="ConsumerDomain", forwarding=(), specializations=(), spy=False):
+             module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -52,6 +52,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--specialize-subscript", specialization])
     if spy:
         arguments.append("--spy")
+    for source_module, path in sources:
+        arguments.extend(["--source", source_module, path])
     return arguments
 
 def xcrun(*arguments):
@@ -123,6 +125,15 @@ def main():
         "--protocol", "UserRepository", "--output", generated], env=generation_environment)
     tool = ROOT / ".build/prototype-tooling/generate"
     baseline = generated.read_bytes()
+    inherited_source = source.with_name("InheritedDirectory.swift")
+    inherited_generated = generated.with_name("InheritedDirectoryMock.swift")
+    inherited_parents = tuple(("ConsumerDomain", source.with_name(name + ".swift")) for name in (
+        "InheritedDirectoryRoot", "InheritedDirectoryReadBranch", "InheritedDirectoryWriteBranch",
+    ))
+    run("inherited-protocol-generation", generate(
+        tool, inherited_source, inherited_generated, "InheritedDirectory", sources=inherited_parents))
+    inherited_mock = inherited_generated.read_text()
+    assert len(re.findall(r"(?m)^    public func label\(", inherited_mock)) == 1
     actor_source = source.with_name("MainActorDirectory.swift")
     actor_generated = generated.with_name("MainActorDirectoryMock.swift")
     run("main-actor-generation", generate(tool, actor_source, actor_generated, "MainActorDirectory"))
@@ -204,6 +215,29 @@ def main():
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
     run("generation-repeat", generate(tool, source, temp / "Repeated.swift"))
+
+    repeated_inheritance = temp / "RepeatedInherited.swift"
+    run("inherited-protocol-generation-reordered", generate(
+        tool, inherited_source, repeated_inheritance, "InheritedDirectory", sources=reversed(inherited_parents)))
+    assert repeated_inheritance.read_text() == inherited_mock
+    inherited_config = temp / "inherited-blueprint-mocking.json"
+    inherited_config.write_text(json.dumps({
+        "schemaVersion": 1,
+        "selections": [{"module": "ConsumerDomain", "type": "InheritedDirectory", "kind": "protocol"}],
+    }))
+    inherited_batch = temp / "inherited-batch"
+    batch_inputs = [value for module, path in (*inherited_parents, ("ConsumerDomain", inherited_source))
+                    for value in ("--source", module, path)]
+    run("inherited-protocol-generation-config", [
+        tool, "generate", "--config", inherited_config, "--output", inherited_batch,
+        "--input-set-id", "1", *batch_inputs], patterns=[r"Blueprint Mocking: generated 1 protocol mock"])
+    assert inherited_mock in (inherited_batch / "BlueprintMocks.generated.swift").read_text()
+    previous_batch = {file.name: file.read_bytes() for file in inherited_batch.glob("*.generated.swift")}
+    run("reject-inheritance-config-missing", [
+        tool, "generate", "--config", inherited_config, "--output", inherited_batch,
+        "--input-set-id", "1", "--source", "ConsumerDomain", inherited_source],
+        fails=True, patterns=[r"BPM001: Missing inherited protocol ConsumerDomain\.InheritedDirectoryReadBranch"])
+    assert {file.name: file.read_bytes() for file in inherited_batch.glob("*.generated.swift")} == previous_batch
     assert baseline == (temp / "Repeated.swift").read_bytes()
     actor_repeated = temp / "RepeatedMainActor.swift"
     run("main-actor-generation-repeat",
@@ -436,6 +470,37 @@ def main():
         run("reject-" + rejection.stem, generate(tool, rejection, output, rejection.stem),
             fails=True, patterns=rejection_patterns)
         assert output.read_text() == "sentinel: preserve the previous generation\n"
+    inheritance_rejections = ROOT / "Fixtures/InheritanceRejections"
+    inherited_negatives = [
+        ("missing", "MissingParent", (),
+         [r"MissingParent\.swift:1:\d+: error: BPM001: .*ConsumerDomain\.UnsuppliedParent"]),
+        ("other-module-decoy", "MissingParent", (("DecoyDomain", "DecoyParent"),),
+         [r"BPM001: .*ConsumerDomain\.UnsuppliedParent"]),
+        ("ambiguous", "MissingParent", (("ConsumerDomain", "DecoyParent"), ("ConsumerDomain", "AmbiguousParent")),
+         [r"BPM001: Ambiguous inherited protocol ConsumerDomain\.UnsuppliedParent",
+          r"DecoyParent\.swift:1:1", r"AmbiguousParent\.swift:1:1"]),
+        ("foreign", "ForeignQualifiedParent", (("DecoyDomain", "DecoyParent"),),
+         [r"BPM001: Unsupported foreign inherited protocol 'DecoyDomain\.UnsuppliedParent'"]),
+        ("cycle", "InheritanceCycleA", (("ConsumerDomain", "InheritanceCycleB"),),
+         [r"BPM001: Protocol inheritance cycle: InheritanceCycleA -> InheritanceCycleB -> InheritanceCycleA"]),
+        ("result-collision", "InheritedDescriptorCollision", (
+            ("ConsumerDomain", "StringLookupParent"), ("ConsumerDomain", "IntLookupParent")),
+         [r"BPM001: Overloads that differ only by effects or result type", r"StringLookupParent\.swift:2:\d+",
+          r"IntLookupParent\.swift:2:\d+"]),
+        ("effect-collision", "InheritedEffectCollision", (
+            ("ConsumerDomain", "PlainAccessParent"), ("ConsumerDomain", "AsyncAccessParent")),
+         [r"BPM001: Overloads that differ only by effects or result type", r"PlainAccessParent\.swift:2:\d+",
+          r"AsyncAccessParent\.swift:2:\d+"]),
+    ]
+    for label, selected, inputs, patterns in inherited_negatives:
+        output = temp / "RejectedInheritance.swift"
+        output.write_text("sentinel: preserve the previous generation\n")
+        command = generate(
+            tool, inheritance_rejections / (selected + ".swift"), output, selected,
+            sources=((module, inheritance_rejections / (name + ".swift")) for module, name in inputs),
+        )
+        run("reject-inheritance-" + label, command, fails=True, patterns=patterns)
+        assert output.read_text() == "sentinel: preserve the previous generation\n"
     mapper_fixture = ROOT / "Fixtures/FailureMappingConsumer"
     mapper_tests = "Tests/FailureMappingProbeTests/FailureMappingTests.swift"
     baseline_probe = (mapper_fixture / "Variants/A/Probe.swift").read_text()
@@ -461,7 +526,9 @@ def main():
                             r"GEN007_failureMappingsSelectOverloadsByArgumentType\(\) passed"])
     run_swift("runtime-tests", ["test"], patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
     run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
-        patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
+        patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
+                  r"GEN002_diamondBranchesShareOneTypedWitnessAndEndpoint\(\) passed",
+                  r"GEN002_unstubbedSharedWitnessReportsItsOriginalDeclarationFile\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [
@@ -694,6 +761,7 @@ def main():
         "parser": "SwiftParser/SwiftSyntax bundled with this exact Xcode toolchain",
         "swiftPMBuildPluginVerified": check_swiftpm_plugin,
         "generatedSHA256": hashlib.sha256(baseline).hexdigest(),
+        "inheritedProtocolGeneratedSHA256": hashlib.sha256(inherited_mock.encode()).hexdigest(),
         "mainActorGeneratedSHA256": hashlib.sha256(actor_baseline).hexdigest(),
         "effectsGeneratedSHA256": hashlib.sha256(effect_generated.read_bytes()).hexdigest(),
         "effectEdgesGeneratedSHA256": hashlib.sha256(edge_generated.read_bytes()).hexdigest(),

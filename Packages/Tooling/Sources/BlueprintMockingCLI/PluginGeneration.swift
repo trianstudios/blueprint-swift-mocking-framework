@@ -1,6 +1,4 @@
 import Foundation
-import SwiftParser
-import SwiftSyntax
 
 private struct BuildConfiguration: Decodable {
     struct Selection: Decodable {
@@ -91,30 +89,12 @@ func generateBuildOutputs(arguments: ArraySlice<String>) throws {
     var generated: [String] = []
 
     for module in Set(selections.map(\.module)).sorted() {
-        let moduleSelections = selections.filter { $0.module == module }
-        let selectedNames = Set(moduleSelections.map(\.type))
-        var declarations: [String: [(path: String, tree: SourceFileSyntax)]] = [:]
-        for path in (request.sources[module] ?? []).sorted() {
-            let tree = Parser.parse(source: try String(contentsOfFile: path, encoding: .utf8))
-            guard !tree.hasError else {
-                throw GenerationError(description: "\(path):1:1: error: BPM001: Malformed Swift source")
-            }
-            for item in tree.statements {
-                if let declaration = item.item.as(ProtocolDeclSyntax.self), selectedNames.contains(declaration.name.text) {
-                    declarations[declaration.name.text, default: []].append((path, tree))
-                }
-            }
-        }
-
-        for selection in moduleSelections {
-            guard let candidates = declarations[selection.type], candidates.count == 1,
-                  let declaration = candidates.first else {
-                throw GenerationError(description: "\(request.config.path):1:1: error: BPM001: "
-                    + "Expected one top-level protocol \(module).\(selection.type) in the SwiftPM source inputs")
-            }
+        let index = try ProtocolSourceIndex(module: module, paths: request.sources[module] ?? [])
+        for selection in selections where selection.module == module {
+            let root = try index.select(selection.type, diagnosticFile: request.config.path)
             generated.append(try generate(
-                input: declaration.path, module: module, selected: selection.type, projections: [],
-                variadicForwarding: [], subscriptSpecializations: [], spy: false, parsedTree: declaration.tree
+                index: index, root: root, projections: [], variadicForwarding: [],
+                subscriptSpecializations: [], spy: false
             ))
         }
     }

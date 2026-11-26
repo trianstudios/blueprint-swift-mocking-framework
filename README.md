@@ -81,6 +81,19 @@ bash scripts/generate.sh \
   --output Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/UserRepositoryMock.swift
 ```
 
+For a public `Sendable` protocol that inherits other protocols in the same module, pass their files explicitly using repeated `--source MODULE FILE` arguments. Keep `--input` pointed at the selected protocol’s file.
+
+```sh
+bash scripts/generate.sh \
+  --input Sources/AppDomain/Directory.swift --module AppDomain \
+  --protocol Directory --output Tests/AppTests/DirectoryMock.swift \
+  --source AppDomain Sources/AppDomain/Reading.swift \
+  --source AppDomain Sources/AppDomain/Writing.swift \
+  --source AppDomain Sources/AppDomain/DirectoryRoot.swift
+```
+
+The generator follows transitive parents in the supplied module and emits a shared diamond requirement once. Inherited calls retain the declaring file and line. The SwiftPM configuration entry uses the same resolver. Parents must be public, top-level, nongeneric protocols in the supplied module. Cross-module inheritance, conditional parents, and inherited actor isolation remain outside this profile.
+
 For supported Sendable methods, add `--project 'fetch(id:)'` and any other `--project` selectors to generate a separate `<Protocol>ProjectedMock`. Synchronous nonthrowing and async-throwing methods can opt in. A selector uses the declaration's argument labels, including `_:` for unlabeled arguments. If overloads share the same labels, use the canonical endpoint ID listed in the diagnostic.
 
 Supply an `InvocationProjection` for each selected initializer argument `projectionN`, then read `mock.verify.historyN` for its typed history. The generated index follows canonical endpoint order. For projected String fields, `mock.verify.stableHistoryN` accepts `matchingArgument:` or `matchingResult:` and a session-clock window. Unselected methods retain the ordinary verification descriptors, and stubbing uses the same typed setup for all methods.

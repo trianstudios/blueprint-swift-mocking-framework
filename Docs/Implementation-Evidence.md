@@ -131,3 +131,13 @@ The checked-in `Packages/Tooling/ExportManifest.json` specifies the standalone p
 Tests cover repeatable exports across checkout paths, staged and unstaged source changes, archive attributes, corrupted bytes, unsafe paths, a tracked symlink, and an internally consistent older archive checked against a newer revision. The local install verifier places the exact unpacked artifact in a disposable Git repository and checks the consumer’s tooling, runtime and SwiftSyntax pins. A separate runtime-only fixture resolves zero transitive dependencies.
 
 This milestone covers local source packaging and resolution through a prepared local mirror on Apple Swift 6.4. The checks use file-only Git transport. Compilation from the exported package, complete offline build qualification, hosted tooling distribution and signed release exports remain open.
+
+## Same-module protocol inheritance
+
+GEN-002 now resolves transitive public Sendable protocols from an explicit same-module source index. The standalone `--source` arguments and the SwiftPM configuration entry share the resolver. The graph visits a diamond’s common declaration once. The generated endpoint identity stays rooted in the selected protocol, while inherited call reports point to the declaring file and line.
+
+The compiled consumer calls the common witness through both parent existential views and verifies one typed descriptor with two returned calls. It also exercises an inherited property, typed async errors, and an unstubbed inherited call with its original source location. Reordered input files give byte-identical mock output. The configuration entry emits the same mock.
+
+Missing, ambiguous, foreign and cyclic parents stop generation with `BPM001`. Return-only and effect conflicts name both declaration sites. Failed requests preserve prior output. Cross-module parent resolution, independent equivalent signatures, imported interfaces and inherited actor isolation remain open.
+
+The verification profile uses the installed Xcode parser and the existing SwiftPM consumer caches. Compilation of the exported tooling package, hosted distribution, and additional native qualification remain separate release gates.
