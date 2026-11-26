@@ -120,6 +120,30 @@ python3 scripts/verify_offline_runtime.py "$revision" \
 
 The verifier checks the bare Git mirror's object integrity before changing evidence or invoking SwiftPM. It isolates SwiftPM caches and mirror configuration, confirms OS-level network denial, then resolves, builds and runs the typed consumer. It checks Mach-O libraries and static link inputs for the runtime-only dependency boundary. Set `BLUEPRINT_VERIFY_OFFLINE_RUNTIME_MIRROR` to the same mirror path when running `scripts/verify.py` from a clean checkout to collect the offline install, corrupt-object rejection, and configured generation checks with the rest of the prototype evidence. The generation check compares the shard and index against a normal run and builds the independent consumer under the same network policy using the Xcode-bundled parser.
 
+### Prepared parser parity
+
+Run this on the prepared macOS host after independently building the bundled generator using `scripts/generate.sh` and the packaged `blueprint-mocking` product using the native SwiftPM debug build system. Use the same authoring revision, selected Xcode `swiftc` and macOS SDK for both. The SwiftPM build comes from `Packages/Tooling` in an exact authoring checkout and resolves the pinned SwiftSyntax 600.0.1 source. Retain its unstripped executable, scratch directory with `checkouts/swift-syntax` and object files, `Package.resolved`, and `blueprint-mocking.product/Objects.LinkFileList` next to the executable.
+
+Use one JSON receipt from each trusted build, with these fields.
+
+| Applies to | Receipt fields |
+| --- | --- |
+| Both builds | `schema` (integer `1`), `route` (`bundled` or `packaged`), `sourceRevision` (full Git SHA), `executableSHA256`, `swiftCompiler` (absolute selected compiler path), `compilerVersion` (trimmed full `swiftc --version` stdout), and `sdk` (absolute selected macOS SDK path). |
+| Bundled build | `parserSHA256` with the recorded SHA-256 for each file keyed by `libSwiftParser.dylib` and `libSwiftSyntax.dylib` from the Xcode host library directory. |
+| Packaged build | `packageResolvedSHA256` and `linkFileListSHA256` for the retained SwiftPM lockfile and link inputs. |
+
+```sh
+python3 scripts/verify_parser_parity.py "$revision" \
+  --bundled-tool "$bundled_tool" --bundled-receipt "$bundled_receipt" \
+  --packaged-tool "$packaged_tool" --packaged-receipt "$packaged_receipt" \
+  --package-checkout "$package_checkout" --package-scratch "$package_scratch" \
+  --package-resolved "$package_checkout/Packages/Tooling/Package.resolved" \
+  --syntax-checkout "$package_scratch/checkouts/swift-syntax" \
+  --evidence-dir "$artifact_dir/parser-parity"
+```
+
+The command uses the prepared binaries and produces logs and a parity report after all comparisons pass. Keep the build receipts and report with the originating build records. Release attestation is a separate step.
+
 ### Standalone generation
 
 The generated source is included so the consumer can build directly. Regenerate it with:

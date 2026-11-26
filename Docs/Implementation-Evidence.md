@@ -132,7 +132,11 @@ Run the solver fixture with `python3 scripts/verify_swiftpm_compatibility.py --e
 
 Consumers with a different SwiftSyntax pin can run the standalone generator from the authoring checkout and add the emitted Swift to their test target. The standalone script uses the selected Xcode toolchain’s bundled parser.
 
-Parser parity needs a prepared build of the pinned package executable. Run both front ends at the same authoring revision against a basic typed protocol, the inherited diamond consumer, and an unresolved-parent rejection. Record both parser identities and compare generated witnesses, endpoint and index identities, source locations, and the `BPM001` rejection after normalizing checkout paths. Exported tooling compilation, hosted distribution, and native-profile qualification are tracked separately.
+The prepared-host parser-parity harness compares three successful requests covering typed lookup, diamond inheritance and dependent associated types. It also compares the missing-parent and conflicting-element rejections. It runs both generators on the same staged committed inputs under a verified macOS network block. The harness compares the full shard and index bytes and the exact exit and diagnostic bytes. Raw logs retain loader traces. Diagnostic comparison filters the recognized loader records and removes the known staged directory prefix from generator text. Rejections must preserve the previously generated pair.
+
+The verifier checks receipts from each trusted build producer. It rejects the same executable by identity or digest, checks the selected Xcode dylibs in the bundled loader trace, and checks the packaged route's exact SwiftSyntax 600.0.1 lockfile, checkout bytes, native link inputs and defined parser symbols. The packaged loader trace must show no dynamic parser images. A passing report is created only after every request agrees. Unit tests deliberately change output and diagnostic bytes and require the verifier to clear prior passing evidence. The actual CLI rejects an attempted self-comparison.
+
+The prepared Xcode generator passed its five individual requests on arm64 macOS. Real two-parser parity still needs the compiled SwiftSyntax 600.0.1 executable from the same authoring revision. See the prepared-host command in the README. Exported tooling compilation, hosted distribution, signed build provenance and native-profile qualification retain their own gates.
 
 ## Reproducible local tooling source exports
 

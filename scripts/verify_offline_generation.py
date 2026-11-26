@@ -49,14 +49,14 @@ def validate_parser_trace(output, expected):
             raise ValueError(f"The generator did not load exactly one approved Xcode {name}: {observed[name]}")
 
 
-def validate_generated_outputs(normal, offline):
+def validate_generated_outputs(normal, offline, *, input_set=INPUT_SET):
     if normal.keys() != set(OUTPUT_NAMES) or not all(normal.values()) or normal != offline:
         raise ValueError("Expected byte-identical configured shard and index from normal and offline generation")
     shard, index = (normal[name] for name in OUTPUT_NAMES)
     markers = re.findall(rb"(?m)^enum " + SHARD_MARKER + rb" \{\}$", shard)
     aliases = re.findall(rb"(?m)^enum BlueprintMockingGeneratedIndex \{ typealias Shard = " + SHARD_MARKER + rb" \}$",
                          index)
-    expected_inputs = [f"// SwiftPM input set: {INPUT_SET}".encode("ascii")]
+    expected_inputs = [f"// SwiftPM input set: {input_set}".encode("ascii")]
     if (len(markers) != 1 or aliases != markers
             or re.findall(rb"(?m)^// SwiftPM input set:[^\n]*$", index) != expected_inputs):
         raise ValueError("The configured index must reference the emitted shard and exact input set")

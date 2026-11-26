@@ -9,6 +9,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 
 from check_release import read_registry
 from fatal_child import check_fatal_child
@@ -190,6 +191,19 @@ def main():
         "bash", "scripts/generate.sh", "--input", source, "--module", "ConsumerDomain",
         "--protocol", "UserRepository", "--output", generated], env=generation_environment)
     tool = ROOT / ".build/prototype-tooling/generate"
+    with tempfile.TemporaryDirectory(prefix="Parser Parity Self Comparison ", dir=EVIDENCE) as directory:
+        report = Path(directory) / "parser-parity-report.json"
+        report.write_text('{"status":"passed","stale":true}\n')
+        placeholder = ROOT / "Packages/Tooling/ExportManifest.json"
+        run("reject-parser-parity-self-comparison", [
+            sys.executable, "scripts/verify_parser_parity.py", "0" * 40,
+            "--bundled-tool", tool, "--packaged-tool", tool,
+            "--bundled-receipt", placeholder, "--packaged-receipt", placeholder,
+            "--package-resolved", placeholder, "--package-checkout", ROOT, "--package-scratch", ROOT,
+            "--syntax-checkout", ROOT, "--evidence-dir", directory,
+        ], fails=True, env=swift_environment, patterns=[r"Expected two independent binaries, not a self-comparison"])
+        if report.exists():
+            raise ValueError("The rejected parser self-comparison left a passing report")
     run("declaration-inspection", [sys.executable, ROOT / "scripts/verify_inspection.py",
                                   "--tool", tool, "--evidence-dir", EVIDENCE],
         patterns=[r"PASS: DX003 read-only inspection", r"PASS: DX011 verify-generated drift checks"])
