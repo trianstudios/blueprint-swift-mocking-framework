@@ -4,6 +4,26 @@ private final class LocalValue {
     var number = 0
 }
 
+private final class MatcherProbeReference: Sendable, Equatable {
+    let value: Int
+
+    init(_ value: Int) { self.value = value }
+
+    static func == (lhs: MatcherProbeReference, rhs: MatcherProbeReference) -> Bool {
+        lhs.value == rhs.value
+    }
+}
+
+private enum MatcherProbeEvent: Sendable {
+    case selected(Int?)
+    case ignored
+}
+
+private enum ActorMatcherProbeEvent {
+    case selected(LocalValue)
+    case ignored
+}
+
 @MainActor
 @main
 struct PreMutexProbe {
@@ -56,6 +76,33 @@ struct PreMutexProbe {
         let value = try await actorEndpoint.invoke(local)
         precondition(value === local && value.number == 42)
         precondition(actorEndpoint.verification(matching: .any).wasCalled(.once).passed)
+        verifyCaseMatching()
         print("PASS pre-Mutex iOS runtime with automatic NSLock and typed Sendable/MainActor answers")
+    }
+
+    private static func verifyCaseMatching() {
+        let first = MatcherProbeReference(42)
+        let equalButSeparate = MatcherProbeReference(42)
+        precondition(Matcher<MatcherProbeReference>.equal(first).matches(equalButSeparate))
+        precondition(Matcher<MatcherProbeReference>.identical(to: first).matches(first))
+        precondition(!Matcher<MatcherProbeReference>.identical(to: first).matches(equalButSeparate))
+
+        let selectedNil = Matcher<MatcherProbeEvent>.projecting({ event -> Int?? in
+            guard case let .selected(value) = event else { return nil }
+            return .some(value)
+        }, matching: .isNil())
+        precondition(selectedNil.matches(.selected(nil)))
+        precondition(!selectedNil.matches(.selected(42)))
+        precondition(!selectedNil.matches(.ignored))
+
+        let actorLocal = LocalValue()
+        let localIdentity = MainActorMatcher<ActorMatcherProbeEvent>.projecting({ event in
+            guard case let .selected(value) = event else { return nil }
+            return value
+        }, matching: .identical(to: actorLocal))
+        precondition(localIdentity.matches(.selected(actorLocal)))
+        precondition(!localIdentity.matches(.selected(LocalValue())))
+        precondition(!localIdentity.matches(.ignored))
+        print("PASS RUN-006 equality, identity and typed case projection on pre-Mutex iOS")
     }
 }

@@ -138,3 +138,58 @@ private final class ActorLocalTag: Equatable {
     #expect(order.withLock { $0 } == ["rejected", "newer"])
     #expect(issues.values.isEmpty)
 }
+
+private enum ProjectedEvent: Sendable {
+    case selected(Int?)
+    case ignored(Int?)
+}
+
+@Test func RUN006_caseProjectionDistinguishesMissingCaseFromOptionalPayload() {
+    let inspected = CriticalState(0)
+    let payload = Matcher<Int?>.satisfying { value in
+        inspected.withLock { $0 += 1 }
+        return value == nil
+    }
+    let selectedNil = Matcher<ProjectedEvent>.projecting({ input -> Int?? in
+        guard case let .selected(value) = input else { return nil }
+        return .some(value)
+    }, matching: payload)
+
+    #expect(!selectedNil.matches(.ignored(nil)))
+    #expect(inspected.withLock { $0 } == 0)
+    #expect(selectedNil.matches(.selected(nil)))
+    #expect(!selectedNil.matches(.selected(42)))
+    #expect(inspected.withLock { $0 } == 2)
+}
+
+private enum ActorProjectedEvent {
+    case selected(ActorLocalTag)
+    case ignored(ActorLocalTag)
+}
+
+@MainActor
+private final class ActorProjectionProbe {
+    var inspected = 0
+    var extractSelected = true
+}
+
+@Test @MainActor func RUN006_caseProjectionKeepsNonSendablePayloadOnMainActor() {
+    let expected = ActorLocalTag("same value")
+    let equalButSeparate = ActorLocalTag("same value")
+    let probe = ActorProjectionProbe()
+    let selectedIdentity = MainActorMatcher<ActorProjectedEvent>.projecting({ input in
+        guard probe.extractSelected, case let .selected(value) = input else { return nil }
+        return value
+    }, matching: MainActorMatcher<ActorLocalTag>.satisfying { value in
+        probe.inspected += 1
+        return value === expected
+    })
+
+    #expect(!selectedIdentity.matches(.ignored(expected)))
+    #expect(probe.inspected == 0)
+    #expect(selectedIdentity.matches(.selected(expected)))
+    #expect(!selectedIdentity.matches(.selected(equalButSeparate)))
+    probe.extractSelected = false
+    #expect(!selectedIdentity.matches(.selected(expected)))
+    #expect(probe.inspected == 2)
+}
