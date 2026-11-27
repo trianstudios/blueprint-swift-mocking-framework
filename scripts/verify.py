@@ -510,6 +510,12 @@ def main():
     run("rethrows-provider-async-generation", generate(
         tool, async_rethrows_source, async_rethrows_generated, "AsyncRethrowingDirectory",
         rethrows_providers=rethrows_selector))
+    mixed_rethrows_source = source.with_name("MixedRethrowingDirectory.swift")
+    mixed_rethrows_generated = generated.with_name("MixedRethrowingDirectoryMock.swift")
+    mixed_rethrows_selectors = ("apply(prefix:_:fallback:offset:)", "applyAsync(_:using:prefix:)")
+    run("rethrows-provider-mixed-generation", generate(
+        tool, mixed_rethrows_source, mixed_rethrows_generated, "MixedRethrowingDirectory",
+        rethrows_providers=mixed_rethrows_selectors))
     rejected_rethrows = temp / "RejectedRethrowsProvider.swift"
     rejected_rethrows.write_bytes(b"// preserve valid rethrows output\n")
     rethrows_baseline = (rejected_rethrows.read_bytes(), rejected_rethrows.stat().st_mtime_ns)
@@ -524,7 +530,7 @@ def main():
          r"Async rethrows requires a callback-derived error from unary nonescaping @Sendable"),
         ("escaping-async", "func apply(_ callback: @escaping @Sendable (Int) async throws -> String) async rethrows -> String",
          rethrows_selector, r"Async rethrows requires a callback-derived error from unary nonescaping @Sendable"),
-        ("mixed", "func apply(_ callback: (Int) throws -> String, fallback: String) rethrows -> String",
+        ("inout", "func apply(_ callback: (Int) throws -> String, fallback: inout String) rethrows -> String",
          ("apply(_:fallback:)",), r"Rethrows requires a callback-derived error from unary"),
     ):
         variant = temp / f"Rethrows-{label}.swift"
@@ -1377,6 +1383,8 @@ def main():
                   r"GEN015_RUN005_constantRethrowsProviderCanSkipCallerCallback\(\) passed",
                   r"GEN015_RUN005_generatedRethrowsPairPreservesEitherCallbackError\(\) passed",
                   r"GEN015_RUN005_generatedAsyncRethrowsKeepsSuspendedCallAndOriginalError\(\) passed",
+                  r"GEN015_RUN005_mixedRethrowsPreservesOrdinaryArgumentsAndBothErrors\(\) passed",
+                  r"GEN015_RUN005_mixedAsyncRethrowsPreservesOrdinaryArgumentsAndError\(\) passed",
                   r"RUN010_oneShotCaptureRejectsDuplicateWhileAcquiredAndFinishes\(\) passed",
                   r"RUN010_oneShotCancellationRetiresOnlyItsPendingCapture\(\) passed",
                   r"RUN010_oneShotCaptureResetInvalidatesEarlierEpoch\(\) passed",

@@ -387,48 +387,62 @@ struct Member {
     }
 }
 
-struct RethrowsCallback {
+struct RethrowsParameter {
+    enum Kind {
+        case value(String)
+        case callback(input: String, result: String)
+    }
+
     let label: String
-    let input: String
-    let result: String
+    let kind: Kind
+
+    var isCallback: Bool {
+        if case .callback = kind { true } else { false }
+    }
 
     func type(isAsync: Bool) -> String {
-        let sendability = isAsync ? "@Sendable " : ""
-        let effect = isAsync ? " async throws" : " throws"
-        return "\(sendability)(\(input))\(effect) -> \(result)"
+        switch kind {
+        case .value(let type):
+            return type
+        case .callback(let input, let result):
+            let sendability = isAsync ? "@Sendable " : ""
+            let effect = isAsync ? " async throws" : " throws"
+            return "\(sendability)(\(input))\(effect) -> \(result)"
+        }
     }
 }
 
 struct RethrowsRequirement {
     let name: String
-    let callbacks: [RethrowsCallback]
+    let parameters: [RethrowsParameter]
     let result: String
     let isAsync: Bool
     let origin: ProtocolSourceOrigin
 
-    var selector: String { "\(name)(" + callbacks.map { "\($0.label):" }.joined() + ")" }
+    var selector: String { "\(name)(" + parameters.map { "\($0.label):" }.joined() + ")" }
     var effect: String { isAsync ? " async rethrows" : " rethrows" }
 
     var endpoint: String {
-        "\(name)(" + callbacks.map { "\($0.label):\($0.type(isAsync: isAsync))" }.joined(separator: ",") + ")"
+        "\(name)(" + parameters.map { "\($0.label):\($0.type(isAsync: isAsync))" }.joined(separator: ",") + ")"
     }
 
     var signature: String {
-        let parameters = callbacks.enumerated().map { index, callback in
-            "\(callback.label) \(localName(at: index)): \(callback.type(isAsync: isAsync))"
+        let declarations = parameters.enumerated().map { index, parameter in
+            "\(parameter.label) \(localName(at: index)): \(parameter.type(isAsync: isAsync))"
         }
-        return "func \(name)(\(parameters.joined(separator: ", ")))\(effect) -> \(result)"
+        return "func \(name)(\(declarations.joined(separator: ", ")))\(effect) -> \(result)"
     }
 
     var providerArguments: String {
-        callbacks.enumerated().map { index, callback in
+        parameters.enumerated().map { index, parameter in
             let name = localName(at: index)
-            return callback.label == "_" ? name : "\(callback.label): \(name)"
+            return parameter.label == "_" ? name : "\(parameter.label): \(name)"
         }.joined(separator: ", ")
     }
 
     private func localName(at index: Int) -> String {
-        callbacks.count == 1 ? "callback" : "callback\(index)"
+        guard parameters[index].isCallback else { return "argument\(index)" }
+        return parameters.count == 1 ? "callback" : "callback\(index)"
     }
 }
 
@@ -1014,7 +1028,22 @@ func generate(
               !parameters.isEmpty, let result = fn.signature.returnClause?.type, let output = supportedType(result) else {
             try reject(fn, unsupported)
         }
-        let callbacks = try parameters.map { parameter -> RethrowsCallback in
+        let arguments = try parameters.map { parameter -> RethrowsParameter in
+            let label = parameter.firstName.text
+            guard label == "_" || simple(label) else {
+                try reject(parameter, "Use a simple external label for each rethrows parameter")
+            }
+            guard parameter.attributes.isEmpty, parameter.modifiers.isEmpty, parameter.ellipsis == nil,
+                  parameter.defaultValue == nil else { try reject(parameter, unsupported) }
+            if let ordinary = supportedType(parameter.type) {
+                if isAsync {
+                    guard ["Bool", "Int", "String"].contains(ordinary) else {
+                        try reject(parameter, "Async rethrows ordinary arguments require an unshadowed Bool, Int or String")
+                    }
+                    try index.requireUnshadowedQualifier(ordinary, at: parameter.type)
+                }
+                return RethrowsParameter(label: label, kind: .value(ordinary))
+            }
             let callbackType: TypeSyntax
             if isAsync {
                 guard let attributed = parameter.type.as(AttributedTypeSyntax.self), attributed.specifiers.isEmpty,
@@ -1028,8 +1057,7 @@ func generate(
             } else {
                 callbackType = parameter.type
             }
-            guard parameter.attributes.isEmpty, parameter.modifiers.isEmpty, parameter.ellipsis == nil,
-                  parameter.defaultValue == nil, let callback = callbackType.as(FunctionTypeSyntax.self),
+            guard let callback = callbackType.as(FunctionTypeSyntax.self),
                   let callbackEffects = callback.effectSpecifiers,
                   callbackEffects.asyncSpecifier?.text == (isAsync ? "async" : nil),
                   let failure = callbackEffects.throwsClause, failure.throwsSpecifier.text == "throws", failure.type == nil,
@@ -1038,15 +1066,12 @@ func generate(
                   let result = supportedType(callback.returnClause.type) else {
                 try reject(parameter, unsupported)
             }
-            let label = parameter.firstName.text
-            guard label == "_" || simple(label) else {
-                try reject(parameter, "Use a simple external label for the rethrows callback")
-            }
-            return RethrowsCallback(label: label, input: argument, result: result)
+            return RethrowsParameter(label: label, kind: .callback(input: argument, result: result))
         }
+        guard arguments.contains(where: \.isCallback) else { try reject(fn, unsupported) }
         try index.requireUnshadowedQualifier("Swift", at: fn)
         let requirement = RethrowsRequirement(
-            name: fn.name.text, callbacks: callbacks, result: output, isAsync: isAsync, origin: index.origin(of: fn)
+            name: fn.name.text, parameters: arguments, result: output, isAsync: isAsync, origin: index.origin(of: fn)
         )
         guard rethrowsSelections.contains(requirement.selector) else {
             try reject(fn, "Rethrows requires a callback-derived error. Use --rethrows-provider '\(requirement.selector)'")
