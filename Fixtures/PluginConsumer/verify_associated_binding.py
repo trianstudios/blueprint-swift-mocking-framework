@@ -47,10 +47,10 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
-def stage(repository, checkout, tool, target):
+def stage(repository, checkout, tool, target, *, fixture_path=FIXTURE):
     ignore = shutil.ignore_patterns(".build", ".swiftpm", "Package.resolved", "__pycache__")
-    fixture = checkout / FIXTURE
-    shutil.copytree(repository / FIXTURE, fixture, ignore=ignore)
+    fixture = checkout / fixture_path
+    shutil.copytree(repository / fixture_path, fixture, ignore=ignore)
     shutil.copytree(repository / "Sources", checkout / "Sources", ignore=ignore)
     shutil.copy2(repository / "Package.swift", checkout / "Package.swift")
 

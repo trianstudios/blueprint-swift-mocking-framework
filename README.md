@@ -108,6 +108,17 @@ A schema 1 selection can supply explicit associated-type bindings. Use one entry
 
 The plugin uses the same binding validation as standalone generation. Changing the configured type regenerates the mock and its index. A conflicting binding causes the normal SwiftPM build to fail before running the consumer. `inspect` reports the canonical type, such as `Swift.String`.
 
+For a supported generic method, add `genericMethodSpecializations` to its protocol selection. Configure each required concrete type explicitly.
+
+```json
+"genericMethodSpecializations": [
+  {"selector": "transform(_:)", "type": "Int"},
+  {"selector": "transform(_:)", "type": "String"}
+]
+```
+
+The configuration uses the same typed descriptors as `--specialize-method`. In `inspect`, the declaration ID stays the same across specializations. Each specialized row includes its own `specialization` value, such as `Swift.Int`.
+
 An ordinary `swift test` or `swift build` builds the generator and compiles the generated mock with the attached target. Source membership comes from direct Swift targets in the consumer package. The current profile emits a single Swift shard and its index in SwiftPM’s plugin work directory.
 
 Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsumer PluginProbe`. Use `BLUEPRINT_VERIFY_SWIFTPM_PLUGIN=1 python3 scripts/verify.py` for clean-build, incremental and rejection checks. Local checkout installation is verified on Apple Swift 6.4. Separate remote tooling distribution and other native profiles remain open.

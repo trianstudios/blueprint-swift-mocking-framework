@@ -169,7 +169,10 @@ def verify(source, swift, evidence, cache, jobs):
             "    func mark(_ key: String)\n    func unsupported<T: Sendable>(_ input: T)\n",
         )
         renamed.write_text(unsupported, encoding="utf-8")
-        rejected = run("unsupported", renamed.name, unsupported, failure=r"BPM001[^\n]*non-generic")
+        rejected = run(
+            "unsupported", renamed.name, unsupported,
+            failure=r"BPM001[^\n]*Generic method specialization requires a direct synchronous nonthrowing Sendable requirement",
+        )
         if rejected != renamed_state:
             raise ValueError("An unsupported declaration rewrote or removed the last valid outputs")
 

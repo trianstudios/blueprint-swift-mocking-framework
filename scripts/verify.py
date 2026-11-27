@@ -293,6 +293,19 @@ def main():
                                "--tool", tool, "--evidence-dir", EVIDENCE],
         patterns=[r"PASS: SYS007 configured inspection reports stable and effect-sensitive endpoint IDs",
                   r"EVIDENCE: endpoint-inspection-report\.json SHA-256 [0-9a-f]{64}"])
+    run("configured-generic-method-inspection", [
+        sys.executable, "scripts/verify_generic_method_config.py", "--tool", tool, "--evidence-dir", EVIDENCE,
+    ], env=swift_environment, patterns=[
+        r"PASS: GEN010 configured inspection identifies each typed specialization",
+        r"EVIDENCE: generic-method-config-report\.json SHA-256 [0-9a-f]{64}",
+    ])
+    run("swiftpm-plugin-generic-method", [
+        sys.executable, "Fixtures/PluginConsumer/verify_generic_method.py", "--swift", swift,
+        "--host-tool", tool, "--evidence-dir", EVIDENCE, "--jobs", "1",
+    ], env=swift_environment, timeout=300, patterns=[
+        r"PASS: GEN010 configured generic methods compiled and ran through the SwiftPM build plugin",
+        r"EVIDENCE: swiftpm-plugin-generic-method-report\.json SHA-256 [0-9a-f]{64}",
+    ])
     baseline = generated.read_bytes()
     inherited_source = source.with_name("InheritedDirectory.swift")
     inherited_generated = generated.with_name("InheritedDirectoryMock.swift")

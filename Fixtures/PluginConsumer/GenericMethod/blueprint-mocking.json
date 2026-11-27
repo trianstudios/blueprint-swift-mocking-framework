@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "selections": [
+    {
+      "module": "GenericMethodPluginDomain",
+      "type": "GenericMethodLookup",
+      "kind": "protocol",
+      "genericMethodSpecializations": [
+        {"selector": "transform(_:)", "type": "Int"},
+        {"selector": "transform(_:)", "type": "String"},
+        {"selector": "auxiliary(_:)", "type": "Int"}
+      ]
+    }
+  ]
+}

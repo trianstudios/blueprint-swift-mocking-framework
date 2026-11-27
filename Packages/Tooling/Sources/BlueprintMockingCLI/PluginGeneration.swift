@@ -18,6 +18,7 @@ private struct BuildConfiguration: Codable {
         let type: String
         let kind: String
         let associatedTypeBindings: [AssociatedTypeBinding]?
+        let genericMethodSpecializations: [GenericMethodSpecialization]?
     }
 
     let schemaVersion: Int
@@ -31,7 +32,7 @@ private func invalid(_ message: String) -> GenerationError {
 private func loadConfiguration(_ url: URL) throws -> BuildConfiguration {
     let data = try Data(contentsOf: url)
     let requiredSelectionKeys: Set<String> = ["module", "type", "kind"]
-    let selectionKeys = requiredSelectionKeys.union(["associatedTypeBindings"])
+    let selectionKeys = requiredSelectionKeys.union(["associatedTypeBindings", "genericMethodSpecializations"])
     guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
           Set(object.keys) == ["schemaVersion", "selections"],
           let selections = object["selections"] as? [[String: Any]],
@@ -39,11 +40,19 @@ private func loadConfiguration(_ url: URL) throws -> BuildConfiguration {
         throw invalid("Expected schemaVersion and selections with module, type and kind in \(url.lastPathComponent)")
     }
     for selection in selections {
-        guard let bindings = selection["associatedTypeBindings"] else { continue }
-        guard let entries = bindings as? [[String: Any]], entries.allSatisfy({
-            Set($0.keys) == ["name", "type"] && $0["name"] is String && $0["type"] is String
-        }) else {
-            throw invalid("Expected associatedTypeBindings to contain name and type strings in \(url.lastPathComponent)")
+        if let bindings = selection["associatedTypeBindings"] {
+            guard let entries = bindings as? [[String: Any]], entries.allSatisfy({
+                Set($0.keys) == ["name", "type"] && $0["name"] is String && $0["type"] is String
+            }) else {
+                throw invalid("Expected associatedTypeBindings to contain name and type strings in \(url.lastPathComponent)")
+            }
+        }
+        if let specializations = selection["genericMethodSpecializations"] {
+            guard let entries = specializations as? [[String: Any]], entries.allSatisfy({
+                Set($0.keys) == ["selector", "type"] && $0["selector"] is String && $0["type"] is String
+            }) else {
+                throw invalid("Expected genericMethodSpecializations to contain selector and type strings in \(url.lastPathComponent)")
+            }
         }
     }
     let configuration = try JSONDecoder().decode(BuildConfiguration.self, from: data)
@@ -295,11 +304,14 @@ private struct BuildGenerationPlan {
         let resolved = try sorted.map { selection in
             let root = try sourceIndex.select(selection.type, in: selection.module, diagnosticFile: request.config.path)
             let mock = try generate(index: sourceIndex, root: root, projections: [],
-                                    variadicForwarding: [], subscriptSpecializations: [], spy: false,
+                                    variadicForwarding: [], subscriptSpecializations: [],
+                                    methodSpecializations: selection.genericMethodSpecializations ?? [], spy: false,
                                     associatedTypeBindings: selection.associatedTypeBindings ?? [])
+            let methods = mock.genericMethodSpecializations
             let normalized = BuildConfiguration.Selection(
                 module: selection.module, type: selection.type, kind: selection.kind,
-                associatedTypeBindings: mock.associatedTypeBindings.isEmpty ? nil : mock.associatedTypeBindings
+                associatedTypeBindings: mock.associatedTypeBindings.isEmpty ? nil : mock.associatedTypeBindings,
+                genericMethodSpecializations: methods.isEmpty ? nil : methods
             )
             return Selection(selected: normalized, origin: root.origin, mock: mock)
         }
@@ -346,6 +358,7 @@ private struct BuildInspection: Encodable {
 
     struct Endpoint: Encodable {
         let id: String
+        let specialization: String?
         let module: String
         let file: String
         let line: Int
@@ -398,9 +411,9 @@ private struct BuildInspection: Encodable {
         inputs = Inputs(configuration: reportPath(config), sources: sources,
                         sourceConditions: request.sourceConditions.isEmpty ? nil : request.sourceConditions)
         declarations = plan.selections.map { selection in
-            let endpoints = selection.mock.endpointOrigins.map { id, origin in
-                Endpoint(id: id, module: origin.module, file: reportPath(URL(fileURLWithPath: origin.path)),
-                         line: origin.line, column: origin.column)
+            let endpoints = selection.mock.endpointOrigins.map { id, specialization, origin in
+                Endpoint(id: id, specialization: specialization, module: origin.module,
+                         file: reportPath(URL(fileURLWithPath: origin.path)), line: origin.line, column: origin.column)
             }
             return Declaration(module: selection.selected.module, type: selection.selected.type,
                                kind: selection.selected.kind,

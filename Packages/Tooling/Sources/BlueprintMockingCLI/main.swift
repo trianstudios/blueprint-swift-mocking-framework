@@ -387,16 +387,22 @@ struct Member {
     }
 }
 
+struct GenericMethodSpecialization: Codable {
+    let selector: String
+    let type: String
+}
+
 struct GeneratedProtocolMock {
     let typeName: String
     let source: String
     let associatedTypeBindings: [AssociatedTypeBinding]
-    let endpointOrigins: [(id: String, origin: ProtocolSourceOrigin)]
+    let genericMethodSpecializations: [GenericMethodSpecialization]
+    let endpointOrigins: [(id: String, specialization: String?, origin: ProtocolSourceOrigin)]
 }
 
 func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
-    subscriptSpecializations: [String], methodSpecializations: [String] = [],
+    subscriptSpecializations: [String], methodSpecializations: [GenericMethodSpecialization] = [],
     spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
 ) throws -> GeneratedProtocolMock {
     let input = root.origin.path
@@ -1095,11 +1101,7 @@ func generate(
     }
     var methodTypes: [String: Set<String>] = [:]
     for option in methodSpecializations {
-        let fields = option.split(separator: "=", maxSplits: 1)
-        guard fields.count == 2 else {
-            try reject(proto, "Use --specialize-method 'method(label:)=Int' or '=String'")
-        }
-        let selector = fields[0].trimmingCharacters(in: .whitespaces)
+        let selector = option.selector.trimmingCharacters(in: .whitespaces)
         let candidates = genericMethods.filter { $0.declaration.selector == selector }
         guard let entry = candidates.first else {
             try reject(proto, "Unknown generic method selector '\(selector)'")
@@ -1107,7 +1109,7 @@ func generate(
         guard candidates.count == 1 else {
             try reject(entry.node, "Ambiguous generic method selector '\(selector)'. Use distinct argument labels.")
         }
-        let spelling = fields[1].trimmingCharacters(in: .whitespaces)
+        let spelling = option.type.trimmingCharacters(in: .whitespaces)
         let type: String
         switch spelling {
         case "Int", "Swift.Int": type = "Swift.Int"
@@ -1120,7 +1122,7 @@ func generate(
     }
     for (declaration, node) in genericMethods {
         guard let types = methodTypes[declaration.selector] else {
-            try reject(node, "Generic methods require explicit specialization using --specialize-method '\(declaration.selector)=Type'")
+            try reject(node, "Generic methods require explicit specialization for '\(declaration.selector)' using --specialize-method or genericMethodSpecializations")
         }
         for type in types.sorted() {
             try addMember(name: declaration.descriptorName, parameters: [Parameter(label: declaration.label, type: type)],
@@ -1670,9 +1672,20 @@ func generate(
             continue
         }
     }
+    let resolvedMethods = methodTypes.sorted { $0.key < $1.key }.flatMap { selector, types in
+        types.sorted().map { GenericMethodSpecialization(selector: selector, type: $0) }
+    }
     return GeneratedProtocolMock(
         typeName: name, source: output + "}\n", associatedTypeBindings: resolvedBindings,
-        endpointOrigins: members.map { (id: $0.identity, origin: $0.origin) }
+        genericMethodSpecializations: resolvedMethods,
+        endpointOrigins: members.map { member in
+            let specialization: String? = if case .specializedGeneric(_, let type) = member.kind {
+                type
+            } else {
+                nil
+            }
+            return (id: member.identity, specialization: specialization, origin: member.origin)
+        }
     )
 }
 
@@ -1744,10 +1757,17 @@ private func run(_ arguments: [String]) throws {
         }
         return binding
     }
+    let methods = try methodSpecializations.map { option in
+        let fields = option.split(separator: "=", maxSplits: 1)
+        guard fields.count == 2 else {
+            throw GenerationError(description: "\(root.origin): error: BPM001: Use --specialize-method 'method(label:)=Int' or '=String'")
+        }
+        return GenericMethodSpecialization(selector: String(fields[0]), type: String(fields[1]))
+    }
     let output = try generate(index: index, root: root, projections: projections,
                               variadicForwarding: variadicForwarding,
                               subscriptSpecializations: subscriptSpecializations,
-                              methodSpecializations: methodSpecializations, spy: spy,
+                              methodSpecializations: methods, spy: spy,
                               associatedTypeBindings: associatedTypeBindings)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.source.write(toFile: arguments[7], atomically: true, encoding: .utf8)

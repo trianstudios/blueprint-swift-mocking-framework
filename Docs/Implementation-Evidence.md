@@ -81,7 +81,9 @@ The independent SwiftPM consumer drives the generated subscript from concurrent 
 
 GEN-010 supports explicit Int and String specializations for a direct synchronous, nonthrowing Sendable protocol method with one generic argument and the same generic result. The witness retains inline Hashable and Sendable requirements and dispatches only after checking the exact metatype. Each concrete descriptor configures and verifies its own typed endpoint. The external Swift 6 consumer verifies both results and distinct concrete identities under the same raw declaration ID. The compiler rejects an incompatible matcher and a caller type missing the authored Hashable constraint. The bounded child proves a Swift.Bool call reports its specialization and records one admission and terminal event before termination.
 
-Generation rejects missing, duplicate, and unsupported options before publishing. Reversed, fully qualified options emit byte-identical output. Generic subscript fixtures keep their existing bytes. Other shapes, configured plugin selection for generic methods, and applicable profile certification remain open.
+Generation rejects missing, duplicate, and unsupported options before publishing. Reversed, fully qualified options emit byte-identical output. Generic subscript fixtures keep their existing bytes.
+
+The configured path accepts the same specializations through `genericMethodSpecializations`. Inspection reports canonical configured types and distinguishes endpoint rows by specialization. The independent SwiftPM fixture runs the production build-tool plugin with a local artifact bundle containing the Xcode-linked generator. The probe runs both typed descriptors through the protocol before and after a configuration-only edit to a second method. The fixture checks that regeneration updates both outputs at the same paths, unchanged builds retain them, and invalid configurations fail before the consumer runs or the last valid output pair is replaced. Other generic method shapes, packaged parser parity and applicable profile certification remain open.
 
 ## Return-only overloads
 
