@@ -838,6 +838,13 @@ def main():
     ], env=swift_environment, timeout=120,
         patterns=[r"PASS: DX013 configured writers serialized and inspection preserved interrupted output",
                   r"EVIDENCE: generation-contention-report\.json SHA-256 [0-9a-f]{64}"])
+    run("generation-output-ownership", [
+        sys.executable, "scripts/verify_output_ownership.py", "--tool", tool,
+        "--fault-tool", publication_fault_tool, "--evidence-dir", EVIDENCE,
+    ], env=swift_environment, timeout=180, patterns=[
+        r"PASS: DX011 configured provenance collisions and legitimate recovery",
+        r"EVIDENCE: output-ownership-report\.json SHA-256 [0-9a-f]{64}",
+    ])
     for checkpoint, suffix in (("after-shard", ""), ("after-index", "-after-index")):
         lane = "swiftpm-publication-recovery" + suffix
         run(lane, [

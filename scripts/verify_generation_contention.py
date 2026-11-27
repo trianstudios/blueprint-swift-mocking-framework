@@ -205,6 +205,13 @@ def verify(repository, tool, fault, evidence):
                     "file": source.name,
                     "line": source_bytes.splitlines().index(alternate_header) + 1,
                     "generatedType": "RevisionLookupMock",
+                    "endpoints": [{
+                        "id": "schema1|OfflineDomain.RevisionLookup|value(for:String)->Int|Sendable",
+                        "module": "OfflineDomain",
+                        "file": source.name,
+                        "line": source_bytes.splitlines().index(b"    func value(for key: String) -> Int") + 1,
+                        "column": 5,
+                    }],
                 }],
                 "outputOwnership": {
                     "owner": "BlueprintMockingBuildPlugin",
