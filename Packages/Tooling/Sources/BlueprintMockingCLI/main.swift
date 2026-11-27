@@ -387,19 +387,43 @@ struct Member {
     }
 }
 
+struct RethrowsCallback {
+    let label: String
+    let input: String
+    let result: String
+
+    var type: String { "(\(input)) throws -> \(result)" }
+}
+
 struct RethrowsRequirement {
     let name: String
-    let label: String
-    let callbackInput: String
-    let callbackResult: String
+    let callbacks: [RethrowsCallback]
     let result: String
     let origin: ProtocolSourceOrigin
 
-    var selector: String { "\(name)(\(label):)" }
-    var callbackType: String { "(\(callbackInput)) throws -> \(callbackResult)" }
-    var endpoint: String { "\(name)(\(label):\(callbackType))" }
-    var signature: String { "func \(name)(\(label) callback: \(callbackType)) rethrows -> \(result)" }
-    var providerArguments: String { label == "_" ? "callback" : "\(label): callback" }
+    var selector: String { "\(name)(" + callbacks.map { "\($0.label):" }.joined() + ")" }
+
+    var endpoint: String {
+        "\(name)(" + callbacks.map { "\($0.label):\($0.type)" }.joined(separator: ",") + ")"
+    }
+
+    var signature: String {
+        let parameters = callbacks.enumerated().map { index, callback in
+            "\(callback.label) \(localName(at: index)): \(callback.type)"
+        }
+        return "func \(name)(\(parameters.joined(separator: ", "))) rethrows -> \(result)"
+    }
+
+    var providerArguments: String {
+        callbacks.enumerated().map { index, callback in
+            let name = localName(at: index)
+            return callback.label == "_" ? name : "\(callback.label): \(name)"
+        }.joined(separator: ", ")
+    }
+
+    private func localName(at index: Int) -> String {
+        callbacks.count == 1 ? "callback" : "callback\(index)"
+    }
 }
 
 struct GenericMethodSpecialization: Codable {
@@ -973,29 +997,33 @@ func generate(
     func collectRethrowsMethod(_ fn: FunctionDeclSyntax, isDirect: Bool) throws {
         let parameters = fn.signature.parameterClause.parameters
         let effects = fn.signature.effectSpecifiers
+        let unsupported = "Rethrows requires a callback-derived error from unary synchronous nonescaping throwing callbacks in a direct synchronous Sendable requirement"
         guard isDirect, isolation == .sendable, !hasBindings, !spy, !specializesGenerics,
               projections.isEmpty, variadicForwarding.isEmpty, fn.attributes.isEmpty,
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
               effects?.asyncSpecifier == nil, effects?.throwsClause?.type == nil,
-              parameters.count == 1, let parameter = parameters.first,
-              parameter.attributes.isEmpty, parameter.modifiers.isEmpty, parameter.ellipsis == nil,
-              parameter.defaultValue == nil, let callback = parameter.type.as(FunctionTypeSyntax.self),
-              let callbackEffects = callback.effectSpecifiers, callbackEffects.asyncSpecifier == nil,
-              let failure = callbackEffects.throwsClause, failure.throwsSpecifier.text == "throws", failure.type == nil,
-              callback.parameters.count == 1, let input = callback.parameters.first, input.firstName == nil,
-              input.ellipsis == nil, input.inoutKeyword == nil, let callbackInput = supportedType(input.type),
-              let callbackResult = supportedType(callback.returnClause.type),
-              let result = fn.signature.returnClause?.type, let output = supportedType(result) else {
-            try reject(fn, "Rethrows requires a callback-derived error from one unary synchronous nonescaping throwing callback in a direct synchronous Sendable requirement")
+              !parameters.isEmpty, let result = fn.signature.returnClause?.type, let output = supportedType(result) else {
+            try reject(fn, unsupported)
         }
-        let label = parameter.firstName.text
-        guard label == "_" || simple(label) else {
-            try reject(parameter, "Use a simple external label for the rethrows callback")
+        let callbacks = try parameters.map { parameter -> RethrowsCallback in
+            guard parameter.attributes.isEmpty, parameter.modifiers.isEmpty, parameter.ellipsis == nil,
+                  parameter.defaultValue == nil, let callback = parameter.type.as(FunctionTypeSyntax.self),
+                  let callbackEffects = callback.effectSpecifiers, callbackEffects.asyncSpecifier == nil,
+                  let failure = callbackEffects.throwsClause, failure.throwsSpecifier.text == "throws", failure.type == nil,
+                  callback.parameters.count == 1, let input = callback.parameters.first, input.firstName == nil,
+                  input.ellipsis == nil, input.inoutKeyword == nil, let argument = supportedType(input.type),
+                  let result = supportedType(callback.returnClause.type) else {
+                try reject(parameter, unsupported)
+            }
+            let label = parameter.firstName.text
+            guard label == "_" || simple(label) else {
+                try reject(parameter, "Use a simple external label for the rethrows callback")
+            }
+            return RethrowsCallback(label: label, input: argument, result: result)
         }
         try index.requireUnshadowedQualifier("Swift", at: fn)
         let requirement = RethrowsRequirement(
-            name: fn.name.text, label: label, callbackInput: callbackInput, callbackResult: callbackResult,
-            result: output, origin: index.origin(of: fn)
+            name: fn.name.text, callbacks: callbacks, result: output, origin: index.origin(of: fn)
         )
         guard rethrowsSelections.contains(requirement.selector) else {
             try reject(fn, "Rethrows requires a callback-derived error. Use --rethrows-provider '\(requirement.selector)'")

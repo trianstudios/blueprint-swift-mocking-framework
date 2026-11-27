@@ -500,6 +500,11 @@ def main():
     rethrows_selector = ("apply(_:)",)
     run("rethrows-provider-generation", generate(
         tool, rethrows_source, rethrows_generated, "RethrowingDirectory", rethrows_providers=rethrows_selector))
+    rethrows_pair_source = source.with_name("RethrowingPairDirectory.swift")
+    rethrows_pair_generated = generated.with_name("RethrowingPairDirectoryMock.swift")
+    run("rethrows-provider-multiple-generation", generate(
+        tool, rethrows_pair_source, rethrows_pair_generated, "RethrowingPairDirectory",
+        rethrows_providers=("apply(_:fallback:)",)))
     rejected_rethrows = temp / "RejectedRethrowsProvider.swift"
     rejected_rethrows.write_bytes(b"// preserve valid rethrows output\n")
     rethrows_baseline = (rejected_rethrows.read_bytes(), rejected_rethrows.stat().st_mtime_ns)
@@ -511,8 +516,8 @@ def main():
     authored_rethrows = rethrows_source.read_text(encoding="utf-8")
     for label, signature, selectors in (
         ("async", "func apply(_ callback: (Int) async throws -> String) async rethrows -> String", rethrows_selector),
-        ("multiple", "func apply(_ callback: (Int) throws -> String, _ second: (Int) throws -> String) rethrows -> String",
-         ("apply(_:_:)",)),
+        ("mixed", "func apply(_ callback: (Int) throws -> String, fallback: String) rethrows -> String",
+         ("apply(_:fallback:)",)),
     ):
         variant = temp / f"Rethrows-{label}.swift"
         variant.write_text(authored_rethrows.replace(
@@ -520,7 +525,7 @@ def main():
         ), encoding="utf-8")
         run("rethrows-provider-native-shape-" + label, [swiftc, "-swift-version", "6", "-sdk", sdk, "-typecheck", variant],
             env=swift_environment)
-        rethrows_cases.append((label, variant, selectors, r"Rethrows requires a callback-derived error from one unary"))
+        rethrows_cases.append((label, variant, selectors, r"Rethrows requires a callback-derived error from unary"))
     for label, authored, selectors, diagnostic in rethrows_cases:
         run("rethrows-provider-reject-" + label, generate(
             tool, authored, rejected_rethrows, "RethrowingDirectory", rethrows_providers=selectors),
@@ -1362,6 +1367,7 @@ def main():
                   r"GEN011_polymorphicProviderKeepsUnseenValuesTypedAndRecordsSessionMetadata\(\) passed",
                   r"GEN015_RUN005_generatedRethrowsProviderPreservesNonescapingCallbackAndError\(\) passed",
                   r"GEN015_RUN005_constantRethrowsProviderCanSkipCallerCallback\(\) passed",
+                  r"GEN015_RUN005_generatedRethrowsPairPreservesEitherCallbackError\(\) passed",
                   r"RUN010_oneShotCaptureRejectsDuplicateWhileAcquiredAndFinishes\(\) passed",
                   r"RUN010_oneShotCancellationRetiresOnlyItsPendingCapture\(\) passed",
                   r"RUN010_oneShotCaptureResetInvalidatesEarlierEpoch\(\) passed",
@@ -1509,6 +1515,7 @@ def main():
         "GenericProviderExtraConstraint": r"type 'OverconstrainedIdentityProvider' does not conform to protocol 'GenericProviderDirectoryMockBehavior'",
         "RethrowingProviderUnrelatedThrow": r"may only throw if its parameter does",
         "RethrowingProviderNoThrowsStub": r"'RethrowingDirectoryMock.Stubs' has no member 'apply'",
+        "RethrowingPairMissingTry": r"call can throw, but it is not marked with 'try'",
         "GenericSubscriptWrongConstraint": r"requires that 'UnhashableKey' conform to 'Hashable'",
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
