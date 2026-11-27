@@ -242,6 +242,23 @@ fileprivate struct ScopedConfigurationKey: Sendable {
     let serial: UInt64
 }
 
+/// Metadata identifying the complete lexical configuration chain for one endpoint.
+/// A handle can be sent to detached work and does not keep the configurations or session alive.
+public struct ScopedConfigurationHandle: Sendable {
+    public var endpoint: EndpointID { owner.id }
+    public let epoch: SessionEpoch
+    public var sessionID: SessionID { epoch.sessionID }
+
+    fileprivate let owner: AsyncForwardingInstance
+    fileprivate let keys: [ScopedConfigurationKey]
+}
+
+/// The handle belongs to another endpoint or another session.
+public enum ScopedConfigurationBindingError: Error, Equatable {
+    case foreignSession(expected: SessionID, actual: SessionID)
+    case foreignEndpoint
+}
+
 fileprivate struct ScopedConfigurationToken: Sendable {
     let owner: AsyncForwardingInstance
     let key: ScopedConfigurationKey
@@ -253,6 +270,18 @@ fileprivate enum ScopedConfigurations {
 
     static func keys(for owner: AsyncForwardingInstance) -> [ScopedConfigurationKey] {
         current.reversed().compactMap { $0.owner === owner ? $0.key : nil }
+    }
+
+    static func withBinding<Value>(
+        _ tokens: [ScopedConfigurationToken], isolation: isolated (any Actor)?,
+        _ body: () async throws -> Value
+    ) async throws -> Value {
+        #if compiler(>=6.2)
+        let operation: nonisolated(nonsending) () async throws -> Value = { try await body() }
+        return try await $current.withValue(tokens, operation: operation)
+        #else
+        return try await $current.withValue(tokens, operation: body, isolation: isolation)
+        #endif
     }
 }
 
@@ -347,14 +376,27 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         return .success(plans)
     }
 
+    private func requireOpenScope(in session: MockSession.State) throws(ScopedConfigurationError) {
+        switch scope.admissionRejection(in: session) {
+        case .finished: throw .finishedSession
+        case .staleTypeScope: throw .staleScope
+        case nil: break
+        }
+    }
+
+    fileprivate func validateScopedConfiguration(_ keys: [ScopedConfigurationKey]) throws(ScopedConfigurationError) {
+        try scope.session.withLock { session throws(ScopedConfigurationError) in
+            try requireOpenScope(in: session)
+            try state.withLock { state throws(ScopedConfigurationError) in
+                _ = try Self.pinScopedConfigurations(keys, epoch: session.epoch, state: state).get()
+            }
+        }
+    }
+
     fileprivate func openScopedConfiguration(_ configuration: Configuration, parents: [ScopedConfigurationKey])
         throws(ScopedConfigurationError) -> ScopedConfigurationKey {
         try scope.session.withLock { session throws(ScopedConfigurationError) in
-            switch scope.admissionRejection(in: session) {
-            case .finished: throw .finishedSession
-            case .staleTypeScope: throw .staleScope
-            case nil: break
-            }
+            try requireOpenScope(in: session)
             return try state.withLock { state throws(ScopedConfigurationError) in
                 _ = try Self.pinScopedConfigurations(parents, epoch: session.epoch, state: state).get()
                 state.nextScopedConfigurationID += 1
@@ -1118,14 +1160,31 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         let key = try journal.openScopedConfiguration(plan, parents: ScopedConfigurations.keys(for: forwardingInstance))
         defer { journal.closeScopedConfiguration(key) }
         let token = ScopedConfigurationToken(owner: forwardingInstance, key: key)
-        #if compiler(>=6.2)
-        let operation: nonisolated(nonsending) () async throws -> Value = { try await body() }
-        return try await ScopedConfigurations.$current.withValue(ScopedConfigurations.current + [token],
-                                                                  operation: operation)
-        #else
-        return try await ScopedConfigurations.$current.withValue(ScopedConfigurations.current + [token],
-                                                                  operation: body, isolation: isolation)
-        #endif
+        return try await ScopedConfigurations.withBinding(ScopedConfigurations.current + [token],
+                                                           isolation: isolation, body)
+    }
+
+    func currentScopedConfiguration() throws(ScopedConfigurationError) -> ScopedConfigurationHandle? {
+        let keys = ScopedConfigurations.current.compactMap { $0.owner === forwardingInstance ? $0.key : nil }
+        guard let current = keys.last else { return nil }
+        try journal.validateScopedConfiguration(keys)
+        return ScopedConfigurationHandle(epoch: current.epoch, owner: forwardingInstance, keys: keys)
+    }
+
+    func withScopedConfiguration<Value>(
+        _ handle: ScopedConfigurationHandle,
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: () async throws -> Value
+    ) async throws -> Value {
+        guard handle.sessionID == session.id else {
+            throw ScopedConfigurationBindingError.foreignSession(expected: session.id, actual: handle.sessionID)
+        }
+        guard handle.owner === forwardingInstance else { throw ScopedConfigurationBindingError.foreignEndpoint }
+        try journal.validateScopedConfiguration(handle.keys)
+
+        let unrelated = ScopedConfigurations.current.filter { $0.owner !== forwardingInstance }
+        let rebound = handle.keys.map { ScopedConfigurationToken(owner: forwardingInstance, key: $0) }
+        return try await ScopedConfigurations.withBinding(unrelated + rebound, isolation: isolation, body)
     }
 
     func snapshot() -> JournalSnapshot<History> { journal.snapshot() }
@@ -1299,7 +1358,7 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
 
     /// Runs an operation with an endpoint-local rule overlay. The innermost matching
     /// configuration wins, followed by its enclosing scopes and the base rules.
-    /// Child tasks inherit the lexical binding. Detached tasks have no overlay.
+    /// Child tasks inherit the binding. Detached tasks can rebind an explicitly captured handle.
     /// A rule whose sequence is exhausted reports the failure without falling through.
     /// This operation does not replace the base configuration or its revision.
     public func withScopedConfiguration<Value>(
@@ -1308,6 +1367,22 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
         _ operation: () async throws -> Value
     ) async throws -> Value {
         try await dispatch.withScopedConfiguration(configuration, isolation: isolation, operation)
+    }
+
+    /// Captures this endpoint's current lexical configuration chain for explicit transport.
+    /// Returns nil when this task has no binding. A stale or closed binding throws.
+    public func currentScopedConfiguration() throws(ScopedConfigurationError) -> ScopedConfigurationHandle? {
+        try dispatch.currentScopedConfiguration()
+    }
+
+    /// Temporarily installs the captured chain for this endpoint while preserving other bindings.
+    /// The originating scopes must be active at rebinding. Every call also validates its scope at admission.
+    public func withScopedConfiguration<Value>(
+        _ handle: ScopedConfigurationHandle,
+        isolation: isolated (any Actor)? = #isolation,
+        _ operation: () async throws -> Value
+    ) async throws -> Value {
+        try await dispatch.withScopedConfiguration(handle, isolation: isolation, operation)
     }
 
     /// Supplies a typed handle for a structural forwarding link.
