@@ -1258,11 +1258,14 @@ def main():
                             r"GEN007_failureMappingsSelectOverloadsByArgumentType\(\) passed"])
     run_swift("runtime-tests", ["test"], patterns=[
         r"\b[1-9]\d* tests?\b.*\bpassed\b",
+        r"RUN027_competingOrderedSelectionsCommitTogetherOrLeaveEveryIDUnclaimed\(\) passed",
+        r"RUN027_orderedClaimsCannotProveAnEarliestMatchAfterPruning\(\) passed",
         r"RUN007_namedSendableMatchersDescribeCompositionWithoutPrintingValues\(\) passed",
         r"RUN007_namedMainActorMatchersDescribeActorLocalPredicates\(\) passed",
     ])
     run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
+                  r"RUN027_RUN029_orderedConsumptionHonorsClaimedBarriersAndKeepsHistory\(\) passed",
                   r"RUN007_generatedVerificationReportsOnlyExplicitMatcherDescriptions\(\) passed",
                   r"RUN007_generatedSendableTupleVerificationReportsSourceLabels\(\) passed",
                   r"RUN007_generatedMainActorTupleVerificationReportsSourceLabels\(\) passed",

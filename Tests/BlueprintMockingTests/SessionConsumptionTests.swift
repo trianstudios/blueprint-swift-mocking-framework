@@ -155,3 +155,42 @@ private func consumptionEndpoint(
     #expect(throws: SessionConsumptionError.conflict) { try session.commitConsumption(secondClaim) }
     #expect(try session.consume(.all, for: secondSelector, in: scope).invocationIDs.count == 1)
 }
+
+@Test func RUN027_competingOrderedSelectionsCommitTogetherOrLeaveEveryIDUnclaimed() throws {
+    let session = MockSession()
+    let mock = session.makeMock()
+    let (a, selectA) = consumptionEndpoint(scope: mock, name: "a")
+    let (b, selectB) = consumptionEndpoint(scope: mock, name: "b")
+    let (c, selectC) = consumptionEndpoint(scope: mock, name: "c")
+    _ = a.invoke(1)
+    _ = b.invoke(2)
+    _ = c.invoke(3)
+    let aID = try #require(a.invocations.first?.sessionInvocationID)
+    let bID = try #require(b.invocations.first?.sessionInvocationID)
+    let cID = try #require(c.invocations.first?.sessionInvocationID)
+    let scope = session.consumptionScope(named: "ordered claims")
+    let winner = try #require(try session.prepareOrderedConsumption([selectA, selectB], mode: .strict, in: scope))
+    let loser = try #require(try session.prepareOrderedConsumption([selectB, selectC], mode: .strict, in: scope))
+
+    #expect(try session.commitConsumption(winner).invocationIDs == [aID, bID])
+    #expect(throws: SessionConsumptionError.conflict) { try session.commitConsumption(loser) }
+    #expect(try session.consumptionSnapshot(in: scope).consumedInvocationIDs == [aID, bID])
+    #expect(try session.consume(.all, for: selectC, in: scope).invocationIDs == [cID])
+}
+
+@Test func RUN027_orderedClaimsCannotProveAnEarliestMatchAfterPruning() throws {
+    let session = MockSession()
+    let (endpoint, selector) = consumptionEndpoint(scope: session.makeMock())
+    let scope = session.consumptionScope(named: "ordered claims")
+    _ = endpoint.invoke(1)
+    let cutoff = session.checkpoint()
+    _ = endpoint.invoke(2)
+    let prepared = try #require(try session.prepareOrderedConsumption([selector], mode: .strict, in: scope))
+
+    try session.discardEvents(through: cutoff)
+    #expect(throws: SessionConsumptionError.historyUnavailable) { try session.commitConsumption(prepared) }
+    #expect(throws: SessionConsumptionError.historyUnavailable) {
+        try session.consumeInOrder([selector], mode: .strict, in: scope)
+    }
+    #expect(try session.consumptionSnapshot(in: scope).consumedInvocationIDs.isEmpty)
+}

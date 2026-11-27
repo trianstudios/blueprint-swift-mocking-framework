@@ -40,6 +40,13 @@ public extension SessionSnapshot {
         mode: SessionOrderMode,
         phase: CallPhase = .admitted
     ) -> SessionOrderResult {
+        matchOrder(selectors, mode: mode, phase: phase, excluding: [])
+    }
+
+    internal func matchOrder(
+        _ selectors: [SessionCallSelector], mode: SessionOrderMode, phase: CallPhase,
+        excluding claimed: Set<SessionInvocationID>
+    ) -> SessionOrderResult {
         if let foreign = selectors.first(where: { $0.mockID.sessionID != sessionID }) {
             return .foreignMock(foreign.mockID)
         }
@@ -49,19 +56,19 @@ public extension SessionSnapshot {
         let phaseEvents = events.filter { $0.phase == phase }
         guard selectors.count <= phaseEvents.count else { return miss }
         let matched = switch mode {
-        case .relative: matchRelativeOrder(selectors, in: phaseEvents)
-        case .strict: matchStrictOrder(selectors, in: phaseEvents)
+        case .relative: matchRelativeOrder(selectors, in: phaseEvents, excluding: claimed)
+        case .strict: matchStrictOrder(selectors, in: phaseEvents, excluding: claimed)
         }
         return matched.map(SessionOrderResult.matched) ?? miss
     }
 }
 
 private func matchRelativeOrder(
-    _ selectors: [SessionCallSelector], in events: [SessionEvent]
+    _ selectors: [SessionCallSelector], in events: [SessionEvent], excluding claimed: Set<SessionInvocationID>
 ) -> [SessionEvent]? {
     var matched: [SessionEvent] = []
     matched.reserveCapacity(selectors.count)
-    for event in events where selectors[matched.count].matches(event) {
+    for event in events where !claimed.contains(event.invocationID) && selectors[matched.count].matches(event) {
         matched.append(event)
         if matched.count == selectors.count { return matched }
     }
@@ -69,7 +76,7 @@ private func matchRelativeOrder(
 }
 
 private func matchStrictOrder(
-    _ selectors: [SessionCallSelector], in events: [SessionEvent]
+    _ selectors: [SessionCallSelector], in events: [SessionEvent], excluding claimed: Set<SessionInvocationID>
 ) -> [SessionEvent]? {
     // Record reusable prefixes so a mismatch preserves any overlapping candidate
     // without scanning the same history again (Knuth–Morris–Pratt search).
@@ -85,6 +92,10 @@ private func matchStrictOrder(
 
     var matchedCount = 0
     for (index, event) in events.enumerated() {
+        if claimed.contains(event.invocationID) {
+            matchedCount = 0
+            continue
+        }
         while matchedCount > 0 && !selectors[matchedCount].matches(event) {
             matchedCount = prefixes[matchedCount - 1]
         }

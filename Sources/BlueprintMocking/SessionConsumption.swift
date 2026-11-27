@@ -18,7 +18,7 @@ public enum SessionConsumptionSelection: Sendable {
     case earliest(Int)
 }
 
-/// Invocation IDs claimed together from one snapshot, in admission order.
+/// Invocation IDs claimed together from one snapshot, in the order selected.
 public struct SessionConsumption: Equatable, Sendable {
     public let scope: SessionConsumptionScope
     public let invocationIDs: [SessionInvocationID]
@@ -67,9 +67,44 @@ public extension MockSession {
     ) throws(SessionConsumptionError) -> SessionConsumption {
         try commitConsumption(prepareConsumption(selection, for: selector, in: scope))
     }
+
+    /// Claims the earliest matching sequence of unclaimed events from one retained snapshot.
+    /// In strict order, a consumed call still occupies its position among other events.
+    /// Returns nil when the sequence is absent. A conflict commits no part of the claim.
+    @discardableResult
+    func consumeInOrder(
+        _ selectors: [SessionCallSelector], mode: SessionOrderMode,
+        phase: CallPhase = .admitted, in scope: SessionConsumptionScope
+    ) throws(SessionConsumptionError) -> SessionConsumption? {
+        guard let prepared = try prepareOrderedConsumption(selectors, mode: mode, phase: phase, in: scope) else {
+            return nil
+        }
+        return try commitConsumption(prepared)
+    }
 }
 
 extension MockSession {
+    func prepareOrderedConsumption(
+        _ selectors: [SessionCallSelector], mode: SessionOrderMode,
+        phase: CallPhase = .admitted, in scope: SessionConsumptionScope
+    ) throws(SessionConsumptionError) -> PreparedSessionConsumption? {
+        let (snapshot, claims) = try withLock { (state: inout State) throws(SessionConsumptionError) in
+            try state.captureConsumption(in: scope)
+        }
+        switch snapshot.matchOrder(selectors, mode: mode, phase: phase, excluding: claims.invocationIDs) {
+        case .matched(let events):
+            // Even a retained match cannot establish the earliest unclaimed sequence after pruning.
+            guard snapshot.prunedThrough == nil else { throw .historyUnavailable }
+            let result = SessionConsumption(
+                scope: scope, invocationIDs: events.map(\.invocationID), watermark: snapshot.watermark
+            )
+            return PreparedSessionConsumption(result: result, scopeRevision: claims.revision)
+        case .notMatched: return nil
+        case .foreignMock(let mock): throw .foreignMock(mock)
+        case .historyUnavailable: throw .historyUnavailable
+        }
+    }
+
     func prepareConsumption(
         _ selection: SessionConsumptionSelection, for selector: SessionCallSelector,
         in scope: SessionConsumptionScope
