@@ -611,3 +611,9 @@ RUN-017 adds an opt-in preset for `Bool`, `Int` and `String` and exact typed rec
 The SYS-006 fixture exercises the concurrent repository retry scenario through an independent SwiftPM consumer. A retrying client receives a typed temporary failure, then reserves the success step of a finite sequence. While that answer is held, a replacement revision serves an independent request. Cooperative cancellation records one request under the old invocation. The held answer completes under the original revision, and its projected metadata remains separate from the newer call. An immutable earlier snapshot still shows the pending result.
 
 The fixture checks a passing `stable` window and a negative `eventually` deadline. A test-first control bypasses the retry and fails at the expected gate. Seven A3.4 scenarios remain open for dedicated fixtures and native qualification.
+
+## Dynamically isolated callback replay
+
+GEN-016 and GEN-036 add an availability-gated synchronous registration witness for one unary `@escaping @isolated(any) @Sendable (Int) -> String` callback. The private nominal payload stores the exact typed function, and replay awaits the original isolation through the established session capture lifecycle. The independent SwiftPM consumer captures MainActor and custom global actor callbacks and runs each from detached work. Reset and finish retire handles before new replay.
+
+Swift SIL checks reject missing await, forced synchronous conversion to MainActor, actor-state access through an erased actor and unguarded use at macOS 13. A guarded caller links with the macOS 13 deployment target and the replay fixture runs on host macOS 27.0.1. Compiler probes place generic dynamic-function runtime support at macOS 15, iOS and tvOS 18, watchOS 11 and visionOS 2. Other native runtime profiles and callback effect shapes remain open.

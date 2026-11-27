@@ -772,6 +772,120 @@ public final class SyncAsyncEscapingCallbackEndpoint<
     }
 }
 
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+private struct IsolatedAnyCallback<Input: Sendable, Output: Sendable>: Sendable {
+    // A nominal payload avoids emitting weak-storage metadata for the function type itself.
+    let function: @isolated(any) @Sendable (Input) -> Output
+}
+
+/// A typed handle for a dynamically isolated callback captured by a winning stub.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+public struct IsolatedAnyEscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendable {
+    public let invocation: SessionEvent
+    fileprivate weak var storage: CallbackCaptureStorage<IsolatedAnyCallback<Input, Output>>?
+
+    /// Acquires the callback before suspension then invokes it on its original actor when isolated.
+    /// Reset and finish refuse later acquisitions. A replay that already acquired its
+    /// callback can finish, and the session does not track it as an active invocation.
+    public func invoke(_ input: Input) async throws(CallbackDeliveryError) -> Output {
+        guard let callback = storage?.callback(for: invocation) else { throw .unavailable }
+        return await callback.function(input)
+    }
+}
+
+/// Retains an opted-in dynamically isolated callback until reset, finish, or deallocation.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+public final class IsolatedAnyEscapingCallbackCaptor<Input: Sendable, Output: Sendable>: Sendable, CallbackCapturing {
+    fileprivate let storage: CallbackCaptureStorage<IsolatedAnyCallback<Input, Output>>
+
+    public init(session: MockSession) {
+        storage = CallbackCaptureStorage(session: session)
+    }
+
+    /// Returns handles ordered by the originating mock call's admission.
+    public var captures: [IsolatedAnyEscapingCallbackCapture<Input, Output>] {
+        storage.admissions.map { IsolatedAnyEscapingCallbackCapture(invocation: $0, storage: storage) }
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+public struct SyncIsolatedAnyEscapingCallbackConfiguration<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+>: Sendable {
+    fileprivate typealias Callback = IsolatedAnyCallback<CallbackInput, CallbackResult>
+    fileprivate let rules: [EscapingCallbackRule<Input, Callback, Output>]
+}
+
+/// Builds immutable rules for a synchronous nonthrowing method with a dynamically isolated callback.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+public final class SyncIsolatedAnyEscapingCallbackStubbing<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+> {
+    fileprivate typealias Callback = IsolatedAnyCallback<CallbackInput, CallbackResult>
+    fileprivate let builder = EffectRulesBuilder<Input, EscapingCallbackBehavior<Input, Callback, Output>>()
+
+    public init() {}
+
+    public func matching(
+        _ matcher: Matcher<Input>
+    ) -> SyncIsolatedAnyEscapingCallbackStub<Input, CallbackInput, CallbackResult, Output> {
+        SyncIsolatedAnyEscapingCallbackStub(owner: self, matcher: matcher, captor: nil)
+    }
+
+    public func finish() -> SyncIsolatedAnyEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output> {
+        SyncIsolatedAnyEscapingCallbackConfiguration(rules: builder.finish())
+    }
+}
+
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+public struct SyncIsolatedAnyEscapingCallbackStub<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+> {
+    fileprivate let owner: SyncIsolatedAnyEscapingCallbackStubbing<Input, CallbackInput, CallbackResult, Output>
+    fileprivate let matcher: Matcher<Input>
+    fileprivate let captor: IsolatedAnyEscapingCallbackCaptor<CallbackInput, CallbackResult>?
+
+    /// Captures only when this rule wins. The mock and captor must share a session.
+    public func capturingCallback(into captor: IsolatedAnyEscapingCallbackCaptor<CallbackInput, CallbackResult>) -> Self {
+        Self(owner: owner, matcher: matcher, captor: captor)
+    }
+
+    public func willReturn(_ output: Output) { willAnswer { _ in output } }
+
+    public func willAnswer(_ answer: @escaping @Sendable (Input) -> Output) {
+        owner.builder.add(matcher, EscapingCallbackBehavior(captor: captor, answer: answer))
+    }
+}
+
+/// Journals registration and retains the callback only for an explicitly selected captor.
+@available(macOS 15.0, iOS 18.0, tvOS 18.0, watchOS 11.0, visionOS 2.0, *)
+public final class SyncIsolatedAnyEscapingCallbackEndpoint<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+>: Sendable {
+    private typealias Callback = IsolatedAnyCallback<CallbackInput, CallbackResult>
+    private let dispatch: EscapingCallbackDispatch<Input, Callback, Output>
+
+    public init(
+        id: EndpointID, configuration: SyncIsolatedAnyEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output>,
+        failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+        fallback: (@Sendable (MockIssue) -> Output)? = nil
+    ) {
+        dispatch = EscapingCallbackDispatch(id: id, rules: configuration.rules, failureReporter: failureReporter,
+                                            scope: scope, fallback: fallback)
+    }
+
+    public func invoke(
+        _ input: Input, _ callback: @escaping @isolated(any) @Sendable (CallbackInput) -> CallbackResult,
+        source: SourceLocation = SourceLocation()
+    ) -> Output {
+        dispatch.invoke(input, IsolatedAnyCallback(function: callback), source: source)
+    }
+
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
+        dispatch.verification(matching: matcher, phase: phase)
+    }
+}
+
 // Use the same checked Result representation as the other typed-throwing async endpoints.
 private typealias AsyncThrowingCallback<Input, Output, Failure: Error> =
     @Sendable (Input) async -> Result<Output, Failure>

@@ -330,6 +330,8 @@ Call `try session.snapshot().exportTraceJSON(maximumRecords: 128)` to export a v
 
 A direct checked Sendable protocol method can take one `isolated` parameter of a public concrete actor declared in the same module. The synchronous typed `willAnswer` closure receives the original actor with isolation preserved. Setup and verification use ordinary Sendable matchers, including actor identity. Use `await` from outside the actor. This slice supports nonthrowing methods returning `Int`, `Bool`, or `String`.
 
+A synchronous nonthrowing method can register a unary `@escaping @isolated(any) @Sendable (Int) -> String` callback. Use `IsolatedAnyEscapingCallbackCaptor` to retain the callback and await its replay. It runs on the actor captured by the original function. The captor and generated mock require macOS 15, iOS and tvOS 18, watchOS 11, or visionOS 2.
+
 A generated checked Sendable method can take one concrete noncopyable `consuming` argument and return `Int` in the supported synchronous profile. Provide `projectingInput:` as a typed borrowing closure when initializing the mock. Setup and verification use the projected `Int`; an answer receives the original input with its consuming convention. While the projection is pending, verification reports incomplete history. The runtime stores the projected metadata only.
 
 A direct synchronous nonthrowing requirement can also return a concrete same-module noncopyable struct, with zero arguments or one `Int` argument. Configure it with `willProduce` and create a fresh result in the typed factory on each call. The caller owns the returned value and verification uses the ordinary arguments.
