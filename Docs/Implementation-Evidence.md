@@ -369,7 +369,13 @@ GEN-016 adds a final unary `@escaping @Sendable` callback to an ordinary, synchr
 
 The separate SwiftPM consumer calls through the domain protocol, observes that the callback has not yet run, delivers a typed value after the method returns, and verifies the registration once. Shadowed, unmatched and noncapturing stubs leave no capture. Reset and finish release the held payload and their stale handles reject delivery. Compiler fixtures reject losing MainActor isolation, a non-Sendable capture and incorrectly typed replay. Configured CLI diagnostics for unsupported escaping forms preserve the previous shard and index.
 
-Additional parameter shapes, direct spy forwarding, scheduled or one-shot delivery, cancellation, and child delivery events remain open. A delivery that acquired its closure before invalidation can finish. The checks use the Xcode-bundled parser and Swift 6 language mode on the available macOS host.
+Additional parameter shapes, direct spy forwarding and child delivery events remain open. The separate scheduling and single-delivery evidence below covers supported delivery modes. The checks use the Xcode-bundled parser and Swift 6 language mode on the available macOS host.
+
+## Direct one-shot callback delivery
+
+RUN-010 adds an opt-in typed one-shot captor for a synchronous nonisolated callback. Delivering or cancelling claims the same pending closure under the session and capture locks. Invocation and final payload release occur outside both locks. The originating registration metadata remains available for duplicate diagnostics until reset or finish.
+
+The independent SwiftPM consumer holds one callback after it acquires the closure and proves a concurrent attempt fails. It finishes the session while the winner is held and verifies that the winner returns successfully and a later attempt reports `.finished`. A separate test cancels one pending capture while another capture with the same registration arguments can still deliver. A reset invalidates the earlier handle. A scheduled delivery with the same one-shot claim, additional effects and child delivery events require separate work.
 
 
 ## MainActor escaping callback capture

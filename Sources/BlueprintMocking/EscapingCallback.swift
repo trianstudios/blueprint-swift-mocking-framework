@@ -8,9 +8,20 @@ private typealias MainActorCallback<Input, Output> = @MainActor @Sendable (Input
 
 /// Retains the original function type, including any global actor, across session operations.
 private final class CallbackCaptureStorage<Callback: Sendable>: SessionJournalRegistration {
+    enum Retirement: Sendable {
+        case acquisition
+        case cancellation
+    }
+
+    private enum Payload: Sendable {
+        case available(Callback)
+        case acquired
+        case cancelled
+    }
+
     private struct Entry: Sendable {
         let invocation: SessionEvent
-        let callback: Callback
+        var payload: Payload
     }
 
     let session: MockSession
@@ -35,13 +46,43 @@ private final class CallbackCaptureStorage<Callback: Sendable>: SessionJournalRe
 
     // Call under the session gate when validating or acquiring a scheduled delivery.
     func storedCallback(for invocation: SessionEvent) -> Callback? {
-        storage.withLock { $0[invocation.invocationID]?.callback }
+        storage.withLock { entries in
+            guard case .available(let callback)? = entries[invocation.invocationID]?.payload else { return nil }
+            return callback
+        }
+    }
+
+    // The winning claim moves the closure out of storage while the session gate
+    // still pins the capture's epoch. Its invocation or release happens after unlocking.
+    func retire(
+        _ invocation: SessionEvent, as retirement: Retirement
+    ) throws(OneShotCallbackDeliveryError) -> Callback {
+        try session.withLock { state throws(OneShotCallbackDeliveryError) in
+            guard state.epoch == invocation.epoch else { throw .unavailable }
+            guard !state.isFinished else { throw .finished }
+            return try storage.withLock { entries throws(OneShotCallbackDeliveryError) in
+                let id = invocation.invocationID
+                guard let entry = entries[id] else { throw .unavailable }
+                switch entry.payload {
+                case .available(let callback):
+                    entries[id]?.payload = switch retirement {
+                    case .acquisition: .acquired
+                    case .cancellation: .cancelled
+                    }
+                    return callback
+                case .acquired: throw .alreadyAcquired
+                case .cancelled: throw .cancelled
+                }
+            }
+        }
     }
 
     func publish(_ callback: Callback, recording invocation: SessionEvent) {
         session.withLock { state in
             guard !state.isFinished, state.epoch == invocation.epoch else { return }
-            storage.withLock { $0[invocation.invocationID] = Entry(invocation: invocation, callback: callback) }
+            storage.withLock {
+                $0[invocation.invocationID] = Entry(invocation: invocation, payload: .available(callback))
+            }
         }
         withExtendedLifetime(callback) {}
     }
@@ -211,6 +252,53 @@ public final class EscapingCallbackCaptor<Input: Sendable, Output: Sendable>: Se
     }
 }
 
+/// The outcome of an unsuccessful one-shot delivery or cancellation.
+public enum OneShotCallbackDeliveryError: Error, Equatable, Sendable {
+    /// Another delivery obtained this capture's closure.
+    case alreadyAcquired
+    /// The capture was cancelled before delivery obtained its closure.
+    case cancelled
+    /// The owning session finished in the capture's epoch.
+    case finished
+    /// The originating epoch or capture owner is unavailable.
+    case unavailable
+}
+
+/// A handle to a single delivery. Copies compete for the same captured closure.
+public struct OneShotEscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendable {
+    public let invocation: SessionEvent
+    fileprivate weak var storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>?
+
+    /// Runs the winning delivery synchronously on the caller.
+    /// An acquired closure can finish even if the session finishes while it runs.
+    public func invoke(_ input: Input) throws(OneShotCallbackDeliveryError) -> Output {
+        guard let storage else { throw .unavailable }
+        let callback = try storage.retire(invocation, as: .acquisition)
+        return callback(input)
+    }
+
+    /// Retires a pending closure and releases it on the caller after unlocking.
+    public func cancel() throws(OneShotCallbackDeliveryError) {
+        guard let storage else { throw .unavailable }
+        let callback = try storage.retire(invocation, as: .cancellation)
+        withExtendedLifetime(callback) {}
+    }
+}
+
+/// Captures synchronous nonisolated Sendable callbacks for single delivery.
+public final class OneShotEscapingCallbackCaptor<Input: Sendable, Output: Sendable>: Sendable, CallbackCapturing {
+    fileprivate let storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>
+
+    public init(session: MockSession) {
+        storage = CallbackCaptureStorage(session: session)
+    }
+
+    /// Returns handles ordered by admission, including delivered and cancelled captures.
+    public var captures: [OneShotEscapingCallbackCapture<Input, Output>] {
+        storage.admissions.map { OneShotEscapingCallbackCapture(invocation: $0, storage: storage) }
+    }
+}
+
 public struct SyncEscapingCallbackConfiguration<
     Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
 >: Sendable {
@@ -243,10 +331,15 @@ public struct SyncEscapingCallbackStub<
 > {
     fileprivate let owner: SyncEscapingCallbackStubbing<Input, CallbackInput, CallbackResult, Output>
     fileprivate let matcher: Matcher<Input>
-    fileprivate let captor: EscapingCallbackCaptor<CallbackInput, CallbackResult>?
+    fileprivate let captor: (any CallbackCapturing<NonisolatedCallback<CallbackInput, CallbackResult>>)?
 
     /// Captures only when this rule wins. The mock and captor must share a session.
     public func capturingCallback(into captor: EscapingCallbackCaptor<CallbackInput, CallbackResult>) -> Self {
+        Self(owner: owner, matcher: matcher, captor: captor)
+    }
+
+    /// Captures a single delivery only when this rule wins. The captor shares the mock's session.
+    public func capturingCallbackOnce(into captor: OneShotEscapingCallbackCaptor<CallbackInput, CallbackResult>) -> Self {
         Self(owner: owner, matcher: matcher, captor: captor)
     }
 
