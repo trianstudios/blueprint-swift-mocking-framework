@@ -2203,6 +2203,12 @@ def main():
         "--runtime-library", modules / "BlueprintMocking.o", "--evidence-dir", EVIDENCE / "imported-interface",
     ], env=swift_environment, timeout=180, patterns=[
         r"PASS: GEN003 run-independent-binary-consumer",
+        r"PASS: GEN003 run-independent-inherited-consumer",
+        r"PASS: GEN003 reject-inherited-missing",
+        r"PASS: GEN003 reject-inherited-ambiguous",
+        r"PASS: GEN003 reject-inherited-hidden",
+        r"PASS: GEN003 reject-inherited-unsupported",
+        r"PASS: GEN003 reject-inherited-foreign",
         r"PASS: GEN003 reject-wrong-module",
         r"PASS: GEN003 reject-wrong-target",
     ])

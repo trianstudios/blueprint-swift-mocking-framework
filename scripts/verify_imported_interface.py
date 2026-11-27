@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import platform
 import re
+import shutil
 import subprocess
 import tempfile
 
@@ -15,9 +16,9 @@ MODULE = "InterfaceDomain"
 OUTPUTS = {"BlueprintMocks.generated.swift", "BlueprintMockingIndex.generated.swift"}
 
 
-def run(command, evidence, label, *, expected=0, diagnostic=None):
+def run(command, evidence, label, *, expected=0, diagnostic=None, cwd=None):
     completed = subprocess.run(
-        list(map(str, command)), capture_output=True, text=True, timeout=60,
+        list(map(str, command)), capture_output=True, text=True, timeout=60, cwd=cwd,
     )
     (evidence / f"{label}.log").write_text(completed.stdout + completed.stderr, encoding="utf-8")
     if completed.returncode != expected or (
@@ -123,6 +124,9 @@ def verify(tool, swiftc, sdk, sdk_version, runtime_modules, runtime_library, evi
         assert list((staged / "fresh-consumer-cache").rglob("InterfaceDomain-*.swiftmodule"))
         run([exercise], evidence, "run-independent-binary-consumer")
 
+        verify_inheritance(tool, native, target, runtime_modules, runtime_library,
+                           actual, inputs / f"lib{MODULE}.dylib", context, evidence, staged)
+
         run(native + ["-target", other_target, *producer_flags,
                       "-emit-module-path", producer / f"{MODULE}-{other_architecture}.swiftmodule",
                       "-emit-module-interface-path", wrong_arch], evidence, "emit-real-wrong-target-interface")
@@ -161,6 +165,107 @@ def verify(tool, swiftc, sdk, sdk_version, runtime_modules, runtime_library, evi
              "--output", standalone], evidence, "reject-legacy-input", expected=4,
             diagnostic=r"error: BPM005: [^\n]*--interface and --importer-context")
         assert (standalone.read_bytes(), standalone.stat().st_mtime_ns) == previous_file
+
+
+def verify_inheritance(tool, native, target, runtime_modules, runtime_library,
+                       interface, dynamic_library, context, evidence, staged):
+    client = staged / "independent inherited SDK consumer"
+    client.mkdir()
+    input_modules = client / "SDK" / f"{MODULE}.swiftmodule"
+    input_modules.mkdir(parents=True)
+    public_interface = input_modules / interface.name
+    shutil.copyfile(interface, public_interface)
+    shutil.copyfile(dynamic_library, input_modules.parent / dynamic_library.name)
+    shutil.copyfile(context, client / "importer-context.json")
+    consumer = client / "IndependentInheritedConsumer.swift"
+    shutil.copyfile(ROOT / "Fixtures/ImportedInterface/IndependentInheritedConsumer.swift", consumer)
+    config = client / "blueprint-mocking.json"
+    proto = "InheritedImportedDirectory"
+    parent = "ImportedDirectoryBase"
+    config.write_text(json.dumps({"schemaVersion": 1, "selections": [
+        {"module": MODULE, "type": proto, "kind": "protocol"},
+    ]}) + "\n", encoding="utf-8")
+    assert set(input_modules.iterdir()) == {public_interface}
+    assert set(input_modules.parent.iterdir()) == {input_modules, input_modules.parent / dynamic_library.name}
+    assert list(client.rglob("*.swift")) == [consumer]
+    body = public_interface.read_text(encoding="utf-8")
+    lines = body.splitlines()
+    methods = {
+        name: next(number for number, line in enumerate(lines, 1) if line.lstrip().startswith(prefix))
+        for name, prefix in (("enabled", "func enabled("), ("mark", "func mark("), ("lookup", "func lookup(_"))
+    }
+
+    output = client / "Generated"
+    request = ["--config", config, "--output", output, "--input-set-id", "a034"]
+    arguments = ["--interface", MODULE, public_interface, "--importer-context", client / "importer-context.json"]
+    run([tool, "generate", *request, *arguments], evidence, "generate-inherited-interface", cwd=client)
+    baseline = snapshot(output)
+    assert set(baseline) == OUTPUTS
+    info = json.loads(run([tool, "inspect", *request, *arguments, "--format", "json"],
+                          evidence, "inspect-inherited-interface", cwd=client))
+    assert info["featureGates"]["protocolInheritance"] == "supplied-same-module-interface"
+    declaration, = info["declarations"]
+    assert declaration["module"] == MODULE
+    assert declaration["type"] == proto
+    assert declaration["generatedType"] == f"{proto}Mock"
+    assert declaration["file"] == str(public_interface.relative_to(client))
+    results = {"enabled": "Swift.Bool", "lookup": "Swift.Int", "mark": "Void"}
+    identifiers = {
+        name: f"schema1|{MODULE}.{proto}|{name}(_:Swift.String)->{result}|Sendable"
+        for name, result in results.items()
+    }
+    endpoints = {endpoint["id"]: endpoint for endpoint in declaration["endpoints"]}
+    assert set(endpoints) == set(identifiers.values())
+    for name, line in methods.items():
+        endpoint = endpoints[identifiers[name]]
+        assert endpoint["module"] == MODULE and endpoint["line"] == line and endpoint["column"] == 3
+        assert endpoint["file"] == declaration["file"]
+    run([tool, "verify-generated", *request, *arguments], evidence, "verify-inherited-interface", cwd=client)
+    assert snapshot(output) == baseline
+
+    binary = client / "independent-inherited-consumer"
+    cache = client / "fresh-import-cache"
+    assert not cache.exists()
+    sdk = input_modules.parent
+    run(native + ["-target", target, "-parse-as-library", "-module-name", "IndependentInheritedConsumer",
+                  "-I", sdk, "-L", sdk, f"-l{MODULE}", "-I", runtime_modules, runtime_library,
+                  "-module-cache-path", cache, "-Xlinker", "-rpath", "-Xlinker", sdk,
+                  output / "BlueprintMocks.generated.swift", output / "BlueprintMockingIndex.generated.swift",
+                  consumer, "-o", binary], evidence, "compile-independent-inherited-consumer", cwd=client)
+    assert list(cache.rglob(f"{MODULE}-*.swiftmodule"))
+    result = run([binary, public_interface.name, str(methods["mark"])], evidence,
+                 "run-independent-inherited-consumer", cwd=client)
+    assert result == "GEN003 inheritance probe passed: binary call and parent source from textual public interface\n"
+
+    parent_regex = re.compile(rf"(?m)^public protocol {parent} : [^\n]+ \{{\n(?:  [^\n]+\n)+\}}\n")
+    match = parent_regex.search(body)
+    assert match is not None
+    parent_declaration = match.group()
+    parent_requirement = next(line for line in parent_declaration.splitlines() if line.lstrip().startswith("func enabled("))
+    qualified_parent = re.search(rf"(?m)^public protocol {proto} : (?:{MODULE}(?:::|\.))?{parent} \{{$", body)
+    assert qualified_parent is not None
+    foreign = qualified_parent.group().replace(f"{MODULE}::", "").replace(f"{MODULE}.", "").replace(parent, f"Foreign.{parent}")
+    for label, variant, diagnostic, line in (
+        ("missing-parent", body.replace(parent_declaration, ""),
+         rf"Missing inherited protocol {MODULE}\.{parent}", None),
+        ("ambiguous-parent", body.replace(parent_declaration, parent_declaration * 2),
+         rf"Ambiguous inherited protocol {MODULE}\.{parent}\. Candidates: [^\n]+, [^\n]+", None),
+        ("hidden-parent", body.replace(parent_declaration, parent_declaration.removeprefix("public ")),
+         rf"Protocol {MODULE}\.{parent} must be public", None),
+        ("unsupported-parent-method", body.replace(parent_requirement, parent_requirement.replace(" -> ", " async -> ")),
+         r"The public interface profile supports synchronous nonthrowing methods with scalar arguments", methods["enabled"]),
+        ("foreign-parent", body.replace(qualified_parent.group(), foreign),
+         rf"Foreign inherited protocol 'Foreign\.{parent}' requires an unconditional plain import Foreign", None),
+    ):
+        assert variant != body
+        public_interface.write_text(variant, encoding="utf-8")
+        location = rf"{re.escape(interface.name)}:{line if line is not None else '[0-9]+'}:[0-9]+"
+        result = run([tool, "generate", *request, *arguments], evidence, f"reject-inherited-{label}", expected=1,
+                     diagnostic=location + r": error: BPM001: " + diagnostic, cwd=client)
+        assert not result and snapshot(output) == baseline
+    public_interface.write_text(body, encoding="utf-8")
+    run([tool, "verify-generated", *request, *arguments], evidence, "verify-restored-inherited-interface", cwd=client)
+    assert snapshot(output) == baseline
 
 
 def main():

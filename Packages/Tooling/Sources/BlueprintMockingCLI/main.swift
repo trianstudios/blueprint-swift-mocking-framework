@@ -741,9 +741,11 @@ func generate(
     }
     let declarations = inheritance.declarations
     if fromTextualInterface {
-        guard isolation == .sendable, declarations.count == 1, !hasBindings, !specializesGenerics,
-              proto.primaryAssociatedTypeClause == nil else {
-            try reject(proto, "Public interface generation requires a direct Sendable protocol without inherited or generic requirements")
+        guard isolation == .sendable, !hasBindings, !specializesGenerics,
+              declarations.allSatisfy({
+                  $0.origin.module == module && $0.declaration.primaryAssociatedTypeClause == nil
+              }) else {
+            try reject(proto, "Public interface generation requires nongeneric Sendable protocols in the selected module")
         }
         try index.requireUnshadowedQualifier(module, at: proto)
         try index.requireUnshadowedQualifier("Swift", at: proto)
@@ -1508,7 +1510,7 @@ func generate(
                   fn.genericParameterClause == nil, fn.genericWhereClause == nil,
                   fn.signature.effectSpecifiers == nil,
                   fn.signature.parameterClause.parameters.allSatisfy({ importedType($0.type) != nil }) else {
-                try reject(item, "The public interface profile supports direct synchronous nonthrowing methods with scalar arguments")
+                try reject(item, "The public interface profile supports synchronous nonthrowing methods with scalar arguments")
             }
         }
         if item.decl.is(AssociatedTypeDeclSyntax.self) { continue }

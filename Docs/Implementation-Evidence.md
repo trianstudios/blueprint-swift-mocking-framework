@@ -727,3 +727,9 @@ The independent protocol-metatype consumer proves distinct instances, nested iso
 DX-011 and DX-021 now exercise handwritten shard and index collisions at the configured generator boundary. With the existing output lock held, the writer checks the provenance header of any existing destination. An unrelated file is rejected before a publication journal or output replacement. Missing outputs and header-preserving drift remain repairable. Canonical bytes are restored after accepted CRLF drift, and a no-op preserves the output timestamps.
 
 Recovery accepts the recorded previous or next pair, or the known dirty-marker intermediate with a journaled shard. The fixture rejects malformed records, unowned record payloads and unexpected current bytes, then retries a real interruption. The original interruption and two-writer checks still execute. A digest-based ownership manifest, obsolete-output handling and filesystem race qualification remain open.
+
+## Same-module inheritance from public interfaces
+
+GEN-003 now resolves an inherited protocol graph in one validated compiler-emitted public Swift interface when the selected and inherited requirements match the synchronous nonthrowing scalar profile. The independent consumer receives the SDK dylib and interface in a fresh module cache. It compiles the generated mock, exercises inherited calls and checks the exact interface line of an inherited diagnostic.
+
+Fresh inspection attributes requirements to each declaring interface position. Missing, ambiguous, hidden, foreign and unsupported parents fail with the existing generated shard and index intact. Both compiler-emitted qualifier spellings pass on the selected Mac. This is configured CLI evidence. Interface ingestion through SwiftPM and Xcode, broader graphs and offline generator cache composition remain open.

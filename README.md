@@ -151,7 +151,7 @@ Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsum
 
 The source-built plugin shares the consumer’s SwiftPM graph and requires SwiftSyntax exactly `600.0.1`. If your consumer pins a different SwiftSyntax version, run [standalone generation](#standalone-generation) from the authoring checkout and include the emitted Swift in your test target. The standalone script uses the selected Xcode toolchain’s bundled parser, so the consumer can resolve the runtime and its own SwiftSyntax pin independently.
 
-The configured CLI can take one compatible public macOS Swift 6 interface for a direct Sendable protocol with scalar synchronous methods.
+The configured CLI accepts one compatible public macOS Swift 6 interface for a Sendable protocol with synchronous nonthrowing scalar methods. It resolves public inherited requirements declared in that interface under the same module.
 
 ```sh
 bash scripts/generate.sh generate --config blueprint-mocking.json --output Generated \

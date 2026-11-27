@@ -589,7 +589,7 @@ private struct BuildInspection: Encodable {
         featureGates = [
             "analysis": interface == nil ? "supplied-swift-sources" : "supplied-public-swiftinterface",
             "compilerContext": interface == nil ? "unavailable" : "explicit-importer-context",
-            "protocolInheritance": interface == nil ? "supplied-source-index" : "direct-interface-only",
+            "protocolInheritance": interface == nil ? "supplied-source-index" : "supplied-same-module-interface",
         ]
         declarations = plan.selections.map { selection in
             let endpoints = selection.mock.endpointOrigins.map { id, specialization, origin in
