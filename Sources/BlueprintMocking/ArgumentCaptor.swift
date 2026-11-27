@@ -35,7 +35,7 @@ public final class ArgumentCaptor<Value: Sendable>: Sendable {
 }
 
 extension ArgumentCaptor: SessionJournalRegistration {
-    func discardHistory() -> any Sendable {
+    func discardHistory(restartingSequences _: Bool) -> any Sendable {
         storage.withLock {
             let retired = $0
             $0 = []

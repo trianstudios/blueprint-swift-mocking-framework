@@ -34,10 +34,10 @@ enum PublishedAnswer<Answer: Sendable>: Sendable {
         }
     }
 
-    func forkSequence() -> Self {
+    func forkSequence(restarting: Bool) -> Self {
         switch self {
         case .single: self
-        case .sequence(let sequence): .sequence(sequence.fork())
+        case .sequence(let sequence): .sequence(sequence.fork(restarting: restarting))
         }
     }
 }
@@ -55,8 +55,8 @@ final class AnswerSequence<Answer: Sendable>: Sendable {
         self.nextIndex = CriticalState(position)
     }
 
-    func fork() -> AnswerSequence {
-        let position = nextIndex.withLock { $0 }
+    func fork(restarting: Bool) -> AnswerSequence {
+        let position = restarting ? 0 : nextIndex.withLock { $0 }
         return AnswerSequence(steps, policy: policy, position: position)
     }
 

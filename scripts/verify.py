@@ -1136,6 +1136,8 @@ def main():
                   r"RUN007_generatedSendableTupleVerificationReportsSourceLabels\(\) passed",
                   r"RUN007_generatedMainActorTupleVerificationReportsSourceLabels\(\) passed",
                   r"RUN034_detachedMatchingCannotConsumeCurrentSequencePosition\(\) passed",
+                  r"RUN034_detachedSequenceRestartKeepsOldReservationSeparate\(\) passed",
+                  r"RUN034_quiescentSequenceRestartRewindsExhaustedRules\(\) passed",
                   r"GEN007_typedAsyncDescriptorSetupAndVerificationDoNotInvokeWitness\(\) passed",
                   r"RUN009_generatedWinningRulesCaptureOnceThroughReentryAndConcurrency\(\) passed",
                   r"SYS005_checkoutServiceUsesLiveDependencyAdapters\(\) passed",

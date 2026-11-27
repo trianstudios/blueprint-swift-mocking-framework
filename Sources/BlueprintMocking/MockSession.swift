@@ -129,7 +129,7 @@ public enum SessionFinishError: Error, Equatable, Sendable {
 /// Clears typed history under the session gate. Retired values must be returned so their
 /// destructors can only run after the caller releases the session and journal locks.
 protocol SessionJournalRegistration: AnyObject, Sendable {
-    func discardHistory() -> any Sendable
+    func discardHistory(restartingSequences: Bool) -> any Sendable
     func discardCapturesOnFinish() -> (any Sendable)?
 }
 
@@ -257,9 +257,22 @@ public final class MockSession: Sendable {
     @discardableResult
     public func resetHistory(_ mode: SessionResetMode = .requireQuiescence)
         throws(SessionResetError) -> SessionEpoch {
+        try reset(mode, restartingSequences: false)
+    }
+
+    /// Starts a new history epoch and rewinds its configured answer sequences.
+    /// Detached invocations keep the sequence positions of their original epoch.
+    @discardableResult
+    public func resetHistoryAndSequences(_ mode: SessionResetMode = .requireQuiescence)
+        throws(SessionResetError) -> SessionEpoch {
+        try reset(mode, restartingSequences: true)
+    }
+
+    private func reset(_ mode: SessionResetMode, restartingSequences: Bool)
+        throws(SessionResetError) -> SessionEpoch {
         let (retirement, wake, replacements, callbacks) = try state.withLock {
             (state: inout State) throws(SessionResetError) in
-            let retirement = try state.resetHistory(mode)
+            let retirement = try state.resetHistory(mode, restartingSequences: restartingSequences)
             return (retirement, state.closeObservations(), state.resolveQuiescentReplacements(publishAtIdle: false),
                     state.retirePendingCallbacks())
         }
@@ -627,7 +640,7 @@ public final class MockSession: Sendable {
             return (snapshot(epoch: epoch)!, retirement)
         }
 
-        fileprivate mutating func resetHistory(_ mode: SessionResetMode)
+        fileprivate mutating func resetHistory(_ mode: SessionResetMode, restartingSequences: Bool)
             throws(SessionResetError) -> SessionRetirement {
             guard !isFinished else { throw .finished }
             if mode == .requireQuiescence {
@@ -638,7 +651,7 @@ public final class MockSession: Sendable {
             // Keep strong references and retired typed payloads until after the session unlocks.
             let registered = journals.compactMap(\.value)
             journals = registered.map { WeakSessionJournal(value: $0) }
-            let retired = registered.map { $0.discardHistory() }
+            let retired = registered.map { $0.discardHistory(restartingSequences: restartingSequences) }
             epoch = SessionEpoch(sessionID: epoch.sessionID, rawValue: epoch.rawValue + 1)
             histories[epoch] = EpochHistory()
             claimsByScope.removeAll()

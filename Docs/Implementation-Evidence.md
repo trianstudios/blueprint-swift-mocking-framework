@@ -76,7 +76,7 @@ The independent SwiftPM consumer proves that typed async-throwing setup and sync
 
 RUN-034 now keeps installed async-throwing rule cursors local to each epoch. A reset takes the same session lock as sequence reservation and copies the reserved position into the new epoch without changing the rule revision. An invocation admitted before reset still uses the old cursor. Matchers and answers run outside the session lock.
 
-An independent generated `UserRepository` consumer holds an admitted call inside its matcher before it can reserve. The test verifies that quiescent reset refuses the active call, then detaches it and exercises both cursors. The archived completion pairs with its original admission while current counts and the next sequence result hold. Dedicated options for resetting configured state and release-profile qualification remain open.
+An independent generated `UserRepository` consumer holds an admitted call inside its matcher before it can reserve. The tests verify that a quiescent reset refuses the active call, then exercise both preserving and restarting the cursor in a detached reset. The archived completion pairs with its original admission while current counts and reservations stay independent. A quiescent restart rewinds exhausted finite rules and advanced cycling rules in the same revision. The existing reset transaction retires queued callback work. Independent rule and callback-work reset policies need defined behavior, and release-profile qualification remains open.
 
 ## Public SwiftPM installation
 

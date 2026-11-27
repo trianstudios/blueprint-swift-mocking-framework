@@ -237,13 +237,13 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     private let state: CriticalState<State>
     private let scope: MockScope
     private let tracksProjectionTimeline: ProjectionTimelineFields
-    private let forkConfigurationOnReset: (@Sendable (Configuration) -> Configuration)?
+    private let forkConfigurationOnReset: (@Sendable (Configuration, Bool) -> Configuration)?
     let endpoint: EndpointID
     private let reporter: FailureReporter
 
     init(endpoint: EndpointID, reporter: FailureReporter, scope: MockScope,
          configuration: Configuration, tracksProjectionTimeline: ProjectionTimelineFields = [],
-         forkConfigurationOnReset: (@Sendable (Configuration) -> Configuration)? = nil) {
+         forkConfigurationOnReset: (@Sendable (Configuration, Bool) -> Configuration)? = nil) {
         self.state = CriticalState(State(configuration: configuration))
         self.tracksProjectionTimeline = tracksProjectionTimeline
         self.forkConfigurationOnReset = forkConfigurationOnReset
@@ -432,7 +432,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
 
     // Called by the session under its lock, in the same order as admission.
     // The session keeps the returned copy alive until both locks have been released.
-    func discardHistory() -> any Sendable {
+    func discardHistory(restartingSequences: Bool) -> any Sendable {
         state.withLock { state in
             let retiredHistory = (state.calls, state.projectionEvents)
             state.calls = []
@@ -441,7 +441,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
             if let forkConfigurationOnReset {
                 // Detached admissions can still reserve answers from their saved plan.
                 let previous = state.configuration
-                state.configuration = forkConfigurationOnReset(previous)
+                state.configuration = forkConfigurationOnReset(previous, restartingSequences)
                 retiredConfiguration = previous
             }
             return (retiredHistory, retiredConfiguration)
@@ -838,10 +838,10 @@ public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Fail
 private struct PublishedAsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
     let rules: [Rule<Input, AsyncRuleBehavior<Input, PublishedAnswer<AsyncAnswer<Input, Output, Failure>>>>]
 
-    func forkSequences() -> Self {
+    func forkSequences(restarting: Bool) -> Self {
         Self(rules: rules.map { rule in
             Rule(matcher: rule.matcher, answer: AsyncRuleBehavior(
-                plan: rule.answer.plan.forkSequence(), capture: rule.answer.capture))
+                plan: rule.answer.plan.forkSequence(restarting: restarting), capture: rule.answer.capture))
         })
     }
 }
@@ -924,7 +924,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
                                     configuration: configuration.publish(for: scope.session.id),
                                     tracksProjectionTimeline: tracksProjectionTimeline,
-                                    forkConfigurationOnReset: { $0.forkSequences() })
+                                    forkConfigurationOnReset: { $0.forkSequences(restarting: $1) })
     }
 
     func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {

@@ -46,16 +46,20 @@ private final class CallbackCaptureStorage<Callback: Sendable>: SessionJournalRe
         withExtendedLifetime(callback) {}
     }
 
-    func discardHistory() -> any Sendable {
+    func discardHistory(restartingSequences _: Bool) -> any Sendable {
+        discardStoredCallbacks()
+    }
+
+    func discardCapturesOnFinish() -> (any Sendable)? {
+        discardStoredCallbacks()
+    }
+
+    private func discardStoredCallbacks() -> [SessionInvocationID: Entry] {
         storage.withLock {
             let retired = $0
             $0 = [:]
             return retired
         }
-    }
-
-    func discardCapturesOnFinish() -> (any Sendable)? {
-        discardHistory()
     }
 }
 
