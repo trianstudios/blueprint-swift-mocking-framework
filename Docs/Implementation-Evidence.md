@@ -52,7 +52,9 @@ Sendable synchronous and async-throwing endpoints can retain typed argument and 
 
 For RUN-006, `xcrun swift test --filter 'RUN006'` exercises equality versus identity, optional matching, and typed case extraction in both Sendable and MainActor fixtures. The pre-Mutex iOS probe in `scripts/verify_apple_deployment.py` also exercises equality, identity, and typed case projection on the available iOS 17.5 simulator. These runs provide scoped evidence. Native execution on the remaining applicable Apple, Ubuntu, and Windows profiles and review of the exact applicable profile plan remain required.
 
-For SYS-008, `python3 -m unittest discover -s scripts/tests -p 'test_check_release.py'` checks that otherwise valid evidence cannot certify a completed row with a missing source reference, check name, or required profile result. The unit bundle uses synthetic profile metadata. Certification requires a reviewed plan covering the applicable release-validation hosts and actual evidence tied to the exact Git revision.
+For SYS-008, the canonical verifier runs `test_check_release.py` and `test_verify_release_candidate.py` as separate named checks. The first rejects a missing source reference, check name, or required profile result. The second exercises the signed-candidate boundary with disposable repositories and keys. Both suites use fixture metadata for the claims they test.
+
+The focused command `python3 scripts/verify.py --release-checks-only` runs those same suites without Swift builds. It writes `release-checks.json` after both suites execute successfully and the checkout is clean at the same revision before and after the run. Each result records the exit status and log hash. A failed or empty suite removes any prior scoped report. Certification requires reviewer approval of the applicable evaluator profiles and evidence from each profile at the selected revision.
 
 The [candidate release profile plan](Release-Profile-Plan.md) lists the reproduced profiles, native executions still required, and evidence fields for review.
 

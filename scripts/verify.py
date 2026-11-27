@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """One entry point for the supported local prototype profile; no network dependencies."""
+import argparse
 import hashlib
 import json
 import os
@@ -16,7 +17,6 @@ from fatal_child import check_fatal_child
 
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = Path(os.environ.get("BLUEPRINT_EVIDENCE_DIRECTORY", ROOT / "Evidence")).resolve()
-EVIDENCE.mkdir(parents=True, exist_ok=True)
 RESULTS = []
 
 def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
@@ -83,6 +83,38 @@ def checkout_state():
 
 def result_document():
     return (json.dumps(RESULTS, indent=2) + "\n").encode("utf-8")
+
+
+def verify_release_checks():
+    for suite in ("test_check_release.py", "test_verify_release_candidate.py"):
+        run(suite, [sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p", suite, "-v"],
+            patterns=[r"(?m)^Ran [1-9]\d* tests? in ", r"(?m)^OK$"])
+
+
+def verify_local_release_checks():
+    report_path = EVIDENCE / "release-checks.json"
+    report_path.unlink(missing_ok=True)
+    source_before = checkout_state()
+    if not source_before or not source_before["clean"]:
+        raise ValueError("Release checks require a clean Git checkout")
+
+    verify_release_checks()
+
+    source_after = checkout_state()
+    if source_before != source_after:
+        raise ValueError("The Git checkout changed during release checks")
+    report = {
+        "status": "local release checks",
+        "sourceRevision": source_before["revision"],
+        "checkoutBefore": source_before,
+        "checkoutAfter": source_after,
+        "python": platform.python_version(),
+        "pythonPath": sys.executable,
+        "host": platform.platform(),
+        "hostKernelBuild": platform.version(),
+        "results": RESULTS,
+    }
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
 def verify_conditional_generation(tool, temp):
@@ -184,6 +216,7 @@ def main():
     rows, registry_errors = read_registry(matrix)
     if registry_errors:
         raise ValueError("Invalid acceptance matrix:\n" + "\n".join(registry_errors))
+    verify_release_checks()
     source = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDomain/UserRepository.swift"
     generated = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/UserRepositoryMock.swift"
     generation_environment = swift_environment | {
@@ -1533,14 +1566,35 @@ def main():
     }
     (EVIDENCE / "profile.json").write_text(json.dumps(profile, indent=2) + "\n")
 
-exit_status = 0
-try:
-    main()
-except Exception as error:
-    print("Verification failed: " + str(error), file=sys.stderr)
-    exit_status = 1
-finally:
-    (EVIDENCE / "results.json").write_bytes(result_document())
-if exit_status:
-    sys.exit(exit_status)
-print(f"All prototype checks passed; evidence is in {EVIDENCE / 'results.json'}.", flush=True)
+def cli():
+    global EVIDENCE
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--release-checks-only", action="store_true",
+                        help="run the SYS-008 evaluator checks without building Swift targets")
+    args = parser.parse_args()
+    if args.release_checks_only and "BLUEPRINT_EVIDENCE_DIRECTORY" not in os.environ:
+        EVIDENCE = EVIDENCE / "release-checks"
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
+
+    exit_status = 0
+    try:
+        if args.release_checks_only:
+            verify_local_release_checks()
+        else:
+            main()
+    except Exception as error:
+        print("Verification failed: " + str(error), file=sys.stderr)
+        exit_status = 1
+    finally:
+        if not args.release_checks_only:
+            (EVIDENCE / "results.json").write_bytes(result_document())
+    if exit_status == 0:
+        if args.release_checks_only:
+            print(f"Local release checks passed; evidence is in {EVIDENCE / 'release-checks.json'}.", flush=True)
+        else:
+            print(f"All prototype checks passed; evidence is in {EVIDENCE / 'results.json'}.", flush=True)
+    return exit_status
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

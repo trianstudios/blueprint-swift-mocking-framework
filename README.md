@@ -12,6 +12,8 @@ python3 scripts/verify.py
 
 That entry point regenerates the consumer mock, runs runtime and consumer tests, executes the example, checks compiler and generator rejections, runs deliberate failures in child processes, and checks runtime-only linkage. It writes local results and the toolchain profile to the ignored `Evidence/` directory. The profile records the source revision when the checkout is clean and unchanged across the run. Hashes bind the profile to the results and each result to its log.
 
+To run the SYS-008 evaluator checks without building Swift targets, use `python3 scripts/verify.py --release-checks-only` from a clean checkout. It records each suite’s log and digest along with the exact source revision in `Evidence/release-checks/release-checks.json`. Set `BLUEPRINT_EVIDENCE_DIRECTORY` to write the scoped report and logs to a dedicated directory. [Release profile plan](Docs/Release-Profile-Plan.md)
+
 For the ordinary SwiftPM entry points after generation:
 
 ```sh
