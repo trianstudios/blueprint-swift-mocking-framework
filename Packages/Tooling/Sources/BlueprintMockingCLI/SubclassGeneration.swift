@@ -234,3 +234,166 @@ private func renderSubclass(_ interface: SubclassInterface) -> String {
 
     """
 }
+
+struct FinalFacadeGenerationRequest {
+    let module: String
+    let interfacePath: String
+    let contextPath: String
+    let name: String
+    let selector: String
+    let output: String
+
+    init(arguments: ArraySlice<String>) throws {
+        let values = Array(arguments)
+        guard values.count == 11, values[0] == "--interface", values[3] == "--importer-context",
+              values[5] == "--class", values[7] == "--method", values[9] == "--output",
+              ProtocolSourceIndex.isConditionIdentifier(values[1]),
+              ProtocolSourceIndex.isConditionIdentifier(values[6]),
+              !["Swift", "BlueprintMocking"].contains(values[1]),
+              !Parser.parse(source: "import \(values[1])").hasError else {
+            throw GenerationError(description: "error: BPM002: usage: facade --interface MODULE FILE "
+                                  + "--importer-context FILE --class NAME --method 'method(label:)' --output FILE")
+        }
+        module = values[1]
+        interfacePath = values[2]
+        contextPath = values[4]
+        name = values[6]
+        selector = values[8]
+        output = values[10]
+    }
+}
+
+private struct FinalFacadeInterface {
+    let module: String
+    let name: String
+    let method: String
+    let label: String
+    let origin: ProtocolSourceOrigin
+}
+
+func generateFinalFacade(_ request: FinalFacadeGenerationRequest) throws -> String {
+    let supplied = try ImportedInterfaceInput(module: request.module, path: request.interfacePath,
+                                              contextPath: request.contextPath)
+    let index = ProtocolSourceIndex(sources: [:], importedInterface: supplied)
+    let type = try index.selectImportedClass(request.name, in: request.module, diagnosticFile: request.interfacePath)
+
+    func reject(_ node: some SyntaxProtocol, _ message: String) throws -> Never {
+        throw GenerationError(description: "\(index.origin(of: node)): error: BPM001: \(message)")
+    }
+
+    func scalar(_ type: TypeSyntax, named name: String) -> Bool {
+        let spelling = type.trimmedDescription
+        return spelling == "Swift.\(name)" || spelling == "Swift::\(name)"
+    }
+
+    let modifiers = type.modifiers.map(\.name.text)
+    let inheritance = type.inheritanceClause?.inheritedTypes
+    guard modifiers.count == 2, Set(modifiers) == ["public", "final"],
+          type.attributes.isEmpty, type.genericParameterClause == nil, type.genericWhereClause == nil,
+          inheritance?.count == 1, let trait = inheritance?.first, scalar(trait.type, named: "Sendable") else {
+        try reject(type, "A final facade requires a public non-generic final class with a direct checked Swift.Sendable conformance")
+    }
+    let selected = type.memberBlock.members.compactMap { $0.decl.as(FunctionDeclSyntax.self) }.filter { method in
+        let labels = method.signature.parameterClause.parameters.map { "\($0.firstName.text):" }.joined()
+        return "\(method.name.text)(\(labels))" == request.selector
+    }
+    guard selected.count == 1, let method = selected.first else {
+        try reject(type, "The public SDK interface does not expose a unique method '\(request.selector)'. "
+                   + "Select a public instance method or obtain an SDK-owner facade.")
+    }
+    let methodModifiers = method.modifiers.map(\.name.text).sorted()
+    let parameters = method.signature.parameterClause.parameters
+    guard methodModifiers == ["final", "public"] || methodModifiers == ["public"] else {
+        try reject(method, "A final facade needs a public instance method in the SDK interface")
+    }
+    guard method.attributes.isEmpty, method.body == nil, method.genericParameterClause == nil,
+          method.genericWhereClause == nil, method.signature.effectSpecifiers == nil,
+          ProtocolSourceIndex.isConditionIdentifier(method.name.text),
+          !["verify", "Stubs", "Verification"].contains(method.name.text),
+          parameters.count == 1, let parameter = parameters.first,
+          ProtocolSourceIndex.isConditionIdentifier(parameter.firstName.text),
+          parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+          parameter.defaultValue == nil, parameter.ellipsis == nil, scalar(parameter.type, named: "Int"),
+          let result = method.signature.returnClause?.type, scalar(result, named: "Int") else {
+        try reject(method, "A final facade requires one synchronous nonthrowing method taking Swift.Int and returning Swift.Int")
+    }
+
+    for name in [request.module, "Swift", "BlueprintMocking", request.name + "Facade",
+                 request.name + "FacadeLive", request.name + "FacadeMock"] {
+        try index.requireUnshadowedQualifier(name, at: method)
+    }
+    return renderFinalFacade(FinalFacadeInterface(module: request.module, name: request.name,
+                                                   method: method.name.text, label: parameter.firstName.text,
+                                                   origin: index.origin(of: method)))
+}
+
+private func renderFinalFacade(_ interface: FinalFacadeInterface) -> String {
+    let nominal = "\(interface.module).\(interface.name)"
+    let facade = interface.name + "Facade"
+    let witness = "\(interface.method)(\(interface.label) input: Swift.Int) -> Swift.Int"
+    let call = interface.label == "_" ? "input" : "\(interface.label): input"
+    let matcher = "\(interface.label) matcher: BlueprintMocking.Matcher<Swift.Int>"
+    let origin = interface.origin
+    let source = "BlueprintMocking.SourceLocation(fileID: \(String(reflecting: origin.module + "/" + origin.fileName)), "
+        + "filePath: \(String(reflecting: origin.fileName)), line: \(origin.line), column: \(origin.column))"
+    let identity = "schema\(GeneratedContract.irSchemaVersion)|\(nominal)|facade:\(interface.method)(\(interface.label):Swift.Int)->Swift.Int|Sendable"
+    return """
+    // Generated by Blueprint Mocking. Schema \(GeneratedContract.irSchemaVersion). Do not edit.
+    // Source: \(origin.fileName), final class \(nominal).
+    import BlueprintMocking
+    import \(interface.module)
+
+    public protocol \(facade): Swift.Sendable {
+        func \(witness)
+    }
+
+    public struct \(facade)Live: \(facade) {
+        private let __sdk: \(nominal)
+
+        public init(sdk: \(nominal)) { __sdk = sdk }
+
+        public func \(witness) {
+            __sdk.\(interface.method)(\(call))
+        }
+    }
+
+    public final class \(facade)Mock: \(facade) {
+        private let __schema: \(GeneratedContract.runtimeMarker).Type = \(GeneratedContract.runtimeMarker).self
+        private let __endpoint: BlueprintMocking.SyncEndpoint<Swift.Int, Swift.Int>
+
+        public struct Stubs {
+            fileprivate let setup: BlueprintMocking.SyncStubbing<Swift.Int, Swift.Int>
+
+            public func \(interface.method)(\(matcher)) -> BlueprintMocking.SyncStub<Swift.Int, Swift.Int> {
+                setup.matching(matcher)
+            }
+        }
+
+        public struct Verification: Swift.Sendable {
+            fileprivate let endpoint: BlueprintMocking.SyncEndpoint<Swift.Int, Swift.Int>
+
+            public func \(interface.method)(\(matcher), phase: BlueprintMocking.CallPhase = .admitted)
+                -> BlueprintMocking.Verification<Swift.Int> {
+                endpoint.verification(matching: matcher, phase: phase)
+            }
+        }
+
+        public var verify: Verification { Verification(endpoint: __endpoint) }
+
+        public init(failureReporter: BlueprintMocking.FailureReporter,
+                    session: BlueprintMocking.MockSession = BlueprintMocking.MockSession(),
+                    _ configure: (Stubs) -> Void) {
+            let setup = BlueprintMocking.SyncStubbing<Swift.Int, Swift.Int>()
+            configure(Stubs(setup: setup))
+            __endpoint = BlueprintMocking.SyncEndpoint(
+                id: BlueprintMocking.EndpointID(\(String(reflecting: identity))),
+                configuration: setup.finish(), failureReporter: failureReporter, scope: session.makeMock()
+            )
+        }
+
+        public func \(witness) {
+            __endpoint.invoke(input, source: \(source))
+        }
+    }
+    """ + "\n"
+}

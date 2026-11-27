@@ -40,6 +40,18 @@ Select `CatalogPricing`, `BasketDiscount`, and `SKUFormatting` when regenerating
 swift test --package-path Fixtures/ProtocolConsumer --filter SYS005
 ```
 
+### Generate a facade for a final SDK class
+
+For a frozen Swift SDK on macOS, the `facade` command can read a validated public interface and select one public synchronous instance method taking and returning `Int` on a directly Sendable final class.
+
+```sh
+bash scripts/generate.sh facade --interface FrozenSDK FrozenSDK.swiftinterface \
+  --importer-context importer.json --class FrozenQuoteSDK --method 'quote(value:)' \
+  --output FrozenQuoteSDKFacade.swift
+```
+
+Inject the generated facade protocol into your caller. Supply the original SDK instance to its live adapter or configure the generated mock with typed stubs. The live adapter calls the SDK's public method. Direct SDK calls use their usual path.
+
 ### Selecting a return-only overload
 
 For a pair of ordinary Sendable synchronous nonthrowing methods with the same arguments and `Int` and `String` results, select the result type in the generated setup and verification. For example, use `stubs.lookup(id: .equal("sku"), returning: Int.self).willReturn(42)` and `mock.verify.lookup(id: .equal("sku"), returning: Int.self).wasCalled(.once)`. Calls through the protocol select a witness using the result type in the caller. [Consumer fixture](Fixtures/ProtocolConsumer/Tests/ConsumerTests/ReturnOnlyOverloadTests.swift)

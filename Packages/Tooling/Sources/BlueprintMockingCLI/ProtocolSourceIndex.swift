@@ -229,6 +229,17 @@ final class ProtocolSourceIndex {
         return IndexedProtocol(declaration: declaration, origin: candidate.origin)
     }
 
+    func selectImportedClass(_ name: String, in module: String, diagnosticFile: String) throws -> ClassDeclSyntax {
+        let candidates = try load(module)[name, default: []]
+        guard importedInterface?.module == module, candidates.count == 1,
+              let candidate = candidates.first, !candidate.isConditional,
+              let declaration = candidate.declaration.as(ClassDeclSyntax.self) else {
+            let site = ProtocolSourceOrigin(module: module, path: diagnosticFile, line: 1, column: 1)
+            throw Self.error(at: site, "Expected one top-level class \(module).\(name) in the public SDK interface")
+        }
+        return declaration
+    }
+
     /// Diagnoses when a supplied, unconditional final superclass fixes Self to one class.
     func requireReplaceableSelf(of protocolType: IndexedProtocol) throws {
         guard let clause = protocolType.declaration.genericWhereClause else { return }

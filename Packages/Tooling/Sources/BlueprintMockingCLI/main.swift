@@ -2686,6 +2686,16 @@ private func writeStandaloneMock(_ source: String, to path: String) throws {
 }
 
 private func run(_ arguments: [String]) throws {
+    if arguments.first == "facade" {
+        let request = try FinalFacadeGenerationRequest(arguments: arguments.dropFirst())
+        let source = try generateFinalFacade(request)
+        let attributes = try? FileManager.default.attributesOfItem(atPath: request.output)
+        if attributes?[.type] as? FileAttributeType != .typeRegular ||
+            (try? String(contentsOfFile: request.output, encoding: .utf8)) != source {
+            try writeStandaloneMock(source, to: request.output)
+        }
+        return
+    }
     if arguments.first == "subclass" {
         let request = try SubclassGenerationRequest(arguments: arguments.dropFirst())
         let source = try generateSubclass(request)

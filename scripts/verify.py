@@ -2199,6 +2199,14 @@ def main():
         "--sdk", sdk, "--runtime-build", modules, "--evidence-dir", EVIDENCE / "subclass-bootstrap"],
         env=swift_environment, patterns=[r"PASS: cross-module MainActor subclass bootstrap"])
     built_subclass = ROOT / "Fixtures/ProtocolConsumer/Sources/SubclassBootstrapProbe/BootstrapRendererMock.swift"
+    run("sdk-facade-integration", [
+        sys.executable, "Fixtures/SDKIntegration/verify.py", "--tool", tool, "--swiftc", swiftc,
+        "--sdk", sdk, "--sdk-version", sdk_version, "--runtime-modules", modules,
+        "--runtime-library", modules / "BlueprintMocking.o", "--evidence-dir", EVIDENCE / "sdk-facade",
+    ], env=swift_environment, timeout=300, patterns=[
+        r"PASS: SDK integration run-source-less-consumer",
+        r"PASS: SDK integration reject-final-subclass",
+    ])
     regenerated_subclass = EVIDENCE / "subclass-bootstrap/BootstrapRendererMock.swift"
     if built_subclass.read_bytes() != regenerated_subclass.read_bytes():
         raise ValueError("The committed SwiftPM subclass fixture differs from standalone generation")
