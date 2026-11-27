@@ -299,7 +299,7 @@ GEN-016 also supports `@escaping @MainActor @Sendable` on the final unary parame
 
 The independent SwiftPM consumer registers through the protocol from a detached task and explicitly awaits replay from a detached task. The callback confirms MainActor execution and reads and updates actor-isolated state. Swift rejects synchronous off-actor replay, including with MainActor default isolation. Reset and finish release stored payloads and invalidate prior handles. Unsupported configured signatures preserve the last valid shard and index.
 
-Other global actors, actor-isolated protocols, throwing MainActor callbacks, and scheduled delivery remain open. Verification uses the prepared Xcode toolchain in Swift 6 language mode on macOS. Additional toolchain and platform profiles remain open.
+Other global actors, actor-isolated protocols, async throwing MainActor callbacks, and scheduled delivery remain open. Verification uses the prepared Xcode toolchain in Swift 6 language mode on macOS. Additional toolchain and platform profiles remain open.
 
 
 ## Typed-throwing escaping callback replay
@@ -326,7 +326,7 @@ GEN-016 supports one final, unary, nonisolated `@escaping @Sendable (Input) asyn
 
 The independent SwiftPM consumer uses an actor gate to suspend replay after registration. A callback acquired before reset returns its typed value after release. A callback acquired before quiescent finish still throws its declared failure. New attempts on old handles call the supplied `@Sendable` unavailability mapping once without invoking the callback. The mapper can read session state. Callback payloads retire and the replay leaves registration history unchanged. Swift rejects a foreign callback failure type. Configured generation verifies both generated files on success and preserves both on actor-isolated, untyped, and explicit `Never` async throwing rejections.
 
-The consumer executable with the async typed replay path links for macOS 13 and executes on the available newer host. This leaves native execution on the floor and other qualification profiles open. Actor-isolated typed effects, additional callback shapes, scheduled delivery, and one-shot or cancellation policies remain open.
+The consumer executable with the async typed replay path links for macOS 13 and executes on the available newer host. This leaves native execution on the floor and other qualification profiles open. Additional actor-isolated effects and callback shapes, scheduled delivery, and one-shot or cancellation policies remain open.
 
 
 ## MainActor asynchronous escaping callback replay
@@ -335,4 +335,13 @@ GEN-016 supports one final, unary, nonthrowing `@escaping @MainActor @Sendable (
 
 The independent SwiftPM consumer registers and replays from detached tasks. The callback writes to MainActor-isolated state and asserts MainActor at entry and after an actor gate suspends it. In separate reset and quiescent finish cases, teardown clears the captor, releases idle payloads and rejects later acquisitions. A replay that has already acquired the closure can resume on MainActor and return its typed value after teardown. The replay does not create a mock invocation or block quiescent finish.
 
-Swift rejects retyping the replay method as isolated to a different global actor under both tested default-isolation modes. Configured generation emits identical files for the bare and Swift-qualified MainActor spellings and preserves the existing pair on unsupported actor-and-throwing combinations. Throwing MainActor callbacks, support for additional global actors, scheduled delivery, and full native platform qualification remain open.
+Swift rejects retyping the replay method as isolated to a different global actor under both tested default-isolation modes. Configured generation emits identical files for the bare and Swift-qualified MainActor spellings and preserves the existing pair on unsupported actor-and-throwing combinations. Async throwing MainActor callbacks, support for additional global actors, scheduled delivery, and full native platform qualification remain open.
+
+
+## MainActor typed-throwing escaping callback replay
+
+GEN-016 supports a final, unary, synchronous `@escaping @MainActor @Sendable (Input) throws(DeclaredFailure) -> Output` callback on a synchronous, nonthrowing Sendable protocol method. The witness retains the full callback signature. The capture store holds a checked MainActor thunk returning `Result<Output, Failure>`. Replay acquires it under the session gate and executes it on MainActor outside the locks, preserving the callback's declared failure.
+
+The independent SwiftPM consumer detaches registration and replay. The callback asserts MainActor isolation and returns the typed value or throws the exact declared error. Reset and quiescent finish release the retained payload and reject old handles. The caller's unavailability mapping executes on MainActor only for stale handles and can inspect the session. Replay leaves the registration history intact. Swift rejects foreign callback failure types and synchronous off-actor replay in both tested isolation modes.
+
+Configured generation emits identical files for the bare and Swift-qualified MainActor spellings and leaves the prior pair unchanged on unsupported forms. The consumer executable links for macOS 13 and replays both outcomes on the newer host. Native execution at the deployment floor, async throwing MainActor callbacks, other global actors, and scheduled delivery remain open.

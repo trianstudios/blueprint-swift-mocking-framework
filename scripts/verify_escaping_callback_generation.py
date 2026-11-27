@@ -20,6 +20,9 @@ ASYNC_TYPED_CALLBACK = ASYNC_CALLBACK.replace("async ->", "async throws(AsyncCal
 TYPED_CALLBACK = CALLBACK.replace("(Int) ->", "(Int) throws(CallbackFixtureError) ->")
 CANONICAL_ACTOR_CALLBACK = CALLBACK.replace("@Sendable ", "@Swift.MainActor @Sendable ")
 CANONICAL_ACTOR_ASYNC_CALLBACK = CANONICAL_ACTOR_CALLBACK.replace("(Int) ->", "(Int) async ->")
+CANONICAL_ACTOR_TYPED_CALLBACK = CANONICAL_ACTOR_CALLBACK.replace(
+    "(Int) ->", "(Int) throws(MainActorCallbackFixtureError) ->"
+)
 SUPPORTED = f"func register(id: String, using callback: {CALLBACK}) -> String"
 TYPED_SUPPORTED = SUPPORTED.replace(CALLBACK, TYPED_CALLBACK)
 ASYNC_SUPPORTED = SUPPORTED.replace(CALLBACK, ASYNC_CALLBACK)
@@ -28,10 +31,15 @@ ACTOR_SUPPORTED = SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
 QUALIFIED_ACTOR_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_CALLBACK)
 ACTOR_ASYNC_SUPPORTED = ASYNC_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
 QUALIFIED_ACTOR_ASYNC_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_ASYNC_CALLBACK)
+QUALIFIED_ACTOR_TYPED_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_TYPED_CALLBACK)
+ACTOR_TYPED_SUPPORTED = QUALIFIED_ACTOR_TYPED_SUPPORTED.replace("@Swift.MainActor ", "@MainActor ")
 ACTOR_ASYNC_TYPED_SUPPORTED = ASYNC_TYPED_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
 TYPED_ENDPOINT = "SyncThrowingEscapingCallbackEndpoint<String, Int, String, String, CallbackFixtureError>"
 ASYNC_ENDPOINT = "SyncAsyncEscapingCallbackEndpoint<String, Int, String, String>"
 ACTOR_ASYNC_ENDPOINT = "SyncMainActorAsyncEscapingCallbackEndpoint<String, Int, String, String>"
+ACTOR_TYPED_ENDPOINT = (
+    "SyncMainActorThrowingEscapingCallbackEndpoint<String, Int, String, String, MainActorCallbackFixtureError>"
+)
 ASYNC_TYPED_ENDPOINT = (
     "SyncAsyncThrowingEscapingCallbackEndpoint<String, Int, String, String, AsyncCallbackFixtureError>"
 )
@@ -42,7 +50,6 @@ METHOD_DIAGNOSTIC = (
     "Escaping callback capture requires a synchronous nonthrowing Sendable method with one callback "
     "in the final position"
 )
-ACTOR_THROWS_DIAGNOSTIC = "Typed-throwing escaping callbacks require a nonisolated @Sendable function"
 ACTOR_ASYNC_DIAGNOSTIC = "Asynchronous throwing escaping callbacks require a nonisolated @Sendable function"
 FAILURE_DIAGNOSTIC = "Escaping callback capture requires throws with a named failure type other than Never"
 REJECTIONS = (
@@ -70,8 +77,16 @@ REJECTIONS = (
         ASYNC_TYPED_SUPPORTED.replace("throws(AsyncCallbackFixtureError)", "throws(Never)"),
         FAILURE_DIAGNOSTIC,
     ),
-    ("main-actor-typed-callback", TYPED_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable "),
-     ACTOR_THROWS_DIAGNOSTIC),
+    (
+        "main-actor-untyped-throwing-callback",
+        ACTOR_TYPED_SUPPORTED.replace("throws(MainActorCallbackFixtureError)", "throws"),
+        FAILURE_DIAGNOSTIC,
+    ),
+    (
+        "main-actor-never-throwing-callback",
+        ACTOR_TYPED_SUPPORTED.replace("throws(MainActorCallbackFixtureError)", "throws(Never)"),
+        FAILURE_DIAGNOSTIC,
+    ),
     ("untyped-throwing-callback", TYPED_SUPPORTED.replace("throws(CallbackFixtureError)", "throws"), FAILURE_DIAGNOSTIC),
     ("never-throwing-callback", TYPED_SUPPORTED.replace("throws(CallbackFixtureError)", "throws(Never)"),
      FAILURE_DIAGNOSTIC),
@@ -94,6 +109,7 @@ def write_source(source, method, declarations=""):
         f"public protocol {PROTOCOL}: Sendable {{\n    {method}\n}}\n"
         "public enum CallbackFixtureError: Error, Sendable { case rejected }\n"
         "public enum AsyncCallbackFixtureError: Error, Sendable { case rejected }\n"
+        "public enum MainActorCallbackFixtureError: Error, Sendable { case rejected }\n"
         f"{declarations}",
         encoding="utf-8",
     )
@@ -220,6 +236,19 @@ def verify(tool, evidence):
         )
         if bare_async != qualified_async:
             raise ValueError("Bare and Swift-qualified async MainActor spellings produced different owned outputs")
+
+        write_source(source, ACTOR_TYPED_SUPPORTED)
+        bare_typed = require_generated(
+            tool, request, evidence, "main-actor-typed-throws", checks, staged, output,
+            callback=CANONICAL_ACTOR_TYPED_CALLBACK, endpoint=ACTOR_TYPED_ENDPOINT,
+        )
+        write_source(source, QUALIFIED_ACTOR_TYPED_SUPPORTED)
+        qualified_typed = require_generated(
+            tool, request, evidence, "qualified-main-actor-typed-throws", checks, staged, output,
+            callback=CANONICAL_ACTOR_TYPED_CALLBACK, endpoint=ACTOR_TYPED_ENDPOINT,
+        )
+        if bare_typed != qualified_typed:
+            raise ValueError("Bare and Swift-qualified throwing MainActor spellings produced different owned outputs")
 
         location = rb"(?m)^.*" + re.escape(source.name.encode("utf-8")) + rb":[1-9]\d*:[1-9]\d*: error: BPM001: "
         for label, method, diagnostic in REJECTIONS:
