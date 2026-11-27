@@ -342,6 +342,8 @@ A supported direct `Sendable` protocol can use `func exchange(_ input: sending P
 
 An explicit synchronous adapter can use `ByteBufferProjection().snapshot(buffer)` to record a byte count and base-address presence. To copy bytes during the buffer's valid lifetime, use `ByteBufferProjection(copyingPrefixAtMost: limit)` and pass the owned snapshot into your domain's mockable protocol. The snapshot includes the optional copied bytes and a truncation flag.
 
+On Swift 6.4 and newer, a direct checked `Sendable` protocol can declare one synchronous `func read(_ source: borrowing Span<UInt8>) -> Int` requirement. Supply `projectingSpan:` when initializing the mock. The closure runs during the borrowed call and returns owned `[UInt8]` for typed matching, answers and history. Choose how many bytes to copy in that closure. Use a scoped adapter for other lifetime-bound shapes.
+
 An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
 
 ```swift

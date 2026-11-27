@@ -629,3 +629,9 @@ The subclass selector diagnoses a private or fileprivate method in a frozen depe
 The SYS-006 resource-transfer fixture exercises a fresh factory and consuming receiver in one generated mock. A production-like checkout requests a new move-only ticket for the same key twice and transfers each to the consuming method. The typed projection records an integer while the raw ticket is still borrowed in the active call. The consumer observes distinct ownership, the expected issue-to-destruction order and exactly one destructor per ticket. A deliberately wrong verification count fails with empty captures. The session stores projected observations and lifecycle events.
 
 Swift SIL rejects passing a previously consumed ticket to the receiver and reusing a captured factory result. The fixture establishes the consuming and fresh-factory alternatives in the A3.4 resource-transfer scenario.
+
+## Borrowed byte-span projection
+
+GEN-037 now emits a checked witness for one direct synchronous `borrowing Span<UInt8>` input and an `Int` result in a Sendable protocol on Swift 6.4. The independent SwiftPM consumer invokes it while an array slice owns the view, observes an incomplete value assertion during projection, then verifies its owned byte prefix after the owner has left scope. Typed stubs and history use only the owned projection.
+
+Swift SIL checks reject an array retaining the borrowed view, an extension beyond its local owner's lifetime and an escaping projection capture. Standalone and configured generation agree. Unsupported signatures preserve the prior Swift shard and index. Other lifetime-bound declarations, older compiler profiles and native platform qualification remain open.

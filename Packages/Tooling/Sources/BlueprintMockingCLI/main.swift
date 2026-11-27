@@ -207,11 +207,12 @@ struct Parameter {
     let isIsolatedActor: Bool
     let isConsumingInput: Bool
     let isSendingInput: Bool
+    let isBorrowedSpan: Bool
     let callback: CallbackType?
 
     init(label: String, type: String, isVariadic: Bool = false, isInout: Bool = false,
          isIsolatedActor: Bool = false, isConsumingInput: Bool = false,
-         isSendingInput: Bool = false, callback: CallbackType? = nil) {
+         isSendingInput: Bool = false, isBorrowedSpan: Bool = false, callback: CallbackType? = nil) {
         self.label = label
         self.type = type
         self.isVariadic = isVariadic
@@ -219,6 +220,7 @@ struct Parameter {
         self.isIsolatedActor = isIsolatedActor
         self.isConsumingInput = isConsumingInput
         self.isSendingInput = isSendingInput
+        self.isBorrowedSpan = isBorrowedSpan
         self.callback = callback
     }
 
@@ -227,6 +229,7 @@ struct Parameter {
         if isIsolatedActor { return "isolated \(type)" }
         if isConsumingInput { return "consuming \(type)" }
         if isSendingInput { return "sending \(type)" }
+        if isBorrowedSpan { return "borrowing \(type)" }
         return isVariadic ? "\(type)..." : type
     }
     var runtimeType: String { isVariadic ? "[\(type)]" : type }
@@ -318,12 +321,14 @@ struct Member {
     var usesInout: Bool { parameters.contains(where: \.isInout) }
     var usesConsumingInput: Bool { parameters.contains(where: \.isConsumingInput) }
     var transfersSendingValues: Bool { parameters.contains(where: \.isSendingInput) }
+    var usesBorrowedSpan: Bool { parameters.contains(where: \.isBorrowedSpan) }
     var callback: CallbackType? { parameters.last?.callback }
     var materializedAutoclosure: CallbackType? {
         guard let callback, case .materializedAutoclosure = callback.kind else { return nil }
         return callback
     }
     var metadataParameters: [Parameter] {
+        if usesBorrowedSpan { return [Parameter(label: parameters[0].label, type: "[Swift.UInt8]")] }
         if usesConsumingInput || transfersSendingValues {
             return [Parameter(label: parameters[0].label, type: "Swift.Int")]
         }
@@ -333,6 +338,7 @@ struct Member {
         if let callback { return callback.kind.family }
         if parameters.contains(where: \.isIsolatedActor) { return "IsolatedSync" }
         if usesConsumingInput { return "BlueprintMocking.ConsumingSync" }
+        if usesBorrowedSpan { return "BlueprintMocking.BorrowedSpanSync" }
         if transfersSendingValues { return "BlueprintMocking.SendingAsync" }
         if producesOwnedResult { return "BlueprintMocking.OwnedSync" }
         return (usesInout ? "Inout" : isolation.prefix) + effect.family
@@ -673,6 +679,18 @@ func generate(
 
     // The consumer compiler resolves aliases and validates the conformance. Reject type
     // shapes this emitter cannot reproduce, including references to a witness's Self.
+    func spanArguments(_ type: TypeSyntax) -> GenericArgumentClauseSyntax? {
+        let base = type.as(AttributedTypeSyntax.self)?.baseType ?? type
+        if let nominal = base.as(IdentifierTypeSyntax.self), nominal.name.text == "Span" {
+            return nominal.genericArgumentClause
+        }
+        if let nominal = base.as(MemberTypeSyntax.self),
+           nominal.baseType.trimmedDescription == "Swift", nominal.name.text == "Span" {
+            return nominal.genericArgumentClause
+        }
+        return nil
+    }
+
     func supportedType(_ type: TypeSyntax) -> String? {
         if let optional = type.as(OptionalTypeSyntax.self) {
             return supportedType(optional.wrappedType).map { "\($0)?" }
@@ -758,6 +776,7 @@ func generate(
         }
         let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
         let matcherTypes = parameters.filter { $0.callback == nil }.map {
+            if $0.isBorrowedSpan { return "\($0.label):[UInt8]" }
             let lowered = $0.isInout || $0.isConsumingInput || $0.isSendingInput || producesOwnedResult
             return "\($0.label):\(lowered ? "Int" : $0.runtimeType)"
         }.joined(separator: ",")
@@ -785,6 +804,9 @@ func generate(
             }
             if producesOwnedResult || previous.producesOwnedResult {
                 try reject(node, "Owned result overloads with identical matcher signatures require distinct argument labels" + locations)
+            }
+            if parameters.contains(where: \.isBorrowedSpan) || previous.usesBorrowedSpan {
+                try reject(node, "Borrowed Span overloads with identical metadata matcher signatures require distinct argument labels" + locations)
             }
             if parameters.contains(where: \.isSendingInput) || previous.transfersSendingValues {
                 try reject(node, "Sending overloads with identical metadata matcher signatures require distinct argument labels" + locations)
@@ -1353,6 +1375,51 @@ func generate(
               simple(fn.name.text), !["init", "verify", "Stubs", "Verification"].contains(fn.name.text) else {
             try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
         }
+        let declaredParameters = fn.signature.parameterClause.parameters
+        let returnType = fn.signature.returnClause?.type
+        if declaredParameters.contains(where: { spanArguments($0.type) != nil }) ||
+            returnType.flatMap(spanArguments) != nil {
+            #if compiler(>=6.4)
+            let message = "Borrowed Span projection requires a direct synchronous nonthrowing Sendable "
+                + "method with one borrowing Span<UInt8> argument and an Int result. "
+                + "Use a scoped adapter for other view shapes or lifetime dependencies."
+            guard declarationID == proto.id, declarations.count == 1, isolation == .sendable,
+                  !fromTextualInterface, !hasBindings, !spy, !specializesGenerics, projections.isEmpty,
+                  variadicForwarding.isEmpty, scopedRuleSelectors.isEmpty, rethrowsSelections.isEmpty,
+                  lazyAutoclosureSelections.isEmpty, materializedAutoclosureSelections.isEmpty,
+                  fn.attributes.isEmpty, fn.signature.effectSpecifiers == nil,
+                  fn.genericParameterClause == nil, fn.genericWhereClause == nil,
+                  declaredParameters.count == 1, let parameter = declaredParameters.first,
+                  parameter.defaultValue == nil, parameter.ellipsis == nil,
+                  parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+                  let borrowing = parameter.type.as(AttributedTypeSyntax.self), borrowing.attributes.isEmpty,
+                  borrowing.specifiers.map(\.trimmedDescription) == ["borrowing"],
+                  let arguments = spanArguments(borrowing.baseType), arguments.arguments.count == 1,
+                  let element = arguments.arguments.first,
+                  ["UInt8", "Swift.UInt8"].contains(element.argument.trimmedDescription),
+                  let returnType, ["Int", "Swift.Int"].contains(returnType.trimmedDescription) else {
+                try reject(fn, message)
+            }
+            guard !members.contains(where: \.usesBorrowedSpan) else {
+                try reject(fn, "Only one borrowed Span projection method is supported per protocol")
+            }
+            let label = parameter.firstName.text
+            guard label == "_" || simple(label) else { try reject(parameter, "Use a simple borrowed Span argument label") }
+            try index.requireUnshadowedQualifier("BlueprintMocking", at: fn)
+            try index.requireUnshadowedQualifier("Swift", at: fn)
+            if borrowing.baseType.is(IdentifierTypeSyntax.self) {
+                try index.requireUnshadowedQualifier("Span", at: borrowing.baseType)
+            }
+            if element.argument.trimmedDescription == "UInt8" { try index.requireUnshadowedQualifier("UInt8", at: element) }
+            if returnType.trimmedDescription == "Int" { try index.requireUnshadowedQualifier("Int", at: returnType) }
+            try addMember(name: fn.name.text,
+                          parameters: [Parameter(label: label, type: "Swift.Span<Swift.UInt8>", isBorrowedSpan: true)],
+                          outputType: "Swift.Int", effect: Effect(isAsync: false, failure: nil), kind: .method, at: fn)
+            continue
+            #else
+            try reject(fn, "Borrowed Span projection requires Swift 6.4 or newer. Use a scoped adapter on older compilers.")
+            #endif
+        }
         if fn.signature.effectSpecifiers?.throwsClause?.throwsSpecifier.text == "rethrows" {
             try collectRethrowsMethod(fn, isDirect: declarationID == proto.id)
             continue
@@ -1372,8 +1439,6 @@ func generate(
                 try reject(fn, "Concrete associated-type bindings do not yet support typed throws")
             }
         }
-        let declaredParameters = fn.signature.parameterClause.parameters
-        let returnType = fn.signature.returnClause?.type
         let sendingResult = returnType?.as(AttributedTypeSyntax.self)
         let hasSendingParameter = declaredParameters.contains {
             $0.type.as(AttributedTypeSyntax.self)?.specifiers.contains { $0.trimmedDescription == "sending" } == true
@@ -1633,6 +1698,17 @@ func generate(
         }
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
                       effect: effect, kind: .method, declaredResult: returnsBareSelf ? "Self" : nil, at: fn)
+    }
+    if members.contains(where: \.usesBorrowedSpan) {
+        let ordinarySiblings = members.allSatisfy { member in
+            if member.usesBorrowedSpan { return true }
+            guard case .method = member.kind, member.family == "Sync", member.effect.failure == nil,
+                  member.outputType != selected + "Mock" else { return false }
+            return !member.parameters.contains(where: \.isVariadic)
+        }
+        guard mockAvailability == nil, ordinarySiblings else {
+            try reject(proto, "Borrowed Span projection can share a mock only with ordinary synchronous nonthrowing instance methods")
+        }
     }
     if let selector = lazyAutoclosureSelections.subtracting(usedAutoclosureSelections).sorted().first {
         try reject(proto, "Unknown lazy autoclosure selector '\(selector)'")
@@ -2100,6 +2176,8 @@ func generate(
                 "BlueprintMocking.SendingAsyncVerification<Swift.Int, Swift.Int>"
             } else if m.usesConsumingInput {
                 "BlueprintMocking.ConsumingSyncVerification<\(m.inputType)>"
+            } else if m.usesBorrowedSpan {
+                "BlueprintMocking.BorrowedSpanSyncVerification<\(m.inputType)>"
             } else {
                 "BlueprintMocking.\(isolation.prefix)Verification<\(m.verificationInputType)>"
             }
@@ -2157,6 +2235,9 @@ func generate(
         let member = members[i]
         let types = projectionTypes[i]!
         output += "                projection\(i): InvocationProjection<\(member.inputType), \(member.outputType), \(types.argument), \(types.result)>,\n"
+    }
+    if members.contains(where: \.usesBorrowedSpan) {
+        output += "                projectingSpan: @escaping @Sendable (borrowing Swift.Span<Swift.UInt8>) -> [Swift.UInt8],\n"
     }
     if let consuming = members.first(where: \.usesConsumingInput) {
         output += "                projectingInput: @escaping @Sendable (borrowing \(consuming.parameters[0].type)) -> Swift.Int,\n"
@@ -2248,6 +2329,7 @@ func generate(
             mapping += ", fallback: { _ in () }"
         }
         let projection = if m.usesConsumingInput { ", projectingInput: projectingInput" }
+            else if m.usesBorrowedSpan { ", projectingSpan: projectingSpan" }
             else if m.transfersSendingValues { ", projectInput: projectSendingInput, projectResult: projectSendingResult" }
             else if projectedIndices.contains(i) { ", projection: projection\(i)" }
             else { "" }
@@ -2439,8 +2521,15 @@ func generate(
     let resolvedMethods = methodTypes.sorted { $0.key < $1.key }.flatMap { selector, types in
         types.sorted().map { GenericMethodSpecialization(selector: selector, type: $0) }
     }
+    let implementation = output + "}\n"
+    let source = if members.contains(where: \.usesBorrowedSpan) {
+        "#if compiler(>=6.4)\n" + implementation
+            + "#else\n#error(\"Borrowed Span mock generation requires Swift 6.4 or newer.\")\n#endif\n"
+    } else {
+        implementation
+    }
     return GeneratedProtocolMock(
-        typeName: name, source: output + "}\n", associatedTypeBindings: resolvedBindings,
+        typeName: name, source: source, associatedTypeBindings: resolvedBindings,
         genericMethodSpecializations: resolvedMethods,
         endpointOrigins: members.map { member in
             let specialization: String? = if case .specializedGeneric(_, let type) = member.kind {
