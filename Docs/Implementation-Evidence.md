@@ -70,6 +70,14 @@ The release checker requires every profile artifact for a completed contract to 
 
 GEN012-A supports a pair of synchronous nonthrowing methods on an ordinary Sendable protocol with the same arguments and distinct `Int` and `String` results. Both descriptors take an explicit result metatype. The independent SwiftPM consumer selects each real witness through the protocol, supplies the same input, and verifies separate return histories and endpoint identities. Swift rejects a String result configured for the Int endpoint. Other overload shapes and the generic operator gate GEN012-B remain open.
 
+## Objective-C descriptor admission
+
+C4.2 and D2.2 place dynamic descriptor validation in the optional Apple-only `BlueprintMockingObjC` product. They require selector and member identities, version checks before admission, a supported marshaling table, and a native Clang or Xcode input route. The current checkout has no Objective-C descriptor entry point. The local Apple SDK can compile an imported fixed-arity selector fixture once that boundary is defined.
+
+The bridge design needs to choose where metadata enters, such as a compiled generated table or a loadable manifest, and identify who owns that metadata and its lifetime. It also needs the first exact selector shape and calling isolation, the representation for schema and runtime-contract versions, and the typed or Objective-C error channel for rejecting a descriptor before enabling its selector or recording a call. A direct native selector call can prove dispatch, while the dynamic rejection test requires real descriptor admission. The existing Swift compatibility marker covers source-generated witnesses.
+
+A Swift-facing consumer can wrap an imported Objective-C dependency in handwritten Swift code and inject a generated mock for its Swift protocol seam today. Calls made directly to the Objective-C object stay outside that mock’s history. [Adapter example](../README.md#testing-final-classes-value-types-and-free-functions)
+
 ## Generated runtime compatibility
 
 GEN-007 now checks the runtime marker from the imported `BlueprintMocking` module. A native compiler fixture generates an async-throwing instance witness and a static-subscript witness. It compiles the same emitted source and consumer-local lookalike against two separately built runtime modules. The actual marker compiles. Renaming only the runtime’s marker produces a compiler error at both generated compatibility fields. The static accessor fallbacks also reference the runtime module.
@@ -315,6 +323,12 @@ The independent SwiftPM consumer targets macOS 13. Its guarded test configures a
 
 This evidence covers compilation for the macOS 13 deployment target and execution on the available newer macOS host. Execution on macOS 13, iOS, per-member mock availability, protocol-level and mixed-platform attributes, and qualification of the packaged parser remain open. The automatic SwiftPM compiler context and original Xcode project checks retain their own gates.
 
+
+## Ordinary inout witnesses
+
+GEN-019 covers ordinary Sendable mocks for same-module synchronous methods with a single explicitly qualified Swift.Int inout parameter. The external consumer calls through the protocol and verifies the caller’s mutated value after a Void return, a typed return, and a typed throw. Verification compares before and after values for the actual terminal phase.
+
+Configured and standalone generation emit the same witness, and the existing spy witness is byte-identical. Swift SIL compilation accepts the generated witness operating on a separate local while another local has an active exclusive access. Swift rejects the same-local overlap and an answer that retains the scoped access, in both default isolation modes. Additional inout shapes and profile certification remain open.
 
 ## Immediate nonescaping callback plans
 

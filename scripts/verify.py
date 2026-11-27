@@ -517,6 +517,45 @@ def main():
             tool, boundary, boundary.with_suffix(".generated.swift"), "ImmediateCallbackBoundary"),
             fails=True, patterns=[r"error: BPM001: " + diagnostic])
 
+    ordinary_inout_source = source.with_name("InoutSpyDirectory.swift")
+    ordinary_inout_generated = generated.with_name("OrdinaryInoutDirectoryMock.swift")
+    run("ordinary-inout-generation", generate(
+        tool, ordinary_inout_source, ordinary_inout_generated, "OrdinaryInoutDirectory"))
+    ordinary_inout_config = temp / "ordinary-inout-config.json"
+    ordinary_inout_config.write_text(json.dumps({"schemaVersion": 1, "selections": [
+        {"module": "ConsumerDomain", "type": "OrdinaryInoutDirectory", "kind": "protocol"},
+    ]}), encoding="utf-8")
+    ordinary_inout_output = temp / "ordinary-inout-configured"
+    ordinary_inout_args = [
+        "--config", ordinary_inout_config, "--output", ordinary_inout_output, "--input-set-id", "123",
+        "--source", "ConsumerDomain", ordinary_inout_source,
+    ]
+    run("ordinary-inout-configured-generation", [tool, "generate", *ordinary_inout_args])
+    shard = (ordinary_inout_output / "BlueprintMocks.generated.swift").read_bytes()
+    if not shard.startswith(header + ordinary_inout_generated.read_bytes() + b"\nenum BlueprintMockingShard_"):
+        raise ValueError("Configured and standalone ordinary inout witnesses differ")
+    run("ordinary-inout-verify-generated", [tool, "verify-generated", *ordinary_inout_args])
+
+    inout_parameter_shape = r"Use named, optional, array or dictionary parameter types without ownership"
+    ordinary_inout_boundaries = (
+        ("async", "", "Sendable", "(_ value: inout Swift.Int) async",
+         r"Ordinary inout stubbing requires a synchronous method"),
+        ("actor", "@MainActor ", "", "(_ value: inout Swift.Int)", inout_parameter_shape),
+        ("unqualified", "", "Sendable", "(_ value: inout Int)", inout_parameter_shape),
+        ("multiple", "", "Sendable", "(_ value: inout Swift.Int, other: Swift.Int)", inout_parameter_shape),
+        ("shadowed-swift", "public enum Swift { public typealias Int = String }\n", "Sendable",
+         "(_ value: inout Swift.Int)", r"'Swift' is shadowed by a local declaration"),
+    )
+    for case, prefix, conformance, signature, diagnostic in ordinary_inout_boundaries:
+        boundary = temp / f"ordinary-inout-{case}.swift"
+        inheritance = f": {conformance}" if conformance else ""
+        boundary.write_text(
+            f"{prefix}public protocol OrdinaryInoutBoundary{inheritance} {{\n    func update{signature}\n}}\n"
+        )
+        run("reject-ordinary-inout-" + case, generate(
+            tool, boundary, boundary.with_suffix(".generated.swift"), "OrdinaryInoutBoundary"),
+            fails=True, patterns=[r"error: BPM001: .*" + diagnostic])
+
     adapter_source = source.with_name("CheckoutAdapters.swift")
     for selected, check in (("CatalogPricing", "catalog-pricing-adapter"),
                             ("BasketDiscount", "basket-discount-adapter"),
@@ -1200,6 +1239,7 @@ def main():
                   r"GEN004B_guardedMockKeepsReceiptStorageAndSurfacesAvailable\(\) passed",
                   r"BLUEPRINT_AVAILABILITY_GUARDED_RECEIPT Swift\.Int 47",
                   r"RUN011_generatedOrdinaryMockInvokesCallbackWithinWitness\(\) passed",
+                  r"GEN019_generatedOrdinaryInoutWitnessWritesBackBeforeReturnAndThrow\(\) passed",
                   r"GEN012_returnOnlyOverloadsUseSeparateTypedEndpoints\(\) passed",
                   r"RUN025_cancellationRequestKeepsGeneratedAnswerActiveUntilReturn\(\) passed",
                   r"RUN025_detachedCancellationRequestStaysWithTypedThrowingAdmission\(\) passed",
@@ -1282,6 +1322,12 @@ def main():
         r"'NewReceipt' is only available in macOS 14\.0 or newer",
     ])
     unavailable_mock = r"'AvailabilityDirectoryMock' is only available in macOS 14\.0 or newer"
+    disjoint_inout = ROOT / "Fixtures/CompileSuccesses/OrdinaryInoutDisjointAccess.swift"
+    for suffix, flags in (("", []), ("-DefaultIsolation", ["-default-isolation", "MainActor"])):
+        run("compile-accept-OrdinaryInoutDisjointAccess" + suffix,
+            [*compiler_floor, "-emit-sil", "-o", os.devnull, "-I", modules, *flags, disjoint_inout],
+            env=swift_environment)
+
     patterns = {
         "AvailabilityUnguardedWitness": r"'receipt\(\)' is only available in macOS 14\.0 or newer",
         "AvailabilityUnguardedMock": (
@@ -1381,6 +1427,13 @@ def main():
         ),
         "CallbackSpyDetachedCapture": r"escaping closure captures non-escaping value",
         "InoutSpyRetainsAccess": r"escaping closure captures 'inout' parameter 'value'",
+        "OrdinaryInoutRetainsAccess": (
+            r"OrdinaryInoutRetainsAccess\.swift:\d+:\d+: error: escaping closure captures 'inout' parameter 'value'"
+        ),
+        "OrdinaryInoutOverlappingAccess": (
+            r"OrdinaryInoutOverlappingAccess\.swift:\d+:\d+: error: overlapping accesses to 'value', "
+            r"but modification requires exclusive access"
+        ),
         "StructuralSpyWrongLink": r"cannot convert value of type 'AsyncThrowingForwardingTarget<Int, Int, StructuralSpyFailure>' to expected argument type 'AsyncThrowingForwardingTarget<Int, String, StructuralSpyFailure>'",
         "SpyWrongTarget": r"argument type 'UnrelatedDependency' does not conform to expected type 'SpyDirectory'",
         "SubscriptWrongIndex": r"cannot convert value of type 'String' to expected argument type 'Int'",
@@ -1404,7 +1457,8 @@ def main():
             diagnostic_patterns.append(
                 r"ThrowingEscapingCallbackEffects\.swift:12:\d+: error: .*has no member 'willThrow'"
             )
-        if fixture.stem in {"InoutSpyRetainsAccess", "CallbackSpyDetachedCapture"}:
+        if fixture.stem in {"InoutSpyRetainsAccess", "OrdinaryInoutRetainsAccess",
+                            "OrdinaryInoutOverlappingAccess", "CallbackSpyDetachedCapture"}:
             compiler_stage = ["-emit-sil", "-o", os.devnull]
         if fixture.stem == "CallbackSpyDetachedCapture":
             diagnostic_patterns.append(r"passing closure as a 'sending' parameter risks causing data races")
@@ -1419,7 +1473,8 @@ def main():
             fails=True, patterns=diagnostic_patterns)
         if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess", "MainActorVerificationAccess",
                             "MainActorSpyWitnessAccess", "MainActorSpyAsyncTransport", "CallbackSpyDetachedCapture",
-                            "ImmediateCallbackDeferredCapture",
+                            "ImmediateCallbackDeferredCapture", "OrdinaryInoutRetainsAccess",
+                            "OrdinaryInoutOverlappingAccess",
                             "EscapingCallbackMainActorConversion", "MainActorEscapingCallbackNonisolatedReplay",
                             "MainActorAsyncEscapingCallbackNonisolatedReplay",
                             "MainActorThrowingEscapingCallbackWrongError",

@@ -593,18 +593,27 @@ func generate(
             let unmodified = parameter.attributes.isEmpty && parameter.modifiers.isEmpty &&
                 parameter.defaultValue == nil && (simple(label) || label == "_")
             let tokens = parameter.type.tokens(viewMode: .sourceAccurate).map(\.text)
-            if spy {
-                if isVariadic {
-                    try reject(parameter, "Direct spy call-through cannot splat a Swift variadic argument; use --forward-variadic with an array-taking provider")
+            if spy && isVariadic {
+                try reject(parameter, "Direct spy call-through cannot splat a Swift variadic argument; use --forward-variadic with an array-taking provider")
+            }
+            if tokens.first == "inout" {
+                let attributed = parameter.type.as(AttributedTypeSyntax.self)
+                let spelling = attributed?.baseType.trimmedDescription
+                let acceptedType = if spy {
+                    spelling == "Int" || spelling == "Swift.Int"
+                } else {
+                    !imported && !hasBindings && !isVariadic && spelling == "Swift.Int"
                 }
-                if tokens.first == "inout" {
-                    guard isolation == .sendable, !forSubscript, parameters.count == 1, unmodified,
-                          let attributed = parameter.type.as(AttributedTypeSyntax.self),
-                          attributed.attributes.isEmpty, attributed.specifiers.map(\.trimmedDescription) == ["inout"],
-                          ["Int", "Swift.Int"].contains(attributed.baseType.trimmedDescription) else {
-                        try reject(parameter, "Direct spy inout forwarding requires a Sendable method with one inout Swift.Int parameter")
+                if isolation == .sendable, !forSubscript, parameters.count == 1, unmodified,
+                   acceptedType, let attributed, attributed.attributes.isEmpty,
+                   attributed.specifiers.map(\.trimmedDescription) == ["inout"] {
+                    if !spy {
+                        try index.requireUnshadowedQualifier("Swift", at: attributed.baseType)
                     }
                     return Parameter(label: label, type: "Swift.Int", isInout: true)
+                }
+                if spy {
+                    try reject(parameter, "Direct spy inout forwarding requires a Sendable method with one inout Swift.Int parameter")
                 }
             }
             let directFunction = parameter.type.as(FunctionTypeSyntax.self)
@@ -946,7 +955,9 @@ func generate(
             try reject(fn, "Cross-module inherited throws needs an unshadowed Error in the selected module")
         }
         if effect.isAsync && parameters.contains(where: \.isInout) {
-            try reject(fn, "Direct spy inout forwarding requires a synchronous method")
+            try reject(fn, spy
+                ? "Direct spy inout forwarding requires a synchronous method"
+                : "Ordinary inout stubbing requires a synchronous method")
         }
         let callbacks = parameters.compactMap(\.callback)
         if !callbacks.isEmpty && (callbacks.count != 1 || parameters.last?.callback == nil ||

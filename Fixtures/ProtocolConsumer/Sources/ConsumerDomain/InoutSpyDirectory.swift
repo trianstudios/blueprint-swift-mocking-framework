@@ -23,3 +23,12 @@ public struct InoutSpyClient {
         directory.normalize(&value)
     }
 }
+
+public enum OrdinaryInoutFailure: Error, Sendable {
+    case afterMutation
+}
+
+public protocol OrdinaryInoutDirectory: Sendable {
+    func adjust(_ value: inout Swift.Int) throws(OrdinaryInoutFailure) -> Int
+    func normalize(_ value: inout Swift.Int)
+}
