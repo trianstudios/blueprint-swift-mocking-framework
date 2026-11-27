@@ -781,3 +781,9 @@ Swift SIL checks reject an escaping view and an escaping callback independently.
 GEN-026 now supports one direct synchronous init?(seed: Int) with an explicit initialize or return-nil decision. The native metatype fixture verifies a nil return, a completed attempt without an instance identity and a distinct initialized identity for success. Nil and success both have a returned phase. Only a successful failable attempt carries the instance link. A detached reset preserves nil completion in the original epoch.
 
 Standalone and configured witnesses agree. Explicit detached binding, scope diagnostics and default-isolation compilation are checked. Unsupported mixed effects preserve previous generated files. The ordinary and typed-throwing constructor fixtures still pass. Async, mixed effects and broader initializers remain open.
+
+## Scoped asynchronous protocol initialization
+
+GEN-026 now accepts one direct checked nonthrowing init(seed: Int) async. The separate consumer holds setup at a deterministic suspension point. The session sees the active attempt before any instance is linked. A quiescent reset is refused while setup is held. Detach-active reset lets the initialized mock use the new epoch while the original attempt completes in the archived epoch with the actual instance ID.
+
+Standalone and configured output agree. Swift rejects a missing await in ordinary and MainActor default-isolation checks. Unbound, stale and finished scopes diagnose in separate child processes. Unsupported combined effects and parameter labels preserve the previous generated pair. The earlier ordinary, typed-throwing and failable fixtures still pass. Constructor cancellation recording, mixed effects and native release profiles remain open.

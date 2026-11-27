@@ -1482,22 +1482,24 @@ func generate(
         rethrowsMethods.append(requirement)
     }
 
-    var constructor: (origin: ProtocolSourceOrigin, failure: String?, isFailable: Bool)?
+    var constructor: (origin: ProtocolSourceOrigin, failure: String?, isFailable: Bool, isAsync: Bool)?
     for (declarationID, item) in activeMembers.flatMap({ entry in entry.items.map { (entry.declarationID, $0) } }) {
         if let initializer = item.decl.as(InitializerDeclSyntax.self) {
             let parameters = initializer.signature.parameterClause.parameters
             let effects = initializer.signature.effectSpecifiers
             let isFailable = initializer.optionalMark?.text == "?"
+            let isAsync = effects?.asyncSpecifier?.text == "async"
             let message = "Construction scopes support one ordinary direct Sendable init(seed: Int), init?(seed: Int), "
-                + "or synchronous init(seed: Int) throws(PublicError) without other generation modes"
+                + "init(seed: Int) async, or synchronous init(seed: Int) throws(PublicError) without other generation modes"
             guard constructor == nil, declarationID == proto.id, declarations.count == 1,
                   isolation == .sendable, !fromTextualInterface, !hasBindings, !spy, !specializesGenerics,
                   projections.isEmpty, variadicForwarding.isEmpty, scopedRuleSelectors.isEmpty,
                   rethrowsSelections.isEmpty, lazyAutoclosureSelections.isEmpty, materializedAutoclosureSelections.isEmpty,
                   initializer.attributes.isEmpty, initializer.modifiers.isEmpty, initializer.body == nil,
                   initializer.optionalMark == nil || isFailable, initializer.genericParameterClause == nil,
-                  initializer.genericWhereClause == nil, effects?.asyncSpecifier == nil,
-                  !isFailable || effects?.throwsClause == nil,
+                  initializer.genericWhereClause == nil, effects?.asyncSpecifier == nil || isAsync,
+                  !isFailable || (!isAsync && effects?.throwsClause == nil),
+                  !isAsync || effects?.throwsClause == nil,
                   parameters.count == 1, let parameter = parameters.first,
                   parameter.firstName.text == "seed", parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
                   parameter.defaultValue == nil, parameter.ellipsis == nil,
@@ -1515,7 +1517,7 @@ func generate(
                 try index.requireUnshadowedQualifier(module, at: type)
                 failure = "\(module).\(type.name.text)"
             }
-            constructor = (index.origin(of: initializer), failure, isFailable)
+            constructor = (index.origin(of: initializer), failure, isFailable, isAsync)
             continue
         }
         if fromTextualInterface {
@@ -2440,7 +2442,7 @@ func generate(
         output += "                projectSendingResult: @escaping @Sendable (\(sending.outputType)) -> Swift.Int,\n"
     }
     let defaultConfigure = hasProviderWitness && instanceIndices.isEmpty ? " = { _ in }" : ""
-    let preparesConstruction = constructor.map { $0.failure != nil || $0.isFailable } ?? false
+    let preparesConstruction = constructor.map { $0.failure != nil || $0.isFailable || $0.isAsync } ?? false
     if preparesConstruction {
         output += "                stubs: Stubs) {\n"
     } else {
@@ -2548,7 +2550,8 @@ func generate(
         output += "        self.__endpoint\(i) = \(endpointFamily(i))Endpoint(id: \(endpointID),\n            configuration: setup\(i).finish()\(projection), failureReporter: failureReporter\(mapping))\n"
     }
     output += "    }\n"
-    let constructorEffect = constructor?.failure.map { " throws(\($0))" } ?? ""
+    let asyncConstructionEffect = constructor?.isAsync == true ? " async" : ""
+    let constructorEffect = asyncConstructionEffect + (constructor?.failure.map { " throws(\($0))" } ?? "")
     let optionalMark = constructor?.isFailable == true ? "?" : ""
     let constructorIdentity = endpointIdentity("init\(optionalMark)(seed:Swift.Int)", effect: constructorEffect,
                                                result: "Self\(optionalMark)")
@@ -2584,24 +2587,36 @@ func generate(
                 let member = members[index]
                 return "__setup\(index): \(member.family)Stubbing<\(member.genericArguments)>()"
             }.joined(separator: ", ")
-            let admission = constructor.isFailable ? "beginFailableConstruction" : "beginThrowingConstruction"
-            let success = constructor.isFailable ? "initialize" : "success"
-            let decline = constructor.isFailable
-                ? "case .returnNil:\n    attempt.recordNil()\n    return nil"
-                : "case .failure(let error):\n    attempt.recordFailure()\n    throw error"
-            witness = """
-            let attempt = construction.__scope.\(admission)(
-                of: endpoint, reporter: construction.__reporter, source: source
-            )
-            let stubs = Stubs(\(stubs))
-            switch construction.__configure(seed, stubs) {
-            \(decline)
-            case .\(success):
-                let reservation = attempt.reserveInstance()
-                self.init(failureReporter: construction.__reporter, scope: reservation.instanceScope, stubs: stubs)
-                reservation.complete()
+            if constructor.isAsync {
+                witness = """
+                let attempt = construction.__scope.beginAsyncConstruction(
+                    of: endpoint, reporter: construction.__reporter, source: source
+                )
+                let stubs = Stubs(\(stubs))
+                await construction.__configure(seed, stubs)
+                self.init(failureReporter: construction.__reporter, scope: attempt.instanceScope, stubs: stubs)
+                attempt.complete()
+                """.replacingOccurrences(of: "\n", with: "\n        ")
+            } else {
+                let admission = constructor.isFailable ? "beginFailableConstruction" : "beginThrowingConstruction"
+                let success = constructor.isFailable ? "initialize" : "success"
+                let decline = constructor.isFailable
+                    ? "case .returnNil:\n    attempt.recordNil()\n    return nil"
+                    : "case .failure(let error):\n    attempt.recordFailure()\n    throw error"
+                witness = """
+                let attempt = construction.__scope.\(admission)(
+                    of: endpoint, reporter: construction.__reporter, source: source
+                )
+                let stubs = Stubs(\(stubs))
+                switch construction.__configure(seed, stubs) {
+                \(decline)
+                case .\(success):
+                    let reservation = attempt.reserveInstance()
+                    self.init(failureReporter: construction.__reporter, scope: reservation.instanceScope, stubs: stubs)
+                    reservation.complete()
+                }
+                """.replacingOccurrences(of: "\n", with: "\n        ")
             }
-            """.replacingOccurrences(of: "\n", with: "\n        ")
         } else {
             witness = """
             let attempt = construction.__scope.beginInfallibleConstruction(
@@ -2620,7 +2635,7 @@ func generate(
             public struct ConstructionScope: Swift.Sendable {
                 fileprivate let __scope: BlueprintMocking.MockScope
                 fileprivate let __reporter: BlueprintMocking.FailureReporter
-                fileprivate let __configure: @Sendable (Swift.Int, Stubs) -> \(configureResult)
+                fileprivate let __configure: @Sendable (Swift.Int, Stubs)\(asyncConstructionEffect) -> \(configureResult)
 
                 public func withValue<Value>(_ body: () throws -> Value) rethrows -> Value {
                     try \(name).$__constructionScope.withValue(self, operation: body)

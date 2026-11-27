@@ -183,6 +183,14 @@ public struct MockScope: Sendable {
         return MockThrowingConstructionAttempt(scope: self, invocation: event.invocationID)
     }
 
+    /// Admits async construction and reserves an identity without publishing an instance link.
+    /// The generated witness completes the attempt after async setup and Swift initialization.
+    public func beginAsyncConstruction(
+        of endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation
+    ) -> MockConstructionAttempt {
+        beginThrowingConstruction(of: endpoint, reporter: reporter, source: source).reserveInstance()
+    }
+
     /// Admits a failable constructor under its construction scope's identity.
     public func beginFailableConstruction(
         of endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation
