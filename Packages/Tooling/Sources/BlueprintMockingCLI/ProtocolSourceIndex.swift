@@ -36,6 +36,36 @@ struct ResolvedProtocolInheritance {
     let primaryTypeBindings: [InheritedPrimaryTypeBinding]
 }
 
+private func parseIndexedSource(_ text: String, module: String, path: String) -> SourceFileSyntax {
+    #if BLUEPRINT_TEST_PUBLICATION
+    if ProcessInfo.processInfo.environment["BLUEPRINT_TEST_OBSERVE_SOURCE_PARSE"] == "1" {
+        FileHandle.standardError.write(Data("DX012 fixture: parse \(module) \(path)\n".utf8))
+    }
+    #endif
+    return Parser.parse(source: text)
+}
+
+final class InvocationSourceParseMemo {
+    private struct SourceIdentity: Hashable {
+        let module: String
+        let path: String
+    }
+
+    private var entries: [SourceIdentity: (text: String, tree: SourceFileSyntax)] = [:]
+
+    func parse(_ text: String, module: String, path: String) -> SourceFileSyntax {
+        let identity = SourceIdentity(module: module, path: path)
+        // Source text has already been opened and decoded at this pass's usual
+        // read point. Swift String equality alone allows different UTF-8 bytes.
+        if let entry = entries[identity], entry.text.utf8.elementsEqual(text.utf8) {
+            return entry.tree
+        }
+        let tree = parseIndexedSource(text, module: module, path: path)
+        entries[identity] = (text, tree)
+        return tree
+    }
+}
+
 final class ProtocolSourceIndex {
     private struct SourceFile {
         let module: String
@@ -94,14 +124,16 @@ final class ProtocolSourceIndex {
     private let pathsByModule: [String: [String]]
     private let importedInterface: ImportedInterfaceInput?
     private let conditions: [String: [String: Bool]]
+    private let sourceParseMemo: InvocationSourceParseMemo?
     private var filesByRoot: [SyntaxIdentifier: SourceFile] = [:]
     private var modules: [String: ModuleDeclarations] = [:]
 
     init(sources: [String: [String]], conditions: [String: [String: Bool]] = [:],
-         importedInterface: ImportedInterfaceInput? = nil) {
+         importedInterface: ImportedInterfaceInput? = nil, sourceParseMemo: InvocationSourceParseMemo? = nil) {
         self.importedInterface = importedInterface
         pathsByModule = importedInterface.map { [$0.module: [$0.path]] } ?? sources
         self.conditions = conditions
+        self.sourceParseMemo = sourceParseMemo
     }
 
     /// Selects the original syntax nodes in the active clauses of a protocol's member block.
@@ -179,7 +211,8 @@ final class ProtocolSourceIndex {
             // Only erase no-op components for source locations. Parent traversal can cross a symbolic link.
             let displayPath = path.split(separator: "/", omittingEmptySubsequences: false)
                 .filter { $0 != "." }.joined(separator: "/")
-            let tree = Parser.parse(source: swiftText)
+            let tree = sourceParseMemo?.parse(swiftText, module: module, path: path)
+                ?? parseIndexedSource(swiftText, module: module, path: path)
             guard !tree.hasError else {
                 if importedInterface != nil {
                     throw IncompatibleImporterContext(path: path, reason: "The installed SwiftSyntax parser cannot read this interface syntax")

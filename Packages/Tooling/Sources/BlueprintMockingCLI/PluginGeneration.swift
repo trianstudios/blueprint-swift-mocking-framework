@@ -461,7 +461,7 @@ private struct BuildGenerationPlan {
     let selections: [Selection]
     let outputs: [(url: URL, text: String)]
 
-    init(request: BuildGenerationRequest) throws {
+    init(request: BuildGenerationRequest, sourceParseMemo: InvocationSourceParseMemo? = nil) throws {
         let loaded = try loadConfiguration(request.config)
         let sorted = loaded.selections.sorted { ($0.module, $0.type) < ($1.module, $1.type) }
         if let interface = request.importedInterface,
@@ -477,7 +477,7 @@ private struct BuildGenerationPlan {
             inputStamp = try sourceMembershipStamp(request.sources, relativeTo: request.config)
         }
         let sourceIndex = ProtocolSourceIndex(sources: request.sources, conditions: request.sourceConditions,
-                                              importedInterface: request.importedInterface)
+                                              importedInterface: request.importedInterface, sourceParseMemo: sourceParseMemo)
         let resolved = try sorted.map { selection in
             let root = try sourceIndex.select(selection.type, in: selection.module, diagnosticFile: request.config.path)
             let mock = try generate(index: sourceIndex, root: root, projections: [],
@@ -644,13 +644,16 @@ func verifyBuildOutputs(arguments: ArraySlice<String>) throws {
 
 func generateBuildOutputs(arguments: ArraySlice<String>) throws {
     let request = try BuildGenerationRequest(arguments: arguments, command: "generate")
-    if !FileManager.default.fileExists(atPath: request.output.path) {
+    let firstPublication = !FileManager.default.fileExists(atPath: request.output.path)
+    let sourceParseMemo = firstPublication && request.importedInterface == nil ? InvocationSourceParseMemo() : nil
+    if firstPublication {
         // A rejected first request must not create its output directory.
-        _ = try BuildGenerationPlan(request: request)
+        _ = try BuildGenerationPlan(request: request, sourceParseMemo: sourceParseMemo)
+        publicationCheckpoint("after-preflight")
         try FileManager.default.createDirectory(at: request.output, withIntermediateDirectories: true)
     }
     try withOutputLock(request.output, exclusive: true) {
-        let plan = try BuildGenerationPlan(request: request)
+        let plan = try BuildGenerationPlan(request: request, sourceParseMemo: sourceParseMemo)
         try BuildOutputPublication(directory: request.output).publish(
             shard: Data(plan.outputs[0].text.utf8), index: Data(plan.outputs[1].text.utf8)
         )

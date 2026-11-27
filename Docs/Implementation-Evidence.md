@@ -757,3 +757,9 @@ The separate consumer verifies the original attempt ID, distinct successful inst
 The configured journal now locates a retained invocation from its ID and the last reset watermark. The implementation retains the existing epoch guard and lock order. The regression checks out-of-order completion, projected input update after a later admission, public event pruning, detached old-epoch completion and repeated history resets.
 
 Two isolated checked-release artifacts used the same runtime source except for this indexing change. The selected Mac's median sample p50 was 3.75 µs before and 3.50 µs after, with a 6.15% median paired reduction. All ten pairs improved at p50, p95 and p99. Each eight-worker sample preserved 100,000 paired invocations and all retained values were released in retirement samples. The 2 µs absolute target and wider qualification remain open.
+
+## Reusing unchanged source parses during first publication
+
+DX-012 reuses syntax trees within one configured first publication. Preflight and the locked plan still open the authored paths and rebuild their source index. A parser hit requires the same module, authored path and exact UTF-8 parser input. Inspect, verify and subsequent generations use their existing paths.
+
+The instrumented control counted six parses for three files before the change and three after it. A paused source edit that preserves size and mtime reparses and produces the correct changed witness. The configured output matches the uncached generator, and a symlink-and-parent-traversal fixture verifies authored path semantics. Publication and read-only inspection checks still pass. Persistent caching remains open.

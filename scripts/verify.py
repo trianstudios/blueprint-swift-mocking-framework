@@ -840,6 +840,13 @@ def main():
     ], env=swift_environment, timeout=120,
         patterns=[r"PASS: DX013 configured writers serialized and inspection preserved interrupted output",
                   r"EVIDENCE: generation-contention-report\.json SHA-256 [0-9a-f]{64}"])
+    run("configured-first-publication-parse-memo", [
+        sys.executable, "scripts/verify_source_parse_memo.py", "--tool", tool,
+        "--fault-tool", publication_fault_tool, "--evidence-dir", EVIDENCE,
+    ], env=swift_environment, timeout=180, patterns=[
+        r"PASS: DX012 configured first publication reuses only identical authored source parses",
+        r"EVIDENCE: source-parse-memo-report\.json SHA-256 [0-9a-f]{64}",
+    ])
     run("generation-output-ownership", [
         sys.executable, "scripts/verify_output_ownership.py", "--tool", tool,
         "--fault-tool", publication_fault_tool, "--evidence-dir", EVIDENCE,
