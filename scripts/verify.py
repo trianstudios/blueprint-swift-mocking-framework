@@ -2215,6 +2215,15 @@ def main():
         r"PASS: SDK integration run-source-less-consumer",
         r"PASS: SDK integration reject-final-subclass",
     ])
+    if os.environ.get("BLUEPRINT_VERIFY_XCODE_PHASE") == "1":
+        selected_xcode = Path(xcrun("--find", "xcodebuild"))
+        run("xcode-standalone-build-phase", [
+            sys.executable, "Fixtures/XcodePhaseProbe/verify.py", "--developer-dir", selected_xcode.parents[2],
+            "--tool", tool, "--runtime-products", modules, "--evidence-dir", EVIDENCE / "xcode-phase",
+        ], env=swift_environment, timeout=600, patterns=[
+            r"PASS: DX008 native Xcode phase, repeated install, membership and sandbox controls",
+            r"SHA256 [0-9a-f]{64} xcode-phase-report\.json",
+        ])
     regenerated_subclass = EVIDENCE / "subclass-bootstrap/BootstrapRendererMock.swift"
     if built_subclass.read_bytes() != regenerated_subclass.read_bytes():
         raise ValueError("The committed SwiftPM subclass fixture differs from standalone generation")

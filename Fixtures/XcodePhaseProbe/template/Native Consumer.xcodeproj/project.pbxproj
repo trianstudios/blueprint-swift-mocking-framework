@@ -1,0 +1,43 @@
+// !$*UTF8*$!
+{
+    archiveVersion = 1;
+    classes = {};
+    objectVersion = 56;
+    objects = {
+        A00000000000000000000001 = { isa = PBXProject; buildConfigurationList = A00000000000000000000017; compatibilityVersion = "Xcode 14.0"; mainGroup = A00000000000000000000003; productRefGroup = A00000000000000000000004; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000002); };
+        A00000000000000000000002 = { isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000018; buildPhases = (A00000000000000000000012, A00000000000000000000014, A00000000000000000000015, A00000000000000000000016); buildRules = (); dependencies = (); name = PhaseProbe; productName = PhaseProbe; productReference = A00000000000000000000008; productType = "com.apple.product-type.tool"; };
+        A00000000000000000000003 = { isa = PBXGroup; children = (A00000000000000000000005, A00000000000000000000004); sourceTree = "<group>"; };
+        A00000000000000000000004 = { isa = PBXGroup; children = (A00000000000000000000008); name = Products; sourceTree = "<group>"; };
+        A00000000000000000000005 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Probe.swift; sourceTree = "<group>"; };
+        A00000000000000000000008 = { isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; path = PhaseProbe; sourceTree = BUILT_PRODUCTS_DIR; };
+        A00000000000000000000009 = { isa = PBXBuildFile; fileRef = A00000000000000000000005; };
+        A00000000000000000000012 = {
+            isa = PBXShellScriptBuildPhase; alwaysOutOfDate = 1; buildActionMask = 2147483647;
+            files = (); inputPaths = (); name = "User phase \"prépare\""; outputPaths = ();
+            runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh;
+            shellScript = "printf '%s\\n' 'OWNER USER PRE PHASE'";
+        };
+        A00000000000000000000014 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000009); runOnlyForDeploymentPostprocessing = 0; };
+        A00000000000000000000015 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+        A00000000000000000000016 = {
+            isa = PBXShellScriptBuildPhase; alwaysOutOfDate = 1; buildActionMask = 2147483647;
+            files = (); inputPaths = (); name = "User phase \"conclude\""; outputPaths = ();
+            runOnlyForDeploymentPostprocessing = 0; shellPath = /bin/sh;
+            shellScript = "printf '%s\\n' 'OWNER USER POST PHASE'";
+        };
+        A00000000000000000000017 = { isa = XCConfigurationList; buildConfigurations = (A00000000000000000000019); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        A00000000000000000000018 = { isa = XCConfigurationList; buildConfigurations = (A00000000000000000000020); defaultConfigurationIsVisible = 0; defaultConfigurationName = Debug; };
+        A00000000000000000000019 = { isa = XCBuildConfiguration; buildSettings = { SDKROOT = macosx; MACOSX_DEPLOYMENT_TARGET = 13.0; SWIFT_VERSION = 6.0; ENABLE_USER_SCRIPT_SANDBOXING = YES; CODE_SIGNING_ALLOWED = NO; }; name = Debug; };
+        A00000000000000000000020 = {
+            isa = XCBuildConfiguration;
+            buildSettings = {
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SWIFT_INCLUDE_PATHS = ("$(inherited)", "\"$(SRCROOT)/PreparedRuntime\"");
+                OTHER_LDFLAGS = ("$(inherited)", "\"$(SRCROOT)/PreparedRuntime/PhaseDomain.o\"", "\"$(SRCROOT)/PreparedRuntime/BlueprintMocking.o\"");
+                SKIP_INSTALL = YES;
+            };
+            name = Debug;
+        };
+    };
+    rootObject = A00000000000000000000001;
+}

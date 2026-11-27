@@ -178,6 +178,10 @@ The report includes the resolved selections, supplied sources, planned output fi
 
 Use `verify-generated` with the configuration, output directory, input-set ID and source arguments to check the existing shard and index. Exit 0 confirms both files match the plan. Exit 3 reports each missing or changed path with `BPM003`. The check preserves existing files and leaves missing paths absent. A retained recovery journal exits 1 with `BPM004`. Rerun configured generation with valid inputs to recover the pair.
 
+### Xcode build-phase generation
+
+A sandboxed Xcode Run Script phase can generate and compile mocks in a target's DerivedData intermediates. Use explicit input and output file lists for one supplied Swift source module. The installation guide includes the reviewed project patch and the native macOS fixture. [Xcode build-phase guide](Docs/Xcode-Build-Phase.md)
+
 ### SwiftPM command plugins
 
 With the tooling package declared as a dependency, `swift package plugin --list` lists the Blueprint Mocking command verbs. Pass the same configuration, output and source arguments to both verbs.

@@ -1,0 +1,7 @@
+$(SRCROOT)/Source Lists/BlueprintInputs.xcfilelist
+$(SRCROOT)/Services/Lookup.swift
+$(SRCROOT)/blueprint-mocking.json
+$(SRCROOT)/Tools/Run Génération.sh
+$(SRCROOT)/Tools/blueprint-generate
+$(TOOLCHAIN_DIR)/usr/lib/swift/host/libSwiftParser.dylib
+$(TOOLCHAIN_DIR)/usr/lib/swift/host/libSwiftSyntax.dylib

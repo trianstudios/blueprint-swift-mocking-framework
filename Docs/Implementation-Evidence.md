@@ -709,3 +709,9 @@ The native consumer checks discovery, permission denial, missing output, stale o
 Ordinary checked calls now reserve and record under the established session-then-endpoint lock order through a direct unscoped path. The scoped path shares the same recording transition. The deterministic runtime regression holds an admitted answer and checks observer publication before release, then detaches the active invocation and confirms completion in the original epoch. Existing scoped and projection tests cover their respective paths.
 
 On the selected Mac, ten alternating optimized baseline/candidate pairs showed an 8.1% median reduction in scalar p50. Candidate medians ranged from 3.67 to 3.83 µs. The 2 µs absolute target and formal reference-host qualification remain open.
+
+## Standalone sandboxed Xcode build phase
+
+DX-008 adds a reusable Xcode phase for one explicitly listed Swift source module. A reviewed patch installs it ahead of Compile Sources and feeds both generated Swift files into that phase's target. A repeated install preserves project bytes and timestamps. Both pre-existing user phases remain in their original order. The target intermediate directory supports the canonical publication journal under the enabled script sandbox.
+
+The original native arm64 macOS project compiles the generated files and exercises the mock. An unchanged build skips regeneration. Adding or removing an explicitly listed source updates index provenance and preserves the shard. Denied configuration access and a denied authored-project write preserve both outputs, followed by successful recovery. Automatic target membership discovery, broader Xcode contexts and the A3.4 offline monorepo composition remain open.

@@ -1,0 +1,2 @@
+$(TARGET_TEMP_DIR)/Blueprint/BlueprintMocks.generated.swift
+$(TARGET_TEMP_DIR)/Blueprint/BlueprintMockingIndex.generated.swift
