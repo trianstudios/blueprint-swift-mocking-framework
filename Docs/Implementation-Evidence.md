@@ -610,7 +610,7 @@ RUN-017 adds an opt-in preset for `Bool`, `Int` and `String` and exact typed rec
 
 The SYS-006 fixture exercises the concurrent repository retry scenario through an independent SwiftPM consumer. A retrying client receives a typed temporary failure, then reserves the success step of a finite sequence. While that answer is held, a replacement revision serves an independent request. Cooperative cancellation records one request under the old invocation. The held answer completes under the original revision, and its projected metadata remains separate from the newer call. An immutable earlier snapshot still shows the pending result.
 
-The fixture checks a passing `stable` window and a negative `eventually` deadline. A test-first control bypasses the retry and fails at the expected gate. Seven A3.4 scenarios remain open for dedicated fixtures and native qualification.
+The fixture checks a passing `stable` window and a negative `eventually` deadline. A test-first control bypasses the retry and fails at the expected gate. Six A3.4 scenarios remain open for dedicated fixtures and native qualification.
 
 ## Dynamically isolated callback replay
 
@@ -623,3 +623,9 @@ Swift SIL checks reject missing await, forced synchronous conversion to MainActo
 GEN-031 now has an independent SwiftPM consumer that uses an owner-authored protocol adapter and the generated double interchangeably. The live adapter calls the private fee operation from a same-file extension. Swift rejects the identical operation from an extension in a different file of the same module. The generated double supports ordinary typed inputs and call verification without privileged access to the owner.
 
 The subclass selector diagnoses a private or fileprivate method in a frozen dependency whose public operations expose no enclosing seam. Both variants retain their original output bytes and timestamp. The positive MainActor bootstrap and forwarding fixture still executes. Broader adapter authoring and native qualification remain open.
+
+## A3.4 resource transfer
+
+The SYS-006 resource-transfer fixture exercises a fresh factory and consuming receiver in one generated mock. A production-like checkout requests a new move-only ticket for the same key twice and transfers each to the consuming method. The typed projection records an integer while the raw ticket is still borrowed in the active call. The consumer observes distinct ownership, the expected issue-to-destruction order and exactly one destructor per ticket. A deliberately wrong verification count fails with empty captures. The session stores projected observations and lifecycle events.
+
+Swift SIL rejects passing a previously consumed ticket to the receiver and reusing a captured factory result. The fixture establishes the consuming and fresh-factory alternatives in the A3.4 resource-transfer scenario.

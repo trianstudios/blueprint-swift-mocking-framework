@@ -951,6 +951,14 @@ def main():
         temp, [swiftc, "-swift-version", "6", "-sdk", sdk], swift_environment)
     verify_byte_buffer_projection_generation(
         tool, source.with_name("SnapshotByteBufferReader.swift"), generated.with_name("SnapshotByteBufferReaderMock.swift"), temp)
+    resource_source = source.with_name("ResourceTransferCheckout.swift")
+    resource_mock = temp / "ResourceTransferCheckoutMock.swift"
+    run("resource-transfer-generation", generate(
+        tool, resource_source, resource_mock, "ResourceTransferCheckout",
+        sources=[("ConsumerDomain", source.with_name("FreshOwnedTicketSource.swift"))]))
+    built_resource = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/ResourceTransferCheckoutMock.swift"
+    if resource_mock.read_bytes() != built_resource.read_bytes():
+        raise ValueError("The committed resource transfer fixture differs from standalone generation")
     private_owner_source = source.with_name("PrivateFeePricingOwner.swift")
     private_owner_mock = temp / "PrivateFeePricingMock.swift"
     run("private-owner-adapter-generation", generate(tool, private_owner_source, private_owner_mock, "PrivateFeePricing"))
@@ -1821,6 +1829,7 @@ def main():
                   r"RUN015_closedOverlayRejectsPendingCompletionOnItsPinnedScenario\(\) passed",
                   r"RUN015_detachedCompletionAndReusablePlanPreserveIndependentCursors\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
+                  r"SYS006_resourceTransferIssuesFreshTicketsAndConsumesEachExactlyOnce\(\) passed",
                   r"GEN031_ownerFilePrivateSeamUsesLiveAndGeneratedAdapters\(\) passed",
                   r"SYS006_concurrentRepositoryRetryComposesProjectionRevisionCancellationAndDeadlines\(\) passed",
                   r"GEN040_explicitByteBufferAdapterCopiesOnlyTheBoundedPrefix\(\) passed",
@@ -2021,6 +2030,8 @@ def main():
         "OwnedResultCapturedReplay": r"noncopyable 'previous' cannot be consumed when captured by an escaping closure",
         "OwnedResultErasure": r"return expression of type 'FreshOwnedTicket' does not conform to 'Copyable'",
         "OwnedResultFixedReturn": r"has no member 'willReturn'",
+        "ResourceTransferDuplicateRedeem": r"'ticket' consumed more than once",
+        "ResourceTransferFactoryReplay": r"noncopyable 'previous' cannot be consumed when captured by an escaping closure",
         "PrivateFeePricingOutsideOwner": r"'addSurcharge' is inaccessible due to 'private' protection level",
         "ByteBufferDeferredAddressCapture": r"capture of 'buffer' with non-Sendable type 'UnsafeBufferPointer<UInt8>'",
         "PackProviderFixedArity": r"type 'FixedArityPackProvider' does not conform to protocol 'PackProviderDirectoryMockBehavior'",
@@ -2181,7 +2192,8 @@ def main():
         if fixture.stem in {"ConsumingInputUseAfterConsume", "ConsumingInputDuplicateTransfer", "ConsumingInputEscapedBorrow",
                            "OwnedResultCapturedReplay", "OwnedResultErasure", "OwnedResultFixedReturn",
                            "SendingRetainedInput", "SendingUseAfterTransfer", "SendingRetainedResult", "SendingFixedResult",
-                           "ByteBufferDeferredAddressCapture"}:
+                           "ByteBufferDeferredAddressCapture", "ResourceTransferDuplicateRedeem",
+                           "ResourceTransferFactoryReplay"}:
             compiler_stage = ["-emit-sil", "-o", os.devnull]
         if fixture.stem in {"MainActorAsyncTransport", "MainActorSpyAsyncTransport"}:
             # Swift checks unsafe region transfers during SIL generation.
