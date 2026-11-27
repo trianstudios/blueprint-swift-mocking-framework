@@ -294,6 +294,20 @@ final class ProtocolSourceIndex {
             + Self.candidateLocations(competitors)
     }
 
+    func requireTransferClass(named name: String, at reference: some SyntaxProtocol) throws {
+        let site = origin(of: reference)
+        let candidates = try Self.shadows(named: name, in: load(site.module))
+        guard Self.isSimple(name), candidates.count == 1, let candidate = candidates.first,
+              !candidate.isConditional, let concrete = candidate.declaration.as(ClassDeclSyntax.self),
+              concrete.name.text == name, concrete.attributes.isEmpty,
+              Set(concrete.modifiers.map(\.name.text)) == ["public", "final"],
+              concrete.genericParameterClause == nil, concrete.genericWhereClause == nil,
+              concrete.inheritanceClause == nil else {
+            throw Self.error(at: site, "A sending transfer requires one unconditional public final nongeneric class "
+                             + "'\(site.module).\(name)' without an inheritance clause")
+        }
+    }
+
     func requireConcreteActor(named name: String, at reference: some SyntaxProtocol) throws {
         let site = origin(of: reference)
         let candidates = try Self.shadows(named: name, in: load(site.module))

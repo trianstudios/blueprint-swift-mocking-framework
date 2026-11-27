@@ -583,3 +583,9 @@ This evidence covers configured membership and missing paths. The imported-inter
 GEN-033 and RUN-022 now cover direct synchronous nonthrowing Sendable requirements returning a concrete same-module noncopyable value. The generated factory accepts no input or one `Int`. It returns ownership to the caller and retains only ordinary input history. The independent SwiftPM consumer creates three simultaneously live results, finishes the mock session with all three still owned, and consumes them in a different order. Each producer invocation and destructor is observed once.
 
 Swift SIL checks reject replay of a captured move-only value and erasure to `Any`. The generated factory stub exposes `willProduce`, and Swift rejects an attempted fixed return. Standalone and configured generation agree. One-shot slots, generic owned values, broader effects and native qualification remain open.
+
+## Async sending inputs and fresh sending results
+
+GEN-034 and RUN-023 cover one direct nonthrowing async round trip with `sending` on both the input and result. The typed `@Sendable` answer preserves the transfer annotations. Synchronous projections produce `Int` metadata outside the admission gate. Only projected values enter history. The independent SwiftPM case sends two non-Sendable packets through distinct caller and provider actors, checks pending result history during reentry, and reads fresh returned results and their paired integer snapshots.
+
+Swift SIL checks reject retaining an actor-stored input alias, using a packet after transfer, retaining a returned alias, and closing over a fixed non-Sendable result in the stored answer. Standalone and configured witnesses agree. Input-only, result-only, throwing and nonfinal variants preserve both configured files on rejection. Broader signatures, release profiles and native qualification remain open.

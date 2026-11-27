@@ -203,16 +203,19 @@ struct Parameter {
     let isInout: Bool
     let isIsolatedActor: Bool
     let isConsumingInput: Bool
+    let isSendingInput: Bool
     let callback: CallbackType?
 
     init(label: String, type: String, isVariadic: Bool = false, isInout: Bool = false,
-         isIsolatedActor: Bool = false, isConsumingInput: Bool = false, callback: CallbackType? = nil) {
+         isIsolatedActor: Bool = false, isConsumingInput: Bool = false,
+         isSendingInput: Bool = false, callback: CallbackType? = nil) {
         self.label = label
         self.type = type
         self.isVariadic = isVariadic
         self.isInout = isInout
         self.isIsolatedActor = isIsolatedActor
         self.isConsumingInput = isConsumingInput
+        self.isSendingInput = isSendingInput
         self.callback = callback
     }
 
@@ -220,6 +223,7 @@ struct Parameter {
         if isInout { return "inout \(type)" }
         if isIsolatedActor { return "isolated \(type)" }
         if isConsumingInput { return "consuming \(type)" }
+        if isSendingInput { return "sending \(type)" }
         return isVariadic ? "\(type)..." : type
     }
     var runtimeType: String { isVariadic ? "[\(type)]" : type }
@@ -301,19 +305,23 @@ struct Member {
 
     var usesInout: Bool { parameters.contains(where: \.isInout) }
     var usesConsumingInput: Bool { parameters.contains(where: \.isConsumingInput) }
+    var transfersSendingValues: Bool { parameters.contains(where: \.isSendingInput) }
     var callback: CallbackType? { parameters.last?.callback }
     var materializedAutoclosure: CallbackType? {
         guard let callback, case .materializedAutoclosure = callback.kind else { return nil }
         return callback
     }
     var metadataParameters: [Parameter] {
-        if usesConsumingInput { return [Parameter(label: parameters[0].label, type: "Swift.Int")] }
+        if usesConsumingInput || transfersSendingValues {
+            return [Parameter(label: parameters[0].label, type: "Swift.Int")]
+        }
         return callback == nil ? parameters : Array(parameters.dropLast())
     }
     var family: String {
         if let callback { return callback.kind.family }
         if parameters.contains(where: \.isIsolatedActor) { return "IsolatedSync" }
         if usesConsumingInput { return "BlueprintMocking.ConsumingSync" }
+        if transfersSendingValues { return "BlueprintMocking.SendingAsync" }
         if producesOwnedResult { return "BlueprintMocking.OwnedSync" }
         return (usesInout ? "Inout" : isolation.prefix) + effect.family
     }
@@ -345,7 +353,9 @@ struct Member {
             let arguments = "\(inputType), \(callback.input), \(callback.output), \(outputType)"
             return callback.failure.map { "\(arguments), \($0)" } ?? arguments
         }
-        if usesConsumingInput { return "\(parameters[0].type), \(inputType), \(outputType)" }
+        if usesConsumingInput || transfersSendingValues {
+            return "\(parameters[0].type), \(inputType), \(outputType)"
+        }
         let types = "\(inputType), \(outputType)"
         return effect.runtimeFailure.map { "\(types), \($0.type)" } ?? types
     }
@@ -365,7 +375,8 @@ struct Member {
     }
 
     var signature: String {
-        "\(name)(\(parameterDeclaration))\(effect.declaration) -> \(outputType)"
+        let result = transfersSendingValues ? "sending \(outputType)" : outputType
+        return "\(name)(\(parameterDeclaration))\(effect.declaration) -> \(result)"
     }
 
     var invocationArguments: [String] { parameters.indices.map(argumentName) }
@@ -735,7 +746,7 @@ func generate(
         }
         let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
         let matcherTypes = parameters.filter { $0.callback == nil }.map {
-            let lowered = $0.isInout || $0.isConsumingInput || producesOwnedResult
+            let lowered = $0.isInout || $0.isConsumingInput || $0.isSendingInput || producesOwnedResult
             return "\($0.label):\(lowered ? "Int" : $0.runtimeType)"
         }.joined(separator: ",")
         let specialization: String
@@ -762,6 +773,9 @@ func generate(
             }
             if producesOwnedResult || previous.producesOwnedResult {
                 try reject(node, "Owned result overloads with identical matcher signatures require distinct argument labels" + locations)
+            }
+            if parameters.contains(where: \.isSendingInput) || previous.transfersSendingValues {
+                try reject(node, "Sending overloads with identical metadata matcher signatures require distinct argument labels" + locations)
             }
             if parameters.contains(where: \.isConsumingInput) || previous.usesConsumingInput {
                 try reject(node, "Consuming input overloads with identical metadata matcher signatures require distinct argument labels" + locations)
@@ -1291,6 +1305,49 @@ func generate(
             }
         }
         let declaredParameters = fn.signature.parameterClause.parameters
+        let returnType = fn.signature.returnClause?.type
+        let sendingResult = returnType?.as(AttributedTypeSyntax.self)
+        let hasSendingParameter = declaredParameters.contains {
+            $0.type.as(AttributedTypeSyntax.self)?.specifiers.contains { $0.trimmedDescription == "sending" } == true
+        }
+        let hasSendingResult = sendingResult?.specifiers.contains { $0.trimmedDescription == "sending" } == true
+        if hasSendingParameter || hasSendingResult {
+            let message = "Sending stubbing requires a direct async nonthrowing Sendable method with one sending "
+                + "parameter and a sending result of the same public same-module final class"
+            let specifiers = fn.signature.effectSpecifiers
+            guard declarationID == proto.id, declarations.count == 1, isolation == .sendable,
+                  !hasBindings, !spy, !specializesGenerics, projections.isEmpty, variadicForwarding.isEmpty,
+                  scopedRuleSelectors.isEmpty, rethrowsSelections.isEmpty,
+                  lazyAutoclosureSelections.isEmpty, materializedAutoclosureSelections.isEmpty,
+                  fn.attributes.isEmpty, specifiers?.asyncSpecifier?.text == "async", specifiers?.throwsClause == nil,
+                  declaredParameters.count == 1, let parameter = declaredParameters.first,
+                  parameter.defaultValue == nil, parameter.ellipsis == nil,
+                  parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+                  let sendingInput = parameter.type.as(AttributedTypeSyntax.self), sendingInput.attributes.isEmpty,
+                  sendingInput.specifiers.map(\.trimmedDescription) == ["sending"],
+                  let input = sendingInput.baseType.as(IdentifierTypeSyntax.self), input.genericArgumentClause == nil,
+                  let sendingResult, sendingResult.attributes.isEmpty,
+                  sendingResult.specifiers.map(\.trimmedDescription) == ["sending"],
+                  let result = sendingResult.baseType.as(IdentifierTypeSyntax.self), result.genericArgumentClause == nil,
+                  result.name.text == input.name.text else {
+                try reject(fn, message)
+            }
+            guard !members.contains(where: \.transfersSendingValues) else {
+                try reject(fn, "Only one sending method is supported per protocol")
+            }
+            let label = parameter.firstName.text
+            guard label == "_" || simple(label) else { try reject(parameter, "Use a simple sending argument label") }
+            try index.requireTransferClass(named: input.name.text, at: input)
+            try index.requireUnshadowedQualifier(module, at: input)
+            try index.requireUnshadowedQualifier("BlueprintMocking", at: fn)
+            try index.requireUnshadowedQualifier("Swift", at: fn)
+            let type = "\(module).\(input.name.text)"
+            try addMember(name: fn.name.text,
+                          parameters: [Parameter(label: label, type: type, isSendingInput: true)],
+                          outputType: type, effect: Effect(isAsync: true, failure: nil), kind: .method,
+                          declaredResult: "sending \(type)", at: fn)
+            continue
+        }
         let hasIsolatedActor = declaredParameters.contains {
             $0.type.as(AttributedTypeSyntax.self)?.specifiers.contains { $0.trimmedDescription == "isolated" } == true
         }
@@ -1358,7 +1415,6 @@ func generate(
                           outputType: "Swift.Int", effect: Effect(isAsync: false, failure: nil), kind: .method, at: fn)
             continue
         }
-        let returnType = fn.signature.returnClause?.type
         if !fromTextualInterface, let result = returnType?.as(IdentifierTypeSyntax.self),
            try index.hasExplicitNoncopyableStruct(named: result.name.text, at: result) {
             let message = "An owned result factory requires a direct synchronous nonthrowing Sendable "
@@ -1772,6 +1828,7 @@ func generate(
     }
     func endpointType(_ index: Int) -> String {
         var arguments = members[index].genericArguments
+        if members[index].transfersSendingValues { arguments += ", Swift.Int" }
         if let types = projectionTypes[index] {
             arguments += ", \(types.argument), \(types.result)"
         }
@@ -1959,8 +2016,13 @@ func generate(
         } else {
             let after = m.usesInout ? ", after: after" : ""
             let origin = spy ? ", origin: origin" : ""
-            let type = m.usesConsumingInput ? "BlueprintMocking.ConsumingSyncVerification<\(m.inputType)>"
-                : "BlueprintMocking.\(isolation.prefix)Verification<\(m.verificationInputType)>"
+            let type = if m.transfersSendingValues {
+                "BlueprintMocking.SendingAsyncVerification<Swift.Int, Swift.Int>"
+            } else if m.usesConsumingInput {
+                "BlueprintMocking.ConsumingSyncVerification<\(m.inputType)>"
+            } else {
+                "BlueprintMocking.\(isolation.prefix)Verification<\(m.verificationInputType)>"
+            }
             output += "        public func \(m.verificationSignature(includeOrigin: spy)) -> \(type) {\n            __endpoint\(i).verification(matching: \(m.matcherExpression(describingFields: true))\(after), phase: phase\(origin))\n        }\n"
         }
     }
@@ -2018,6 +2080,10 @@ func generate(
     }
     if let consuming = members.first(where: \.usesConsumingInput) {
         output += "                projectingInput: @escaping @Sendable (borrowing \(consuming.parameters[0].type)) -> Swift.Int,\n"
+    }
+    if let sending = members.first(where: \.transfersSendingValues) {
+        output += "                projectSendingInput: @escaping @Sendable (\(sending.parameters[0].type)) -> Swift.Int,\n"
+        output += "                projectSendingResult: @escaping @Sendable (\(sending.outputType)) -> Swift.Int,\n"
     }
     let defaultConfigure = hasProviderWitness && instanceIndices.isEmpty ? " = { _ in }" : ""
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void\(defaultConfigure)) {\n"
@@ -2102,6 +2168,7 @@ func generate(
             mapping += ", fallback: { _ in () }"
         }
         let projection = if m.usesConsumingInput { ", projectingInput: projectingInput" }
+            else if m.transfersSendingValues { ", projectInput: projectSendingInput, projectResult: projectSendingResult" }
             else if projectedIndices.contains(i) { ", projection: projection\(i)" }
             else { "" }
         let identity = String(reflecting: m.identity)
