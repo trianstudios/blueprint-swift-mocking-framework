@@ -83,6 +83,19 @@ public struct MockThrowingConstructionAttempt: ~Copyable, Sendable {
                                        publishesInstanceLink: true)
     }
 
+    /// Records a request made while async preparation is active and returns the operation's result.
+    public borrowing func observingCancellation<Value: Sendable>(
+        isolation: isolated (any Actor)? = #isolation,
+        _ operation: () async -> Value
+    ) async -> Value {
+        let session = scope.session
+        let invocation = self.invocation
+        return await withTaskCancellationHandler(operation: operation, onCancel: {
+            let wake = session.withLock { $0.recordCancellationRequest(for: invocation) }
+            wake?.publish()
+        }, isolation: isolation)
+    }
+
     /// Records the configured failure without allocating a mock identity.
     public consuming func recordFailure() {
         finishWithoutInstance(phase: .threw)

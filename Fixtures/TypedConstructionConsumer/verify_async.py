@@ -99,8 +99,7 @@ def verify(options):
         for name, source in [
             ("wrong-label", protocol.replace("init(seed: Int) async", "init(value: Int) async")),
             ("async-failable", protocol.replace("init(seed: Int) async", "init?(seed: Int) async")),
-            ("async-typed-throwing", "public enum Failure: Error { case unavailable }\n" +
-             protocol.replace("init(seed: Int) async", "init(seed: Int) async throws(Failure)")),
+            ("async-untyped-throwing", protocol.replace("init(seed: Int) async", "init(seed: Int) async throws")),
         ]:
             domain.write_text(source, encoding="utf-8")
             fixture_run(compiler + flags + ["-typecheck", domain], evidence, "compile-control-" + name)

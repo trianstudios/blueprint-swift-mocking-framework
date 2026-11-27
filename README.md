@@ -399,6 +399,8 @@ For one direct synchronous `init?(seed: Int)`, the setup closure returns `Failab
 
 For one direct nonthrowing `init(seed: Int) async`, the generated construction scope takes an async typed setup closure. The attempt stays active across suspension. The generated witness attaches the initialized instance when setup returns. [Async constructor consumer](Fixtures/TypedConstructionConsumer/AsyncIndependentConsumer.swift)
 
+The direct async constructor also supports `init(seed: Int) async throws(Failure)` with a public same-module error enum. During suspended setup the session records a cancellation request separately from the typed result. Setup can throw a declared failure or finish successfully. [Async typed constructor consumer](Fixtures/TypedConstructionConsumer/AsyncThrowingIndependentConsumer.swift)
+
 A generated checked Sendable method can take one concrete noncopyable `consuming` argument and return `Int` in the supported synchronous profile. Provide `projectingInput:` as a typed borrowing closure when initializing the mock. Setup and verification use the projected `Int`; an answer receives the original input with its consuming convention. While the projection is pending, verification reports incomplete history. The runtime stores the projected metadata only.
 
 A direct synchronous nonthrowing requirement can also return a concrete same-module noncopyable struct, with zero arguments or one `Int` argument. Configure it with `willProduce` and create a fresh result in the typed factory on each call. The caller owns the returned value and verification uses the ordinary arguments.

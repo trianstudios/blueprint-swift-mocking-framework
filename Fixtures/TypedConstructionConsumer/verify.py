@@ -102,7 +102,9 @@ def verify(options):
         for name, source, diagnostic in [
             ("untyped", declarations.replace("throws(ConstructionFailure)", "throws"), "ordinary direct Sendable"),
             ("failable", declarations.replace("init(seed: Int)", "init?(seed: Int)"), "ordinary direct Sendable"),
-            ("async", declarations.replace("throws(ConstructionFailure)", "async throws(ConstructionFailure)"), "ordinary direct Sendable"),
+            ("async-wrong-label", declarations.replace("init(seed: Int) throws(ConstructionFailure)",
+                                                       "init(value: Int) async throws(ConstructionFailure)"),
+             "ordinary direct Sendable"),
             ("alias", declarations.replace("public protocol", "public typealias Alias = ConstructionFailure\n\npublic protocol")
                                   .replace("throws(ConstructionFailure)", "throws(Alias)"), "direct Swift.Error conformance"),
         ]:

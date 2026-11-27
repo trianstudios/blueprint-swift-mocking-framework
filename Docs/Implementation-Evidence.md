@@ -787,3 +787,9 @@ Standalone and configured witnesses agree. Explicit detached binding, scope diag
 GEN-026 now accepts one direct checked nonthrowing init(seed: Int) async. The separate consumer holds setup at a deterministic suspension point. The session sees the active attempt before any instance is linked. A quiescent reset is refused while setup is held. Detach-active reset lets the initialized mock use the new epoch while the original attempt completes in the archived epoch with the actual instance ID.
 
 Standalone and configured output agree. Swift rejects a missing await in ordinary and MainActor default-isolation checks. Unbound, stale and finished scopes diagnose in separate child processes. Unsupported combined effects and parameter labels preserve the previous generated pair. The earlier ordinary, typed-throwing and failable fixtures still pass. Constructor cancellation recording, mixed effects and native release profiles remain open.
+
+## Scoped async typed-throwing protocol initialization
+
+GEN-026 adds one direct init(seed: Int) async throws(Failure) with a public same-module error enum. A deterministic native metatype fixture suspends setup, checks the pending attempt and releases it. It exercises success, a configured typed failure, a cooperative cancellation that throws the declared error and a cancellation that setup ignores before succeeding. Failure allocates no instance identity. Successful preparation links the initialized instance and verifies a subsequent typed method call.
+
+A detach-active reset during preparation keeps cancellation, admission and completion in the attempt's original epoch. The cancellation request is a separate history record. Swift rejects a foreign setup error and a missing await in both isolation modes. Invalid async failable or untyped throwing requests preserve the prior configured output. Other constructor shapes and cancellation outside the observed preparation remain open.

@@ -1490,7 +1490,7 @@ func generate(
             let isFailable = initializer.optionalMark?.text == "?"
             let isAsync = effects?.asyncSpecifier?.text == "async"
             let message = "Construction scopes support one ordinary direct Sendable init(seed: Int), init?(seed: Int), "
-                + "init(seed: Int) async, or synchronous init(seed: Int) throws(PublicError) without other generation modes"
+                + "init(seed: Int) async, or synchronous or async init(seed: Int) throws(PublicError) without other generation modes"
             guard constructor == nil, declarationID == proto.id, declarations.count == 1,
                   isolation == .sendable, !fromTextualInterface, !hasBindings, !spy, !specializesGenerics,
                   projections.isEmpty, variadicForwarding.isEmpty, scopedRuleSelectors.isEmpty,
@@ -1499,7 +1499,6 @@ func generate(
                   initializer.optionalMark == nil || isFailable, initializer.genericParameterClause == nil,
                   initializer.genericWhereClause == nil, effects?.asyncSpecifier == nil || isAsync,
                   !isFailable || (!isAsync && effects?.throwsClause == nil),
-                  !isAsync || effects?.throwsClause == nil,
                   parameters.count == 1, let parameter = parameters.first,
                   parameter.firstName.text == "seed", parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
                   parameter.defaultValue == nil, parameter.ellipsis == nil,
@@ -2564,12 +2563,13 @@ func generate(
         let configureResult = constructor.failure.map { "Swift.Result<Swift.Void, \($0)>" } ?? configuredResult
         let scopeSetup: String
         if let failure = constructor.failure {
+            let prepare = constructor.isAsync ? "try await" : "try"
             scopeSetup = """
             return ConstructionScope(
                 __scope: session.makeEpochBoundMock(), __reporter: failureReporter,
                 __configure: { seed, stubs in
                     do throws(\(failure)) {
-                        try configure(seed, stubs)
+                        \(prepare) configure(seed, stubs)
                         return .success(())
                     } catch {
                         return .failure(error)
@@ -2587,7 +2587,7 @@ func generate(
                 let member = members[index]
                 return "__setup\(index): \(member.family)Stubbing<\(member.genericArguments)>()"
             }.joined(separator: ", ")
-            if constructor.isAsync {
+            if constructor.isAsync && constructor.failure == nil {
                 witness = """
                 let attempt = construction.__scope.beginAsyncConstruction(
                     of: endpoint, reporter: construction.__reporter, source: source
@@ -2603,12 +2603,23 @@ func generate(
                 let decline = constructor.isFailable
                     ? "case .returnNil:\n    attempt.recordNil()\n    return nil"
                     : "case .failure(let error):\n    attempt.recordFailure()\n    throw error"
+                let settlement: String
+                if constructor.isAsync {
+                    settlement = """
+                    let configured = await attempt.observingCancellation {
+                        await construction.__configure(seed, stubs)
+                    }
+                    switch configured {
+                    """
+                } else {
+                    settlement = "switch construction.__configure(seed, stubs) {"
+                }
                 witness = """
                 let attempt = construction.__scope.\(admission)(
                     of: endpoint, reporter: construction.__reporter, source: source
                 )
                 let stubs = Stubs(\(stubs))
-                switch construction.__configure(seed, stubs) {
+                \(settlement)
                 \(decline)
                 case .\(success):
                     let reservation = attempt.reserveInstance()
