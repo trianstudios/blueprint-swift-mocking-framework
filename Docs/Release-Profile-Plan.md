@@ -19,11 +19,11 @@ RUN-006 uses the runtime without generation, so separate macOS generator host va
 
 Run `python3 scripts/verify.py --release-checks-only` on each reviewed release-evaluation host from the same clean candidate revision. Keep its `release-checks.json` and both hashed logs. The full verifier also records the suites by their exact matrix names, `test_check_release.py` and `test_verify_release_candidate.py`. The suites exercise missing implementation references, required checks and profile results, and the signed-candidate boundary. They use disposable claims, keys, and repositories. The focused report records the actual evaluator and Git revision. The reviewed certification bundle must still bind the passing results to each applicable profile. [Checker tests](../scripts/tests/test_check_release.py) · [Signed-candidate tests](../scripts/tests/test_verify_release_candidate.py)
 
-### Proposed evaluator profile for approval
+### Approved evaluator profile
 
-Support one native evaluator profile for SYS-008 initially. Name it `sys008-macos-27.0.1-26A434-arm64-cpython3.13.3`. This profile follows the release evaluator that already runs both suites locally. The maintainer must approve the profile and its scope before it appears in certification evidence.
+On 2026-11-27, the maintainer approved one evaluator profile for SYS-008, `sys008-macos-27.0.1-26A434-arm64-cpython3.13.3`, for the two suites listed below. Release certification requires reviewed evidence from a controlled runner at the nominated revision.
 
-| Profile field | Proposed value |
+| Profile field | Approved value |
 | --- | --- |
 | `host_os` | macOS 27.0.1, build 26A434 |
 | `host_arch` | arm64, native |
