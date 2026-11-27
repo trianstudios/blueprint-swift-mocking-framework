@@ -505,6 +505,11 @@ def main():
     run("rethrows-provider-multiple-generation", generate(
         tool, rethrows_pair_source, rethrows_pair_generated, "RethrowingPairDirectory",
         rethrows_providers=("apply(_:fallback:)",)))
+    async_rethrows_source = source.with_name("AsyncRethrowingDirectory.swift")
+    async_rethrows_generated = generated.with_name("AsyncRethrowingDirectoryMock.swift")
+    run("rethrows-provider-async-generation", generate(
+        tool, async_rethrows_source, async_rethrows_generated, "AsyncRethrowingDirectory",
+        rethrows_providers=rethrows_selector))
     rejected_rethrows = temp / "RejectedRethrowsProvider.swift"
     rejected_rethrows.write_bytes(b"// preserve valid rethrows output\n")
     rethrows_baseline = (rejected_rethrows.read_bytes(), rejected_rethrows.stat().st_mtime_ns)
@@ -514,10 +519,13 @@ def main():
         ("duplicate", rethrows_source, rethrows_selector * 2, r"Duplicate rethrows provider selector"),
     ]
     authored_rethrows = rethrows_source.read_text(encoding="utf-8")
-    for label, signature, selectors in (
-        ("async", "func apply(_ callback: (Int) async throws -> String) async rethrows -> String", rethrows_selector),
+    for label, signature, selectors, diagnostic in (
+        ("bare-async", "func apply(_ callback: (Int) async throws -> String) async rethrows -> String", rethrows_selector,
+         r"Async rethrows requires a callback-derived error from unary nonescaping @Sendable"),
+        ("escaping-async", "func apply(_ callback: @escaping @Sendable (Int) async throws -> String) async rethrows -> String",
+         rethrows_selector, r"Async rethrows requires a callback-derived error from unary nonescaping @Sendable"),
         ("mixed", "func apply(_ callback: (Int) throws -> String, fallback: String) rethrows -> String",
-         ("apply(_:fallback:)",)),
+         ("apply(_:fallback:)",), r"Rethrows requires a callback-derived error from unary"),
     ):
         variant = temp / f"Rethrows-{label}.swift"
         variant.write_text(authored_rethrows.replace(
@@ -525,7 +533,7 @@ def main():
         ), encoding="utf-8")
         run("rethrows-provider-native-shape-" + label, [swiftc, "-swift-version", "6", "-sdk", sdk, "-typecheck", variant],
             env=swift_environment)
-        rethrows_cases.append((label, variant, selectors, r"Rethrows requires a callback-derived error from unary"))
+        rethrows_cases.append((label, variant, selectors, diagnostic))
     for label, authored, selectors, diagnostic in rethrows_cases:
         run("rethrows-provider-reject-" + label, generate(
             tool, authored, rejected_rethrows, "RethrowingDirectory", rethrows_providers=selectors),
@@ -1368,6 +1376,7 @@ def main():
                   r"GEN015_RUN005_generatedRethrowsProviderPreservesNonescapingCallbackAndError\(\) passed",
                   r"GEN015_RUN005_constantRethrowsProviderCanSkipCallerCallback\(\) passed",
                   r"GEN015_RUN005_generatedRethrowsPairPreservesEitherCallbackError\(\) passed",
+                  r"GEN015_RUN005_generatedAsyncRethrowsKeepsSuspendedCallAndOriginalError\(\) passed",
                   r"RUN010_oneShotCaptureRejectsDuplicateWhileAcquiredAndFinishes\(\) passed",
                   r"RUN010_oneShotCancellationRetiresOnlyItsPendingCapture\(\) passed",
                   r"RUN010_oneShotCaptureResetInvalidatesEarlierEpoch\(\) passed",
@@ -1516,6 +1525,9 @@ def main():
         "RethrowingProviderUnrelatedThrow": r"may only throw if its parameter does",
         "RethrowingProviderNoThrowsStub": r"'RethrowingDirectoryMock.Stubs' has no member 'apply'",
         "RethrowingPairMissingTry": r"call can throw, but it is not marked with 'try'",
+        "AsyncRethrowingMissingTry": r"call can throw, but it is not marked with 'try'",
+        "AsyncRethrowingProviderUnrelatedThrow": r"may only throw if its parameter does",
+        "AsyncRethrowingNonSendableCapture": r"capture of 'payload' with non-[sS]endable type 'NonSendableAsyncRethrowingPayload'",
         "GenericSubscriptWrongConstraint": r"requires that 'UnhashableKey' conform to 'Hashable'",
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",

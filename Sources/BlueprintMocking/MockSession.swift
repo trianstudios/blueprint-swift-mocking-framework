@@ -99,10 +99,34 @@ public struct MockScope: Sendable {
         try invokeProvider(EndpointID(declaration), reporter: reporter, source: source, answer)
     }
 
+    /// Executes an async rethrows provider. The callback can suspend outside the session lock.
+    public func invokeAsyncRethrowsProvider<Output: Sendable>(
+        of declaration: String, reporter: FailureReporter, source: SourceLocation,
+        _ answer: @Sendable () async throws -> Output
+    ) async rethrows -> Output {
+        let invocation = admitProviderInvocation(EndpointID(declaration), reporter: reporter, source: source)
+        var phase = CallPhase.threw
+        defer { completeProviderInvocation(invocation, phase: phase) }
+        let result = try await answer()
+        phase = .returned
+        return result
+    }
+
     private func invokeProvider<Output: Sendable>(
         _ endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation,
         _ answer: () throws -> Output
     ) rethrows -> Output {
+        let invocation = admitProviderInvocation(endpoint, reporter: reporter, source: source)
+        var phase = CallPhase.threw
+        defer { completeProviderInvocation(invocation, phase: phase) }
+        let result = try answer()
+        phase = .returned
+        return result
+    }
+
+    private func admitProviderInvocation(
+        _ endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation
+    ) -> SessionInvocationID {
         let claim = session.withLock { state -> ProviderAdmission in
             if let rejection = admissionRejection(in: state) {
                 return .rejected(rejection, closedEpoch: state.isFinished ? state.epoch : nil)
@@ -117,19 +141,17 @@ public struct MockScope: Sendable {
                                        source: source, watermark: 0, closedEpoch: closedEpoch)
         case .accepted(let admission, let wake):
             wake?.publish()
-            var phase = CallPhase.threw
-            defer {
-                let (delivery, wake) = session.withLock { state in
-                    let (_, delivery) = state.complete(admission.invocationID, phase: phase)
-                    return (delivery, state.observationWake())
-                }
-                delivery?.publish()
-                wake?.publish()
-            }
-            let result = try answer()
-            phase = .returned
-            return result
+            return admission.invocationID
         }
+    }
+
+    private func completeProviderInvocation(_ invocation: SessionInvocationID, phase: CallPhase) {
+        let (delivery, wake) = session.withLock { state in
+            let (_, delivery) = state.complete(invocation, phase: phase)
+            return (delivery, state.observationWake())
+        }
+        delivery?.publish()
+        wake?.publish()
     }
 
     private func terminateRejectedValueCall(

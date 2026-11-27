@@ -392,26 +392,32 @@ struct RethrowsCallback {
     let input: String
     let result: String
 
-    var type: String { "(\(input)) throws -> \(result)" }
+    func type(isAsync: Bool) -> String {
+        let sendability = isAsync ? "@Sendable " : ""
+        let effect = isAsync ? " async throws" : " throws"
+        return "\(sendability)(\(input))\(effect) -> \(result)"
+    }
 }
 
 struct RethrowsRequirement {
     let name: String
     let callbacks: [RethrowsCallback]
     let result: String
+    let isAsync: Bool
     let origin: ProtocolSourceOrigin
 
     var selector: String { "\(name)(" + callbacks.map { "\($0.label):" }.joined() + ")" }
+    var effect: String { isAsync ? " async rethrows" : " rethrows" }
 
     var endpoint: String {
-        "\(name)(" + callbacks.map { "\($0.label):\($0.type)" }.joined(separator: ",") + ")"
+        "\(name)(" + callbacks.map { "\($0.label):\($0.type(isAsync: isAsync))" }.joined(separator: ",") + ")"
     }
 
     var signature: String {
         let parameters = callbacks.enumerated().map { index, callback in
-            "\(callback.label) \(localName(at: index)): \(callback.type)"
+            "\(callback.label) \(localName(at: index)): \(callback.type(isAsync: isAsync))"
         }
-        return "func \(name)(\(parameters.joined(separator: ", "))) rethrows -> \(result)"
+        return "func \(name)(\(parameters.joined(separator: ", ")))\(effect) -> \(result)"
     }
 
     var providerArguments: String {
@@ -997,18 +1003,35 @@ func generate(
     func collectRethrowsMethod(_ fn: FunctionDeclSyntax, isDirect: Bool) throws {
         let parameters = fn.signature.parameterClause.parameters
         let effects = fn.signature.effectSpecifiers
-        let unsupported = "Rethrows requires a callback-derived error from unary synchronous nonescaping throwing callbacks in a direct synchronous Sendable requirement"
+        let isAsync = effects?.asyncSpecifier?.text == "async"
+        let unsupported = isAsync
+            ? "Async rethrows requires a callback-derived error from unary nonescaping @Sendable async throwing callbacks"
+            : "Rethrows requires a callback-derived error from unary synchronous nonescaping throwing callbacks in a direct synchronous Sendable requirement"
         guard isDirect, isolation == .sendable, !hasBindings, !spy, !specializesGenerics,
               projections.isEmpty, variadicForwarding.isEmpty, fn.attributes.isEmpty,
               fn.genericParameterClause == nil, fn.genericWhereClause == nil,
-              effects?.asyncSpecifier == nil, effects?.throwsClause?.type == nil,
+              effects?.asyncSpecifier == nil || isAsync, effects?.throwsClause?.type == nil,
               !parameters.isEmpty, let result = fn.signature.returnClause?.type, let output = supportedType(result) else {
             try reject(fn, unsupported)
         }
         let callbacks = try parameters.map { parameter -> RethrowsCallback in
+            let callbackType: TypeSyntax
+            if isAsync {
+                guard let attributed = parameter.type.as(AttributedTypeSyntax.self), attributed.specifiers.isEmpty,
+                      attributed.attributes.count == 1, let attribute = attributed.attributes.first?.as(AttributeSyntax.self),
+                      attribute.attributeName.trimmedDescription == "Sendable", attribute.leftParen == nil,
+                      attribute.arguments == nil else {
+                    try reject(parameter, unsupported)
+                }
+                try index.requireUnshadowedQualifier("Sendable", at: attribute)
+                callbackType = attributed.baseType
+            } else {
+                callbackType = parameter.type
+            }
             guard parameter.attributes.isEmpty, parameter.modifiers.isEmpty, parameter.ellipsis == nil,
-                  parameter.defaultValue == nil, let callback = parameter.type.as(FunctionTypeSyntax.self),
-                  let callbackEffects = callback.effectSpecifiers, callbackEffects.asyncSpecifier == nil,
+                  parameter.defaultValue == nil, let callback = callbackType.as(FunctionTypeSyntax.self),
+                  let callbackEffects = callback.effectSpecifiers,
+                  callbackEffects.asyncSpecifier?.text == (isAsync ? "async" : nil),
                   let failure = callbackEffects.throwsClause, failure.throwsSpecifier.text == "throws", failure.type == nil,
                   callback.parameters.count == 1, let input = callback.parameters.first, input.firstName == nil,
                   input.ellipsis == nil, input.inoutKeyword == nil, let argument = supportedType(input.type),
@@ -1023,7 +1046,7 @@ func generate(
         }
         try index.requireUnshadowedQualifier("Swift", at: fn)
         let requirement = RethrowsRequirement(
-            name: fn.name.text, callbacks: callbacks, result: output, origin: index.origin(of: fn)
+            name: fn.name.text, callbacks: callbacks, result: output, isAsync: isAsync, origin: index.origin(of: fn)
         )
         guard rethrowsSelections.contains(requirement.selector) else {
             try reject(fn, "Rethrows requires a callback-derived error. Use --rethrows-provider '\(requirement.selector)'")
@@ -1842,14 +1865,16 @@ func generate(
         output += "        }\n    }\n"
     }
     func rethrowsIdentity(_ provider: RethrowsRequirement) -> String {
-        endpointIdentity(provider.endpoint, effect: " rethrows", result: provider.result)
+        endpointIdentity(provider.endpoint, effect: provider.effect, result: provider.result)
     }
     for provider in rethrowsMethods {
         let identity = String(reflecting: rethrowsIdentity(provider))
+        let call = provider.isAsync ? "try await" : "try"
+        let runtime = provider.isAsync ? "invokeAsyncRethrowsProvider" : "invokeRethrowsProvider"
         output += "\n    public \(provider.signature) {\n"
-        output += "        try __scope.invokeRethrowsProvider(of: \(identity),\n"
+        output += "        \(call) __scope.\(runtime)(of: \(identity),\n"
         output += "                                           reporter: __failureReporter, source: \(location(provider.origin))) {\n"
-        output += "            try __rethrowsBehavior.\(provider.name)(\(provider.providerArguments))\n"
+        output += "            \(call) __rethrowsBehavior.\(provider.name)(\(provider.providerArguments))\n"
         output += "        }\n    }\n"
     }
     let resolvedMethods = methodTypes.sorted { $0.key < $1.key }.flatMap { selector, types in
