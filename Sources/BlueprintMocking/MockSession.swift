@@ -37,6 +37,12 @@ enum ScopeAdmissionRejection: Sendable {
     }
 }
 
+/// An explicit answer or a request to invoke the real generic dependency.
+public enum GenericSpyDecision<Output: Sendable>: Sendable {
+    case handled(Output)
+    case forward
+}
+
 /// The explicitly selected session and identity for a mock's endpoints.
 public struct MockScope: Sendable {
     public let id: MockID
@@ -89,6 +95,25 @@ public struct MockScope: Sendable {
         _ answer: () -> Argument
     ) -> Argument {
         invokeProvider(EndpointID(declaration, specializedFor: type), reporter: reporter, source: source, answer)
+    }
+
+    /// Invokes a typed generic selection and forwards a declined call to the real dependency.
+    public func invokeAsyncGenericSpy<Key: Sendable, Output: Sendable>(
+        of declaration: String, for type: Key.Type, reporter: FailureReporter, source: SourceLocation,
+        select: @Sendable () async -> GenericSpyDecision<Output>,
+        forwarding: @Sendable () async -> Output
+    ) async -> Output {
+        let endpoint = EndpointID(declaration, specializedFor: type)
+        let invocation = admitProviderInvocation(endpoint, reporter: reporter, source: source)
+        switch await select() {
+        case .handled(let result):
+            completeProviderInvocation(invocation, phase: .returned)
+            return result
+        case .forward:
+            let result = await forwarding()
+            completeProviderInvocation(invocation, phase: .returned, origin: .forwarded)
+            return result
+        }
     }
 
     /// Records a nonescaping pack provider call with ordered type metadata and no retained values.
@@ -153,9 +178,11 @@ public struct MockScope: Sendable {
         }
     }
 
-    private func completeProviderInvocation(_ invocation: SessionInvocationID, phase: CallPhase) {
+    private func completeProviderInvocation(
+        _ invocation: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil
+    ) {
         let (delivery, wake) = session.withLock { state in
-            let (_, delivery) = state.complete(invocation, phase: phase)
+            let (_, delivery) = state.complete(invocation, phase: phase, origin: origin)
             return (delivery, state.observationWake())
         }
         delivery?.publish()

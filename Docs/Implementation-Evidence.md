@@ -673,3 +673,9 @@ In one native SwiftPM build directory, listing a file outside target membership 
 DX-021 now enforces a 1 MiB byte limit on the two configured generation JSON files. The reader stops at the limit plus one byte and diagnoses oversize input before JSON decoding. The CLI fixture uses literal paths with spaces and shell metacharacters. Both files work at the exact limit. Inspect, generate and verify-generated reject an additional byte with BPM002. The generated files retain their original bytes and timestamps, and a valid retry succeeds.
 
 The fixture covers these configuration inputs on the bundled Xcode parser path. Source traversal races, cache-corruption checks, invalid publication manifests and broader platform qualification remain open.
+
+## A3.4 generic cache spy
+
+The standalone generator binds one direct primary associated value type to Swift.String for an async, nonthrowing generic cache lookup. The typed polymorphic provider can return a value, handle an intentional nil or decline the call. Declined calls reach the injected real actor. The independent consumer invokes the spy through generic and constrained existential clients. It checks that only declined calls reach the actor and that each invocation retains its ID, specialization and terminal forwarding origin.
+
+Swift rejects an incompatible cache binding and a provider that adds a key constraint. The standalone generator rejects unsupported spy selections before replacing output, including an associated type that would shadow the generated behavior protocol. This is the fifth locally exercised A3.4 case. Configured plugin selection of this spy, broader generic shapes, three other scenarios and native certification remain open.

@@ -534,6 +534,131 @@ struct GeneratedProtocolMock {
     let endpointOrigins: [(id: String, specialization: String?, origin: ProtocolSourceOrigin)]
 }
 
+private func generateBoundAsyncGenericSpy(
+    index: ProtocolSourceIndex, root: IndexedProtocol, members: [MemberBlockItemSyntax],
+    bindings: ConcreteAssociatedTypeBindings, selector: String
+) throws -> GeneratedProtocolMock {
+    let proto = root.declaration
+    let module = root.origin.module
+    let selected = root.name
+    let message = "A bound generic spy requires one primary associated type explicitly bound to Swift.String "
+        + "and one direct async nonthrowing method taking a Hashable & Sendable key and returning its optional associated value"
+    func reject(_ node: some SyntaxProtocol, _ reason: String) throws -> Never {
+        throw GenerationError(description: "\(index.origin(of: node)): error: BPM001: \(reason)")
+    }
+    func simple(_ name: String) -> Bool {
+        name.first?.isLetter == true && name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
+    }
+    guard let primary = proto.primaryAssociatedTypeClause?.primaryAssociatedTypes, primary.count == 1,
+          let value = primary.first?.name.text, value != module, bindings.types == [value: "Swift.String"],
+          members.count == 2,
+          let associated = members.compactMap({ $0.decl.as(AssociatedTypeDeclSyntax.self) }).first,
+          associated.name.text == value,
+          let fn = members.compactMap({ $0.decl.as(FunctionDeclSyntax.self) }).first else {
+        try reject(proto, message)
+    }
+
+    let parameters = fn.signature.parameterClause.parameters
+    let effects = fn.signature.effectSpecifiers
+    guard fn.body == nil, fn.attributes.isEmpty, fn.modifiers.isEmpty, simple(fn.name.text),
+          !["init", "verify", "Stubs", "Verification", value].contains(fn.name.text),
+          fn.genericWhereClause == nil, effects?.asyncSpecifier?.text == "async", effects?.throwsClause == nil,
+          let generics = fn.genericParameterClause?.parameters, generics.count == 1,
+          let key = generics.first, simple(key.name.text), key.name.text != value,
+          key.firstToken(viewMode: .sourceAccurate)?.id == key.name.id, key.attributes.isEmpty,
+          let bounds = key.inheritedType?.as(CompositionTypeSyntax.self), bounds.elements.count == 2,
+          parameters.count == 1, let parameter = parameters.first,
+          parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+          parameter.ellipsis == nil, parameter.defaultValue == nil,
+          let input = parameter.type.as(IdentifierTypeSyntax.self),
+          input.genericArgumentClause == nil, input.name.text == key.name.text,
+          let optional = fn.signature.returnClause?.type.as(OptionalTypeSyntax.self),
+          let result = optional.wrappedType.as(IdentifierTypeSyntax.self),
+          result.genericArgumentClause == nil, result.name.text == value else {
+        try reject(fn, message)
+    }
+    let label = parameter.firstName.text
+    guard label == "_" || simple(label) else { try reject(parameter, "Use a simple generic cache key label") }
+    let required = "\(fn.name.text)(\(label):)"
+    guard selector.trimmingCharacters(in: .whitespacesAndNewlines) == required else {
+        try reject(fn, "Unknown bound generic spy selector '\(selector)'. Use '\(required)'")
+    }
+    let constraints = try bounds.elements.map { bound -> String in
+        let spelling = bound.type.trimmedDescription
+        if ["Hashable", "Sendable"].contains(spelling), spelling != key.name.text {
+            try index.requireUnshadowedQualifier(spelling, at: bound.type)
+            return "Swift." + spelling
+        }
+        return spelling
+    }.sorted()
+    guard constraints == ["Swift.Hashable", "Swift.Sendable"], key.name.text != "Swift" else {
+        try reject(bounds, "Bound generic spies require inline Hashable and Sendable key constraints")
+    }
+
+    let name = selected + "Mock"
+    let behavior = name + "Behavior"
+    guard value != behavior else {
+        try reject(associated, "Associated type '\(value)' conflicts with the generic spy behavior protocol")
+    }
+    for qualifier in [module, "Swift", "BlueprintMocking", name, behavior] {
+        try index.requireUnshadowedQualifier(qualifier, at: fn)
+    }
+    let signature = "\(fn.name.text)<__BlueprintKey: Swift.Hashable & Swift.Sendable>(\(label) input: __BlueprintKey) async"
+    let reference = "\(module).\(selected)"
+    let endpoint = "schema\(GeneratedContract.irSchemaVersion)|\(reference)|\(fn.name.text)<T:Swift.Hashable&Swift.Sendable>(\(label):T)async->\(value)?|Sendable"
+    let origin = index.origin(of: fn)
+    let source = "BlueprintMocking.SourceLocation(fileID: \(String(reflecting: module + "/" + origin.fileName)), "
+        + "filePath: \(String(reflecting: origin.fileName)), line: \(origin.line), column: \(origin.column))"
+    let invocation = "\(fn.name.text)(\(label == "_" ? "" : label + ": ")input)"
+    let output = """
+    // Generated by the Blueprint Mocking prototype. Schema \(GeneratedContract.irSchemaVersion). Do not edit.
+    // Source: \(root.origin.fileName), protocol \(selected).
+    // Primary associated type bound to Swift.String with async polymorphic spy forwarding.
+    import BlueprintMocking
+    import \(module)
+
+    public protocol \(behavior): Swift.Sendable {
+        func \(signature) -> BlueprintMocking.GenericSpyDecision<Swift.String?>
+    }
+
+    public final class \(name): \(reference) {
+        public typealias \(value) = Swift.String
+        private let __schema: \(GeneratedContract.runtimeMarker).Type = \(GeneratedContract.runtimeMarker).self
+        private let __scope: BlueprintMocking.MockScope
+        private let __reporter: BlueprintMocking.FailureReporter
+        private let __target: any \(reference)<Swift.String>
+        private let __behavior: (any \(behavior))?
+
+        public init(failureReporter: BlueprintMocking.FailureReporter,
+                    session: BlueprintMocking.MockSession = BlueprintMocking.MockSession(),
+                    forwardingTo: any \(reference)<Swift.String>,
+                    genericBehavior: (any \(behavior))? = nil) {
+            __scope = session.makeMock()
+            __reporter = failureReporter
+            __target = forwardingTo
+            __behavior = genericBehavior
+        }
+
+        public func \(signature) -> Swift.String? {
+            await __scope.invokeAsyncGenericSpy(
+                of: \(String(reflecting: endpoint)), for: __BlueprintKey.self,
+                reporter: __reporter, source: \(source),
+                select: { [behavior = __behavior] in
+                    guard let behavior else { return .forward }
+                    return await behavior.\(invocation)
+                },
+                forwarding: { [target = __target] in await target.\(invocation) }
+            )
+        }
+    }
+    """
+    return GeneratedProtocolMock(
+        typeName: name, source: output + "\n",
+        associatedTypeBindings: [AssociatedTypeBinding(name: value, type: "Swift.String")],
+        genericMethodSpecializations: [], endpointOrigins: [(id: endpoint, specialization: nil, origin: origin)]
+    )
+}
+
 func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
     subscriptSpecializations: [String], methodSpecializations: [GenericMethodSpecialization] = [],
@@ -586,7 +711,8 @@ func generate(
             try reject(proto, "Rethrows providers require a direct Sendable profile without projections, forwarding or generic providers")
         }
     }
-    if spy {
+    let boundedGenericSpy = spy && !associatedTypeBindings.isEmpty && !genericProviderSelectors.isEmpty
+    if spy && !boundedGenericSpy {
         guard projections.isEmpty, variadicForwarding.isEmpty, !specializesGenerics else {
             try reject(proto, "Direct spy forwarding cannot be combined with projections, variadic adapters or generic specializations")
         }
@@ -597,6 +723,18 @@ func generate(
     }
     let bindings = try ConcreteAssociatedTypeBindings(
         options: associatedTypeBindings, root: root, inheritance: inheritance, activeMembers: activeMembers, index: index)
+    if boundedGenericSpy {
+        guard isolation == .sendable, inheritance.declarations.count == 1, !fromTextualInterface,
+              associatedTypeBindings.count == 1, genericProviderSelectors.count == 1,
+              let members = activeMembers.first?.items, let selector = genericProviderSelectors.first,
+              projections.isEmpty, variadicForwarding.isEmpty, subscriptSpecializations.isEmpty,
+              methodSpecializations.isEmpty, rethrowsProviderSelectors.isEmpty, scopedRuleSelectors.isEmpty,
+              lazyAutoclosureSelectors.isEmpty, materializedAutoclosureSelectors.isEmpty else {
+            try reject(proto, "A bound generic spy requires one direct Sendable protocol, one binding and one generic provider selector without other generation modes")
+        }
+        return try generateBoundAsyncGenericSpy(index: index, root: root, members: members,
+                                                bindings: bindings, selector: selector)
+    }
     let hasBindings = !bindings.types.isEmpty
     if hasBindings && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || specializesGenerics) {
         try reject(proto, "Concrete associated-type bindings support ordinary witnesses without forwarding, projections or generic specializations")

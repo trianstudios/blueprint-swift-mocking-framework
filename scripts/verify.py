@@ -123,6 +123,39 @@ def verify_static_factory_generation(tool, source, doubles, scratch):
             raise ValueError(f"The committed {selected} fixture differs from standalone generation")
 
 
+def verify_generic_cache_spy_generation(tool, source, committed, scratch, compiler, env):
+    protocol = "GenericActorCache"
+    binding = "Value=Swift.String"
+    selector = "lookup(_:)"
+    output = scratch / committed.name
+    run("generic-cache-spy-generation", generate(
+        tool, source, output, protocol, spy=True, associated_bindings=(binding,), generic_providers=(selector,)))
+    if output.read_bytes() != committed.read_bytes():
+        raise ValueError("The committed generic cache spy differs from standalone generation")
+    baseline = (output.read_bytes(), output.stat().st_mtime_ns)
+    shape = source.read_text(encoding="utf-8").split("\n\n", 1)[0] + "\n"
+    for label, authored, selected_binding, selected_method, diagnostic in (
+        ("binding", shape, "Value=Swift.Int", selector, r"bound to Swift\.String"),
+        ("selector", shape, binding, "lookup(key:)", r"Unknown bound generic spy selector"),
+        ("throwing", shape.replace(" async ->", " async throws ->"), binding, selector,
+         r"direct async nonthrowing method"),
+        ("constraint", shape.replace("Hashable & Sendable", "Comparable & Sendable"), binding, selector,
+         r"inline Hashable and Sendable key constraints"),
+        ("companion-name", shape.replace("Value", protocol + "MockBehavior"),
+         protocol + "MockBehavior=Swift.String", selector, r"conflicts with the generic spy behavior protocol"),
+    ):
+        authored_path = scratch / f"GenericCacheSpy-{label}.swift"
+        authored_path.write_text(authored, encoding="utf-8")
+        run("generic-cache-spy-native-shape-" + label,
+            [*compiler, "-typecheck", "-module-name", "ConsumerDomain", authored_path], env=env)
+        run("generic-cache-spy-reject-" + label, generate(
+            tool, authored_path, output, protocol, spy=True,
+            associated_bindings=(selected_binding,), generic_providers=(selected_method,)),
+            fails=True, patterns=[rf"GenericCacheSpy-{label}\.swift:\d+:\d+: error: BPM001: [^\n]*" + diagnostic])
+        if (output.read_bytes(), output.stat().st_mtime_ns) != baseline:
+            raise ValueError(f"Rejecting generic cache spy {label} replaced the valid output")
+
+
 def verify_fluent_self_generation(tool, source, generated, fixed, scratch):
     run("fluent-self-generation", generate(tool, source, generated, "FluentDirectory"))
     with tempfile.TemporaryDirectory(prefix="FluentSelf-", dir=scratch) as directory:
@@ -1125,6 +1158,9 @@ def main():
         tool, source.with_name("SnapshotByteBufferReader.swift"), generated.with_name("SnapshotByteBufferReaderMock.swift"), temp)
     if release and tuple(map(int, release.groups())) >= (6, 4):
         verify_borrowed_span_generation(tool, temp, swift, swiftc, sdk, swift_environment)
+    verify_generic_cache_spy_generation(
+        tool, source.with_name("GenericActorCache.swift"), generated.with_name("GenericActorCacheMock.swift"),
+        temp, [swiftc, "-swift-version", "6", "-sdk", sdk], swift_environment)
     resource_source = source.with_name("ResourceTransferCheckout.swift")
     resource_mock = temp / "ResourceTransferCheckoutMock.swift"
     ui_mock = temp / "DraftEditorSurfaceMock.swift"
@@ -2013,6 +2049,7 @@ def main():
                   r"SYS006_uiViewModelRendersStatefulNonSendableDocuments\(\) passed",
                   r"SYS006_staticFactoryOrdersScopedConstructionBeforeGeneratedAudit\(\) passed",
                   r"SYS006_parallelStaticFactoryScopesIsolateTheSameMetatype\(\) passed",
+                  r"SYS006_genericCacheSpyUsesBoundPolymorphismAndForwardsToActor\(\) passed",
                   r"SYS006_resourceTransferIssuesFreshTicketsAndConsumesEachExactlyOnce\(\) passed",
                   r"GEN031_ownerFilePrivateSeamUsesLiveAndGeneratedAdapters\(\) passed",
                   r"SYS006_concurrentRepositoryRetryComposesProjectionRevisionCancellationAndDeadlines\(\) passed",
@@ -2239,6 +2276,8 @@ def main():
         ),
         "FluentSelfExistentialInput": r"member 'accepts' cannot be used on value of type 'any SelfOperand'",
         "WrongResult": r"cannot convert value of type 'Int'",
+        "GenericCacheSpyWrongBinding": r"cannot convert value of type 'IntegerCache.Value'[^\n]*'String'",
+        "GenericCacheSpyNarrowedProvider": r"'NarrowCacheProvider' does not conform to protocol 'GenericActorCacheMockBehavior'",
         "DraftEditorOffActorDocument": r"non-[Ss]endable type 'DraftEditorDocument'.*cannot exit main actor-isolated context",
         "ReturnOnlyOverloadWrongResult": (
             r"ReturnOnlyOverloadWrongResult\.swift:\d+:\d+: error: "
@@ -2402,6 +2441,7 @@ def main():
                             "OwnedResultCapturedReplay", "OwnedResultErasure", "OwnedResultFixedReturn",
                             "SendingRetainedInput", "SendingUseAfterTransfer", "SendingRetainedResult", "SendingFixedResult",
                             "ByteBufferDeferredAddressCapture", "DraftEditorOffActorDocument",
+                            "GenericCacheSpyWrongBinding", "GenericCacheSpyNarrowedProvider",
                             "OrdinaryInoutOverlappingAccess",
                             "EscapingCallbackMainActorConversion", "MainActorEscapingCallbackNonisolatedReplay",
                             "MainActorAsyncEscapingCallbackNonisolatedReplay",
