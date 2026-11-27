@@ -8,6 +8,10 @@ import ConsumerDoubles
         let reporter = FailureReporter { issue in
             FileHandle.standardError.write(Data("MOCK ISSUE: \(issue.message)\n".utf8))
         }
+        if CommandLine.arguments.contains("--typed-throwing-callback") {
+            try verifyThrowingCallback(reporter: reporter)
+            return
+        }
         if CommandLine.arguments.contains("--quiescent-configuration") {
             try await verifyQuiescentConfiguration(reporter: reporter)
             return
@@ -85,5 +89,30 @@ import ConsumerDoubles
         precondition(mock.verify.fetchUser(id: .equal("42")).wasCalled(.once).passed)
         precondition(mock.verify.greeting(for: .equal("Ada")).wasCalled(.once).passed)
         print("PASS: generated protocol → typed stubs → service → exact verification")
+    }
+
+    private static func verifyThrowingCallback(reporter: FailureReporter) throws {
+        let session = MockSession()
+        let captor = ThrowingEscapingCallbackCaptor<Int, String, CallbackFixtureError>(session: session)
+        let mock = ThrowingEscapingCallbackDirectoryMock(failureReporter: reporter, session: session) { stubs in
+            stubs.register(id: .equal("row")).capturingCallback(into: captor).willReturn("registered")
+        }
+        let registration = registerThrowingEscapingCallback(mock, id: "row") { input throws(CallbackFixtureError) in
+            guard input >= 0 else { throw .rejected(input) }
+            return "replayed-\(input)"
+        }
+        precondition(registration == "registered")
+        guard let capture = captor.captures.first else { preconditionFailure("No callback captured") }
+
+        let success = try capture.invoke(7, onUnavailable: { .unavailable })
+        precondition(success == "replayed-7")
+        do throws(CallbackFixtureError) {
+            _ = try capture.invoke(-7, onUnavailable: { .unavailable })
+            preconditionFailure("Expected the callback's typed failure")
+        } catch {
+            precondition(error == .rejected(-7))
+        }
+        precondition(mock.verify.register(id: .equal("row"), phase: .returned).wasCalled(.once).passed)
+        print("PASS: GEN016 executable replayed a typed callback success and failure")
     }
 }

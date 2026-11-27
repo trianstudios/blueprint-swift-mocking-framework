@@ -365,12 +365,16 @@ def main():
     run("actor-escaping-callback-generation", generate(
         tool, source.with_name("ActorEscapingCallbackDirectory.swift"),
         generated.with_name("ActorEscapingCallbackDirectoryMock.swift"), "ActorEscapingCallbackDirectory"))
+    run("throwing-escaping-callback-generation", generate(
+        tool, source.with_name("ThrowingEscapingCallbackDirectory.swift"),
+        generated.with_name("ThrowingEscapingCallbackDirectoryMock.swift"), "ThrowingEscapingCallbackDirectory"))
     run("escaping-callback-configured-rejection", [
         sys.executable, "scripts/verify_escaping_callback_generation.py", "--tool", tool, "--evidence-dir", EVIDENCE,
     ], env=swift_environment, timeout=60,
         patterns=[r"PASS: GEN016 configured generation creates both owned outputs",
                   r"PASS: GEN016 main-actor creates two verified owned outputs",
                   r"PASS: GEN016 qualified-main-actor creates two verified owned outputs",
+                  r"PASS: GEN016 typed-throws creates two verified owned outputs",
                   r"EVIDENCE: escaping-callback-generation-report\.json SHA-256 [0-9a-f]{64}"])
     type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
@@ -1064,11 +1068,18 @@ def main():
                   r"GEN016_escapingCallbackCapturesOnlyTheLatestWinningRule\(\) passed",
                   r"GEN016_escapingCallbackLifetimeFollowsCaptureSelectionAndSessionEpoch\(\) passed",
                   r"GEN016_actorEscapingCallbackReplaysOnMainActorAfterDetachedRegistration\(\) passed",
-                  r"GEN016_actorEscapingCallbackReleasesPayloadAcrossResetAndFinish\(\) passed"])
+                  r"GEN016_actorEscapingCallbackReleasesPayloadAcrossResetAndFinish\(\) passed",
+                  r"GEN016_throwingEscapingCallbackPreservesItsDeclaredFailureDuringReplay\(\) passed",
+                  r"GEN016_throwingEscapingCallbackRetiresCapturesOnResetAndFinish\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
+    run_swift("typed-throwing-callback-consumer-demo", [
+        "run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo", "--typed-throwing-callback"],
+        patterns=[r"PASS: GEN016 executable replayed a typed callback success and failure"])
     modules = Path(run_swift("consumer-bin-path", [
         "build", "--package-path", "Fixtures/ProtocolConsumer", "--show-bin-path"]).strip())
+    run("typed-throwing-callback-deployment-floor", ["xcrun", "vtool", "-show-build", modules / "consumer-demo"],
+        env=swift_environment, patterns=[r"platform MACOS", r"minos 13\.0\b"])
     compiler_floor = [
         swiftc, "-swift-version", "6", "-target",
         f"{platform.machine()}-apple-macos{deployment_target}", "-sdk", sdk,
@@ -1148,6 +1159,13 @@ def main():
             r"MainActorEscapingCallbackNonisolatedReplay\.swift:\d+:\d+: error: "
             r"call to main actor-isolated.*'invoke'.*synchronous nonisolated context"
         ),
+        "ThrowingEscapingCallbackWrongError": (
+            r"ThrowingEscapingCallbackWrongError\.swift:\d+:\d+: error: invalid conversion of thrown error type "
+            r"'OtherEscapingCallbackError' to 'CallbackFixtureError'"
+        ),
+        "ThrowingEscapingCallbackEffects": (
+            r"ThrowingEscapingCallbackEffects\.swift:8:\d+: error: call can throw, but it is not marked with 'try'"
+        ),
         "CallbackSpyDeferredCapture": r"passing non-escaping parameter 'callback'.*'@escaping'",
         "CallbackSpyDetachedCapture": r"escaping closure captures non-escaping value",
         "InoutSpyRetainsAccess": r"escaping closure captures 'inout' parameter 'value'",
@@ -1170,6 +1188,10 @@ def main():
     for fixture in sorted((ROOT / "Fixtures/CompileFailures").glob("*.swift")):
         compiler_stage = ["-typecheck"]
         diagnostic_patterns = [patterns[fixture.stem]]
+        if fixture.stem == "ThrowingEscapingCallbackEffects":
+            diagnostic_patterns.append(
+                r"ThrowingEscapingCallbackEffects\.swift:12:\d+: error: .*has no member 'willThrow'"
+            )
         if fixture.stem in {"InoutSpyRetainsAccess", "CallbackSpyDetachedCapture"}:
             compiler_stage = ["-emit-sil", "-o", os.devnull]
         if fixture.stem == "CallbackSpyDetachedCapture":

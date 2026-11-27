@@ -256,9 +256,11 @@ if let callback = captor.captures.first {
 }
 ```
 
-Delivery is synchronous and repeatable. Resetting or finishing the session releases stored closures and makes earlier handles throw `CallbackDeliveryError.unavailable`. A delivery that already acquired its closure can finish. The generated profile covers synchronous, nonthrowing callback types.
+Delivery is synchronous and repeatable. Resetting or finishing the session releases stored closures and makes earlier handles throw `CallbackDeliveryError.unavailable`. A delivery that already acquired its closure can finish. This captor handles synchronous, nonthrowing callback types.
 
 If the callback is also `@MainActor`, use `MainActorEscapingCallbackCaptor` with the same stub syntax. Registration stays nonisolated. `invoke(_:)` runs on MainActor. Use `try await callback.invoke(value)` from another actor or a detached task. The actor-qualified name `@Swift.MainActor` can identify the standard actor explicitly in the protocol source.
+
+For a nonisolated callback declared `@escaping @Sendable (Input) throws(DeclaredFailure) -> Output`, use `ThrowingEscapingCallbackCaptor<Input, Output, DeclaredFailure>`. The registration method stays nonthrowing. Replay with `try callback.invoke(input, onUnavailable: { .captureExpired })`, substituting a case of your own failure type. Replay propagates the callback's exact declared failure. The supplied mapping runs only when the handle has expired, such as after session reset or finish.
 
 Set `maximumAsyncThrowingForwardingDepth:` to a positive integer when initializing a checked Sendable spy to bound recursive async-throwing call-through. Only active real forwarding hops count. A matching stub still wins at the limit. A blocked call reports once and follows the endpoint’s missing-call policy. A configured typed failure mapping turns the rejection into a declared error. Inherited tasks participate while their forwarding ancestry is active. Detached work starts with an independent path. This limit bounds opaque reentry through a real provider.
 

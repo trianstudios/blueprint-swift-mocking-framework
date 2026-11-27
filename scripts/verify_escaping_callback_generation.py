@@ -14,12 +14,15 @@ from verify_inspection import OUTPUT_NAMES, require_unchanged, sha256, snapshot
 
 MODULE = "ConsumerDomain"
 PROTOCOL = "EscapingCallbackDirectory"
-SUPPORTED = "func register(id: String, using callback: @escaping @Sendable (Int) -> String) -> String"
+CALLBACK = "@escaping @Sendable (Int) -> String"
+TYPED_CALLBACK = CALLBACK.replace("(Int) ->", "(Int) throws(CallbackFixtureError) ->")
+CANONICAL_ACTOR_CALLBACK = CALLBACK.replace("@Sendable ", "@Swift.MainActor @Sendable ")
+SUPPORTED = f"func register(id: String, using callback: {CALLBACK}) -> String"
+TYPED_SUPPORTED = SUPPORTED.replace(CALLBACK, TYPED_CALLBACK)
 ACTOR_SUPPORTED = SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
-QUALIFIED_ACTOR_SUPPORTED = ACTOR_SUPPORTED.replace("@MainActor ", "@Swift.MainActor ")
-SHAPE_DIAGNOSTIC = (
-    "Escaping callback capture requires one synchronous nonthrowing function argument of supported value types"
-)
+QUALIFIED_ACTOR_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_CALLBACK)
+TYPED_ENDPOINT = "SyncThrowingEscapingCallbackEndpoint<String, Int, String, String, CallbackFixtureError>"
+SHAPE_DIAGNOSTIC = "Escaping callback capture requires one synchronous function argument of supported value types"
 ATTRIBUTES_DIAGNOSTIC = (
     "Escaping callback capture requires exactly @escaping and @Sendable, optionally with @MainActor"
 )
@@ -27,11 +30,19 @@ METHOD_DIAGNOSTIC = (
     "Escaping callback capture requires a synchronous nonthrowing Sendable method with one callback "
     "in the final position"
 )
+ACTOR_THROWS_DIAGNOSTIC = "Typed-throwing escaping callbacks require a nonisolated @Sendable function"
+FAILURE_DIAGNOSTIC = "Escaping callback capture requires throws with a named failure type other than Never"
 REJECTIONS = (
     ("bare-escaping", SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
     ("non-sendable-main-actor", ACTOR_SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
     ("other-global-actor", ACTOR_SUPPORTED.replace("@MainActor ", "@WorkerActor "), ATTRIBUTES_DIAGNOSTIC),
     ("effectful-callback", SUPPORTED.replace("(Int) ->", "(Int) async ->"), SHAPE_DIAGNOSTIC),
+    ("async-typed-callback", TYPED_SUPPORTED.replace("(Int) throws", "(Int) async throws"), SHAPE_DIAGNOSTIC),
+    ("main-actor-typed-callback", TYPED_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable "),
+     ACTOR_THROWS_DIAGNOSTIC),
+    ("untyped-throwing-callback", TYPED_SUPPORTED.replace("throws(CallbackFixtureError)", "throws"), FAILURE_DIAGNOSTIC),
+    ("never-throwing-callback", TYPED_SUPPORTED.replace("throws(CallbackFixtureError)", "throws(Never)"),
+     FAILURE_DIAGNOSTIC),
     (
         "non-final-callback",
         "func register(using callback: @escaping @Sendable (Int) -> String, id: String) -> String",
@@ -47,7 +58,12 @@ REPORT_NAME = "escaping-callback-generation-report.json"
 
 
 def write_source(source, method, declarations=""):
-    source.write_text(f"public protocol {PROTOCOL}: Sendable {{\n    {method}\n}}\n{declarations}", encoding="utf-8")
+    source.write_text(
+        f"public protocol {PROTOCOL}: Sendable {{\n    {method}\n}}\n"
+        "public enum CallbackFixtureError: Error, Sendable { case rejected }\n"
+        f"{declarations}",
+        encoding="utf-8",
+    )
 
 
 def invoke(tool, request, evidence, label, checks):
@@ -71,7 +87,7 @@ def require_rejection(result, location, diagnostic, label):
         raise ValueError(f"{label}: expected a source-located BPM001 (exit {result.returncode}): {actual}")
 
 
-def require_generated(tool, request, evidence, label, checks, staged, output, *, main_actor=False):
+def require_generated(tool, request, evidence, label, checks, staged, output, *, callback=None, endpoint=None):
     generated = invoke(tool, request, evidence, label, checks)
     if generated.returncode != 0 or generated.stderr:
         diagnostic = generated.stderr.decode("utf-8", errors="replace").strip()
@@ -82,11 +98,12 @@ def require_generated(tool, request, evidence, label, checks, staged, output, *,
     shard = files[0].decode("utf-8")
     if f"class {PROTOCOL}Mock" not in shard:
         raise ValueError(f"{label}: the configured protocol mock is absent from the generated shard")
-    if main_actor and not re.search(
-        r"(?m)^    public func register\(.*using \w+: @escaping @Swift\.MainActor @Sendable \(Int\) -> String\)",
-        shard,
-    ):
-        raise ValueError(f"{label}: the emitted witness does not use canonical @Swift.MainActor")
+    if callback is not None:
+        witness = r"(?m)^    public func register\(id \w+: String, using \w+: "
+        if not re.search(witness + re.escape(callback) + r"\) -> String \{", shard):
+            raise ValueError(f"{label}: the emitted witness does not preserve callback type {callback}")
+    if endpoint is not None and f"private let __endpoint0: {endpoint}\n" not in shard:
+        raise ValueError(f"{label}: the emitted witness does not use {endpoint}")
 
     before = snapshot(staged)
     verified = invoke(tool, ["verify-generated", *request[1:]], evidence, f"{label}-verified", checks)
@@ -129,11 +146,19 @@ def verify(tool, evidence):
         ]
         require_generated(tool, request, evidence, "prepare", checks, staged, output)
 
+        write_source(source, TYPED_SUPPORTED)
+        require_generated(
+            tool, request, evidence, "typed-throws", checks, staged, output,
+            callback=TYPED_CALLBACK, endpoint=TYPED_ENDPOINT,
+        )
+
         write_source(source, ACTOR_SUPPORTED)
-        bare = require_generated(tool, request, evidence, "main-actor", checks, staged, output, main_actor=True)
+        bare = require_generated(
+            tool, request, evidence, "main-actor", checks, staged, output, callback=CANONICAL_ACTOR_CALLBACK
+        )
         write_source(source, QUALIFIED_ACTOR_SUPPORTED)
         qualified = require_generated(
-            tool, request, evidence, "qualified-main-actor", checks, staged, output, main_actor=True
+            tool, request, evidence, "qualified-main-actor", checks, staged, output, callback=CANONICAL_ACTOR_CALLBACK
         )
         if bare != qualified:
             raise ValueError("Bare and Swift-qualified MainActor spellings produced different owned outputs")

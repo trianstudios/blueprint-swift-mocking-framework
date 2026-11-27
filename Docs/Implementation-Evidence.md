@@ -290,7 +290,7 @@ GEN-016 adds a final unary `@escaping @Sendable` callback to an ordinary, synchr
 
 The separate SwiftPM consumer calls through the domain protocol, observes that the callback has not yet run, delivers a typed value after the method returns, and verifies the registration once. Shadowed, unmatched and noncapturing stubs leave no capture. Reset and finish release the held payload and their stale handles reject delivery. Compiler fixtures reject losing MainActor isolation, a non-Sendable capture and incorrectly typed replay. Configured CLI diagnostics for unsupported escaping forms preserve the previous shard and index.
 
-Actor-isolated and effectful callbacks, additional parameter shapes, direct spy forwarding, scheduled or one-shot delivery, cancellation, and child delivery events remain open. A delivery that acquired its closure before invalidation can finish. The checks use the Xcode-bundled parser and Swift 6 language mode on the available macOS host.
+Additional parameter shapes, direct spy forwarding, scheduled or one-shot delivery, cancellation, and child delivery events remain open. A delivery that acquired its closure before invalidation can finish. The checks use the Xcode-bundled parser and Swift 6 language mode on the available macOS host.
 
 
 ## MainActor escaping callback capture
@@ -299,4 +299,13 @@ GEN-016 also supports `@escaping @MainActor @Sendable` on the final unary parame
 
 The independent SwiftPM consumer registers through the protocol from a detached task and explicitly awaits replay from a detached task. The callback confirms MainActor execution and reads and updates actor-isolated state. Swift rejects synchronous off-actor replay, including with MainActor default isolation. Reset and finish release stored payloads and invalidate prior handles. Unsupported configured signatures preserve the last valid shard and index.
 
-Other global actors, actor-isolated protocols, effectful callbacks and scheduled delivery remain open. Verification uses the prepared Xcode toolchain in Swift 6 language mode on macOS. Additional toolchain and platform profiles remain open.
+Other global actors, actor-isolated protocols, effectful MainActor callbacks, and scheduled delivery remain open. Verification uses the prepared Xcode toolchain in Swift 6 language mode on macOS. Additional toolchain and platform profiles remain open.
+
+
+## Typed-throwing escaping callback replay
+
+GEN-016 supports one final nonisolated, synchronous `@escaping @Sendable` callback with a named typed failure on a synchronous, nonthrowing Sendable protocol method. The witness preserves the function signature. The runtime stores a checked thunk returning `Result<Output, Failure>` to keep generic typed-function metadata out of retained storage. Replay returns the typed value or throws the exact original failure. A stale handle calls its explicit unavailability mapping without invoking the released callback.
+
+The independent SwiftPM consumer exercises a success, a declared failure, and a subsequent success after registration. The registration history retains one admission and one returned event. Reset and finish release the retained payload and invalidate old handles. Compiler fixtures reject a foreign typed error, replay without `try`, and a throwing stub for the nonthrowing registration. Configured generation publishes the checked witness and preserves prior artifacts on actor-plus-typed-throws, async-plus-typed-throws, untyped throws, and explicit `throws(Never)` rejections.
+
+The consumer executable with the replay path links for macOS 13. Execution on the available newer macOS host is separate from deployment-target verification. Additional callback effects, isolation combinations, scheduled delivery, and other qualified toolchain and platform profiles remain open.
