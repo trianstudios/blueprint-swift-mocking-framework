@@ -463,7 +463,7 @@ func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
     subscriptSpecializations: [String], methodSpecializations: [GenericMethodSpecialization] = [],
     genericProviderSelectors: [String] = [], rethrowsProviderSelectors: [String] = [],
-    spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
+    scopedRuleSelectors: [String] = [], spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
 ) throws -> GeneratedProtocolMock {
     let input = root.origin.path
     let module = root.origin.module
@@ -1379,12 +1379,41 @@ func generate(
         }
     }
 
+    var scopedRuleIndices = Set<Int>()
+    if !scopedRuleSelectors.isEmpty {
+        guard isolation == .sendable, declarations.count == 1, !hasBindings, !spy,
+              projections.isEmpty, variadicForwarding.isEmpty, !specializesGenerics, rethrowsSelections.isEmpty else {
+            try reject(proto, "Scoped rules require a direct Sendable profile without inheritance, projections, forwarding or generic providers")
+        }
+        try index.requireUnshadowedQualifier("Swift", at: proto)
+        try index.requireUnshadowedQualifier("BlueprintMocking", at: proto)
+        for option in scopedRuleSelectors {
+            let selector = option.trimmingCharacters(in: .whitespacesAndNewlines)
+            let index = try selectMember(selector, purpose: "scoped rule")
+            let member = members[index]
+            guard member.family == "AsyncThrowing", member.callback == nil, !member.usesInout,
+                  !member.parameters.contains(where: \.isVariadic), member.outputType != "Never" else {
+                try reject(proto, "Scoped rule selector '\(selector)' requires an async-throwing instance method with ordinary parameters and a returning result")
+            }
+            guard scopedRuleIndices.insert(index).inserted else {
+                try reject(proto, "Duplicate scoped rule selector for '\(member.selector)'")
+            }
+        }
+    }
+
     let name = selected + (projectedIndices.isEmpty ? "Mock" : "ProjectedMock")
     let memberTypeNames = Set(members.flatMap {
         $0.genericArguments.split { !$0.isLetter && !$0.isNumber && $0 != "_" }.map(String.init)
     })
     let usedNames = memberTypeNames.union([selected])
     let failureIndices = members.indices.filter { members[$0].effect.runtimeFailure != nil }
+    if !scopedRuleIndices.isEmpty,
+       usedNames.contains("RuleScopes") || members.contains(where: { member in
+           guard let witness = witnessName(member.name, kind: member.kind) else { return false }
+           return ["ruleScopes", "RuleScopes"].contains(witness)
+       }) {
+        try reject(proto, "A requirement conflicts with generated 'ruleScopes' or 'RuleScopes'")
+    }
     if !failureIndices.isEmpty, memberTypeNames.contains("FailureMappings") {
         try reject(proto, "A requirement type collides with the generated 'FailureMappings' setup type")
     }
@@ -1519,6 +1548,36 @@ func generate(
             output += "            __mapping\(index) = mapping\n        }\n"
         }
         output += "    }\n\n"
+    }
+    if !scopedRuleIndices.isEmpty {
+        let indices = scopedRuleIndices.sorted()
+        let value = projectionType("__BlueprintScopedValue")
+        output += "    public struct RuleScopes: Swift.Sendable {\n"
+        for index in indices {
+            let member = members[index]
+            let setupType = "BlueprintMocking.AsyncThrowingStubbing<\(member.genericArguments)>"
+            var parameters = member.parameters.map { "\($0.label) _: (\($0.runtimeType)).Type" }
+            if member.requiresResultMetatype {
+                parameters.append("returning _: (\(member.outputType)).Type")
+            }
+            parameters += [
+                "configure: (\(setupType)) -> Swift.Void",
+                "isolation: isolated (any Swift.Actor)? = #isolation",
+                "operation: () async throws -> \(value)",
+            ]
+            output += "        fileprivate let __endpoint\(index): BlueprintMocking.\(endpointType(index))\n"
+            output += "        public func \(member.name)<\(value)>(\n"
+            output += parameters.map { "            " + $0 }.joined(separator: ",\n") + "\n"
+            output += "        ) async throws -> \(value) {\n"
+            output += "            let setup = \(setupType)()\n"
+            output += "            configure(setup)\n"
+            output += "            return try await __endpoint\(index).withScopedConfiguration(\n"
+            output += "                setup.finish(), isolation: isolation, operation\n"
+            output += "            )\n"
+            output += "        }\n"
+        }
+        output += "    }\n\n    public var ruleScopes: RuleScopes {\n        RuleScopes(" +
+            indices.map { "__endpoint\($0): __endpoint\($0)" }.joined(separator: ", ") + ")\n    }\n\n"
     }
     if !linkedIndices.isEmpty {
         output += "    public struct ForwardingLinks: Sendable {\n"
@@ -1933,7 +1992,7 @@ private func run(_ arguments: [String]) throws {
         return
     }
     let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
-    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--specialize-method 'method(label:)=Type']... [--generic-provider 'method(label:)']... [--rethrows-provider 'method(label:)']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
+    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--specialize-method 'method(label:)=Type']... [--generic-provider 'method(label:)']... [--rethrows-provider 'method(label:)']... [--scoped-rule 'method(label:)']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
     guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
           arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
     var options = arguments.dropFirst(8)
@@ -1943,6 +2002,7 @@ private func run(_ arguments: [String]) throws {
     var methodSpecializations: [String] = []
     var genericProviderSelectors: [String] = []
     var rethrowsProviderSelectors: [String] = []
+    var scopedRuleSelectors: [String] = []
     var bindingArguments: [String] = []
     var spy = false
     var sourcePaths: [String: [String]] = [:]
@@ -1975,6 +2035,9 @@ private func run(_ arguments: [String]) throws {
         case "--rethrows-provider":
             guard let selector = options.popFirst() else { throw usage }
             rethrowsProviderSelectors.append(selector)
+        case "--scoped-rule":
+            guard let selector = options.popFirst() else { throw usage }
+            scopedRuleSelectors.append(selector)
         case "--bind-associated-type":
             guard let binding = options.popFirst() else { throw usage }
             bindingArguments.append(binding)
@@ -2007,7 +2070,8 @@ private func run(_ arguments: [String]) throws {
                               subscriptSpecializations: subscriptSpecializations,
                               methodSpecializations: methods,
                               genericProviderSelectors: genericProviderSelectors,
-                              rethrowsProviderSelectors: rethrowsProviderSelectors, spy: spy,
+                              rethrowsProviderSelectors: rethrowsProviderSelectors,
+                              scopedRuleSelectors: scopedRuleSelectors, spy: spy,
                               associatedTypeBindings: associatedTypeBindings)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.source.write(toFile: arguments[7], atomically: true, encoding: .utf8)

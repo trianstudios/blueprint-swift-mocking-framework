@@ -43,7 +43,7 @@ def record_result(name, output, returncode, valid, *, expected_failure):
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
              module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=(),
-             associated_bindings=(), method_specializations=(), generic_providers=(), rethrows_providers=()):
+             associated_bindings=(), method_specializations=(), generic_providers=(), rethrows_providers=(), scoped_rules=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -58,6 +58,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--generic-provider", provider])
     for provider in rethrows_providers:
         arguments.extend(["--rethrows-provider", provider])
+    for selector in scoped_rules:
+        arguments.extend(["--scoped-rule", selector])
     if spy:
         arguments.append("--spy")
     for source_module, path in sources:
@@ -546,6 +548,27 @@ def main():
             fails=True, patterns=[r"error: BPM001:[^\n]*" + diagnostic])
         if (rejected_rethrows.read_bytes(), rejected_rethrows.stat().st_mtime_ns) != rethrows_baseline:
             raise ValueError("Rejected rethrows provider settings changed the existing output")
+    scoped_source = source.with_name("ScopedUserDirectory.swift")
+    scoped_generated = generated.with_name("ScopedUserDirectoryMock.swift")
+    run("scoped-rule-generation", generate(
+        tool, scoped_source, scoped_generated, "ScopedUserDirectory", scoped_rules=("fetch(id:)",)))
+    scoped_rejected = temp / "RejectedScopedRules.swift"
+    scoped_rejected.write_bytes(scoped_generated.read_bytes())
+    scoped_baseline = (scoped_rejected.read_bytes(), scoped_rejected.stat().st_mtime_ns)
+    start, end = scoped_source.read_text(encoding="utf-8").rsplit("}", 1)
+    scoped_collision = temp / "ScopePropertyCollision.swift"
+    scoped_collision.write_text(start + "    var ruleScopes: Int { get }\n}" + end, encoding="utf-8")
+    for label, authored, selectors, diagnostic in (
+        ("wrong-effect", scoped_source, ("label(for:)",), r"requires an async-throwing instance method"),
+        ("unknown", scoped_source, ("missing(id:)",), r"Unknown scoped rule selector"),
+        ("duplicate", scoped_source, ("fetch(id:)",) * 2, r"Duplicate scoped rule selector"),
+        ("property-collision", scoped_collision, ("fetch(id:)",), r"conflicts with generated 'ruleScopes' or 'RuleScopes'"),
+    ):
+        run("scoped-rule-reject-" + label, generate(
+            tool, authored, scoped_rejected, "ScopedUserDirectory", scoped_rules=selectors),
+            fails=True, patterns=[diagnostic])
+        if (scoped_rejected.read_bytes(), scoped_rejected.stat().st_mtime_ns) != scoped_baseline:
+            raise ValueError("Rejected scoped-rule generation modified valid output")
     generic_subscript_source = source.with_name("GenericSubscriptDirectory.swift")
     generic_subscript_generated = generated.with_name("GenericSubscriptDirectoryMock.swift")
     generic_subscript_specializations = ("get_subscript(_:)=Int", "get_subscript(_:)=String",
@@ -1363,6 +1386,8 @@ def main():
                   r"RUN027_RUN029_orderedConsumptionHonorsClaimedBarriersAndKeepsHistory\(\) passed",
                   r"RUN013_publicScopedRulesFollowProtocolCallsAndUnwind\(\) passed",
                   r"RUN013_generatedAsyncRulePriorityComposesWithWinningCaptures\(\) passed",
+                  r"RUN013_generatedScopedRulesFollowProtocolCallsAndUnwind\(\) passed",
+                  r"RUN013_generatedScopePreservesTheCallersActor\(\) passed",
                   r"RUN007_generatedVerificationReportsOnlyExplicitMatcherDescriptions\(\) passed",
                   r"RUN007_generatedSendableTupleVerificationReportsSourceLabels\(\) passed",
                   r"RUN007_generatedMainActorTupleVerificationReportsSourceLabels\(\) passed",
@@ -1540,6 +1565,7 @@ def main():
         "GenericMethodWrongConstraint": r"requires that 'UnhashableGenericMethodValue' conform to 'Hashable'",
         "GenericMethodWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericProviderExtraConstraint": r"type 'OverconstrainedIdentityProvider' does not conform to protocol 'GenericProviderDirectoryMockBehavior'",
+        "GeneratedRuleScopeWrongSelector": r"cannot convert value of type 'Int.Type' to expected argument type 'String.Type'",
         "RethrowingProviderUnrelatedThrow": r"may only throw if its parameter does",
         "RethrowingProviderNoThrowsStub": r"'RethrowingDirectoryMock.Stubs' has no member 'apply'",
         "RethrowingPairMissingTry": r"call can throw, but it is not marked with 'try'",
