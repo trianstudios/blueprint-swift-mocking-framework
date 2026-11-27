@@ -237,7 +237,7 @@ public enum ScopedConfigurationError: Error, Equatable {
     }
 }
 
-fileprivate struct ScopedConfigurationKey: Sendable {
+struct ScopedConfigurationKey: Sendable {
     let epoch: SessionEpoch
     let serial: UInt64
 }
@@ -285,8 +285,18 @@ fileprivate enum ScopedConfigurations {
     }
 }
 
+fileprivate struct PinnedScopedConfiguration<Configuration: Sendable>: Sendable {
+    let key: ScopedConfigurationKey
+    let plan: Configuration
+}
+
+enum ScenarioRuleLayer: Sendable {
+    case base
+    case scoped(ScopedConfigurationKey)
+}
+
 fileprivate enum ScopedJournalAdmission<Configuration: Sendable>: Sendable {
-    case admitted(JournalAdmission, base: Configuration, overlays: [Configuration])
+    case admitted(JournalAdmission, base: Configuration, overlays: [PinnedScopedConfiguration<Configuration>])
     case refused
     case invalidScope(ScopedConfigurationError)
 }
@@ -337,7 +347,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
             session -> (ScopedJournalAdmission<Configuration>, SessionObservationDelivery?) in
             guard scope.admissionRejection(in: session) == nil else { return (.refused, nil) }
             let result = state.withLock { state -> ScopedJournalAdmission<Configuration> in
-                let overlays: [Configuration]
+                let overlays: [PinnedScopedConfiguration<Configuration>]
                 switch Self.pinScopedConfigurations(keys, epoch: session.epoch, state: state) {
                 case .success(let plans): overlays = plans
                 case .failure(let error): return .invalidScope(error)
@@ -365,13 +375,13 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
 
     private static func pinScopedConfigurations(
         _ keys: [ScopedConfigurationKey], epoch: SessionEpoch, state: State
-    ) -> Result<[Configuration], ScopedConfigurationError> {
-        var plans: [Configuration] = []
+    ) -> Result<[PinnedScopedConfiguration<Configuration>], ScopedConfigurationError> {
+        var plans: [PinnedScopedConfiguration<Configuration>] = []
         plans.reserveCapacity(keys.count)
         for key in keys {
             guard key.epoch == epoch else { return .failure(.staleScope) }
             guard let plan = state.scopedConfigurations[key.serial] else { return .failure(.closedScope) }
-            plans.append(plan)
+            plans.append(PinnedScopedConfiguration(key: key, plan: plan))
         }
         return .success(plans)
     }
@@ -501,9 +511,24 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func complete(
-        _ admission: JournalAdmission, phase: CallPhase, origin: CallOrigin? = nil, replacing input: Input? = nil
+        _ admission: JournalAdmission, phase: CallPhase, origin: CallOrigin? = nil, replacing input: Input? = nil,
+        scenarioCompletion: (layer: ScenarioRuleLayer, transition: AsyncScenarioCompletion)? = nil
     ) {
         let (delivery, wake, retired) = scope.session.withLock { session in
+            let epoch = session.epoch
+            if let scenarioCompletion, admission.event.epoch == epoch {
+                // Completing the last invocation may publish a queued replacement
+                // that takes the same journal lock. Release this lock first.
+                state.withLock { endpoint in
+                    switch scenarioCompletion.layer {
+                    case .base:
+                        guard endpoint.revision == admission.event.configurationRevision else { return }
+                    case .scoped(let key):
+                        guard key.epoch == epoch, endpoint.scopedConfigurations[key.serial] != nil else { return }
+                    }
+                    scenarioCompletion.transition.commitIfCurrent()
+                }
+            }
             let (terminal, ready) = session.complete(admission.event.invocationID, phase: phase, origin: origin)
             var retired: Input? = nil
             if admission.event.epoch == session.epoch {
@@ -1015,8 +1040,51 @@ fileprivate struct AsyncRuleBehavior<Input: Sendable, Plan: Sendable>: Sendable 
     let capture: WinningRuleCapture<Input>?
 }
 
+private enum PlannedAsyncThrowingRulePlan<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    case answers(PlannedAnswer<AsyncThrowingStepAnswer<Input, Output, Failure>>)
+    case scenario(AsyncScenarioPlan<Input, Output, Failure>)
+
+    func publish() -> PublishedAsyncThrowingRulePlan<Input, Output, Failure> {
+        switch self {
+        case .answers(let plan): .answers(plan.publish())
+        case .scenario(let plan): .scenario(PublishedAsyncScenario(plan: plan))
+        }
+    }
+}
+
+private enum AsyncThrowingRuleReservation<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    case reserved(AsyncThrowingStepAnswer<Input, Output, Failure>, completion: AsyncScenarioCompletion?)
+    case conflict(Failure)
+    case exhausted
+}
+
+private enum PublishedAsyncThrowingRulePlan<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    case answers(PublishedAnswer<AsyncThrowingStepAnswer<Input, Output, Failure>>)
+    case scenario(PublishedAsyncScenario<Input, Output, Failure>)
+
+    func reserve(_ input: Input, in session: MockSession) -> AsyncThrowingRuleReservation<Input, Output, Failure> {
+        switch self {
+        case .answers(let plan):
+            guard let answer = plan.reserve(in: session) else { return .exhausted }
+            return .reserved(answer, completion: nil)
+        case .scenario(let scenario):
+            switch scenario.reserve(input, in: session) {
+            case .reserved(let step, let completion): return .reserved(step.answer, completion: completion)
+            case .conflict(let failure): return .conflict(failure)
+            }
+        }
+    }
+
+    func fork(restartingSequences: Bool) -> Self {
+        switch self {
+        case .answers(let plan): .answers(plan.forkSequence(restarting: restartingSequences))
+        case .scenario(let scenario): .scenario(scenario.fork())
+        }
+    }
+}
+
 fileprivate typealias PlannedAsyncThrowingRule<Input: Sendable, Output: Sendable, Failure: Error> =
-    Rule<Input, AsyncRuleBehavior<Input, PlannedAnswer<AsyncThrowingStepAnswer<Input, Output, Failure>>>>
+    Rule<Input, AsyncRuleBehavior<Input, PlannedAsyncThrowingRulePlan<Input, Output, Failure>>>
 
 public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
     fileprivate let rules: [PlannedAsyncThrowingRule<Input, Output, Failure>]
@@ -1032,12 +1100,12 @@ public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Fail
 }
 
 private struct PublishedAsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    let rules: [Rule<Input, AsyncRuleBehavior<Input, PublishedAnswer<AsyncThrowingStepAnswer<Input, Output, Failure>>>>]
+    let rules: [Rule<Input, AsyncRuleBehavior<Input, PublishedAsyncThrowingRulePlan<Input, Output, Failure>>>]
 
     func forkSequences(restarting: Bool) -> Self {
         Self(rules: rules.map { rule in
             Rule(matcher: rule.matcher, answer: AsyncRuleBehavior(
-                plan: rule.answer.plan.forkSequence(restarting: restarting), capture: rule.answer.capture))
+                plan: rule.answer.plan.fork(restartingSequences: restarting), capture: rule.answer.capture))
         })
     }
 }
@@ -1050,7 +1118,7 @@ public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Fail
         AsyncThrowingStub(owner: self, matcher: matcher, capture: nil, rulePriority: 0)
     }
     fileprivate func add(
-        _ matcher: Matcher<Input>, _ answer: PlannedAnswer<AsyncThrowingStepAnswer<Input, Output, Failure>>,
+        _ matcher: Matcher<Input>, _ answer: PlannedAsyncThrowingRulePlan<Input, Output, Failure>,
         capture: WinningRuleCapture<Input>?, priority: Int
     ) {
         precondition(!finished, "Setup is already published; live reconfiguration is not implemented")
@@ -1090,15 +1158,15 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
     }
 
     public func willReturn(_ output: Output) {
-        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.returning(output).answer),
+        owner.add(matcher, .answers(.single(AsyncThrowingSequenceStep<Input, Output, Failure>.returning(output).answer)),
                   capture: capture, priority: rulePriority)
     }
     public func willThrow(_ error: Failure) {
-        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.throwing(error).answer),
+        owner.add(matcher, .answers(.single(AsyncThrowingSequenceStep<Input, Output, Failure>.throwing(error).answer)),
                   capture: capture, priority: rulePriority)
     }
     public func willAnswer(_ answer: @escaping @Sendable (Input) async throws(Failure) -> Output) {
-        owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.answering(answer).answer),
+        owner.add(matcher, .answers(.single(AsyncThrowingSequenceStep<Input, Output, Failure>.answering(answer).answer)),
                   capture: capture, priority: rulePriority)
     }
 
@@ -1109,8 +1177,24 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
         _ remaining: AsyncThrowingSequenceStep<Input, Output, Failure>...,
         policy: StubSequencePolicy = .finite
     ) {
-        owner.add(matcher, .sequence([first.answer] + remaining.map(\.answer), policy),
+        owner.add(matcher, .answers(.sequence([first.answer] + remaining.map(\.answer), policy)),
                   capture: capture, priority: rulePriority)
+    }
+
+    /// Uses a finite state machine owned by this published rule. Transition guards
+    /// work like ordinary matchers and are evaluated before state selection.
+    /// If multiple guards match the current state, the last declaration wins.
+    /// A missing transition throws the configured failure without falling through.
+    /// History reset carries the current state forward; installing a new plan starts
+    /// from its initial state.
+    public func willScenario(
+        initial: String, transitions: [AsyncThrowingScenarioTransition<Input, Output, Failure>],
+        onConflict failure: Failure
+    ) {
+        precondition(!initial.isEmpty && !transitions.isEmpty,
+                     "A scenario requires a named initial state and at least one transition")
+        let plan = AsyncScenarioPlan(initial: initial, transitions: transitions, conflict: failure)
+        owner.add(matcher, .scenario(plan), capture: capture, priority: rulePriority)
     }
 }
 
@@ -1222,7 +1306,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
     ) async throws(Failure) -> Output {
         let admission: JournalAdmission
         let configuration: PublishedAsyncThrowingConfiguration<Input, Output, Failure>
-        let overlays: [PublishedAsyncThrowingConfiguration<Input, Output, Failure>]
+        let overlays: [PinnedScopedConfiguration<PublishedAsyncThrowingConfiguration<Input, Output, Failure>>]
         switch journal.admit(initialHistory, scoped: ScopedConfigurations.keys(for: forwardingInstance)) {
         case .admitted(let admitted, let base, let scoped):
             admission = admitted
@@ -1252,7 +1336,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
     private func invokeAdmitted(
         _ input: Input, admission: JournalAdmission,
         configuration: PublishedAsyncThrowingConfiguration<Input, Output, Failure>,
-        overlays: [PublishedAsyncThrowingConfiguration<Input, Output, Failure>],
+        overlays: [PinnedScopedConfiguration<PublishedAsyncThrowingConfiguration<Input, Output, Failure>>],
         initialHistory: History, source: SourceLocation, forwardingPath: [AsyncForwardingInstance],
         argumentProjection: @Sendable (Input) -> History?,
         completionProjection: @Sendable (History, Output?) -> History?
@@ -1265,16 +1349,23 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         if let projected { journal.update(admission, replacing: projected) }
         let history = projected ?? initialHistory
 
-        let winningRule = (overlays + [configuration]).lazy
-            .flatMap { $0.rules.reversed() }
-            .first { $0.matcher.matches(input) }
+        let layers = overlays.map { (plan: $0.plan, identity: ScenarioRuleLayer.scoped($0.key)) }
+            + [(plan: configuration, identity: .base)]
+        let winner = layers.lazy.flatMap { layer in
+            layer.plan.rules.reversed().lazy.map { (rule: $0, layer: layer.identity) }
+        }.first { $0.rule.matcher.matches(input) }
         let outcome: AsyncDispatchOutcome<Output, Failure>
-        if let winningRule {
-            if let answer = winningRule.answer.plan.reserve(in: session) {
-                winningRule.answer.capture?.publish(input, admission.event)
+        var scenarioCompletion: (layer: ScenarioRuleLayer, transition: AsyncScenarioCompletion)?
+        if let winner {
+            switch winner.rule.answer.plan.reserve(input, in: session) {
+            case .reserved(let answer, let completion):
+                scenarioCompletion = completion.map { (layer: winner.layer, transition: $0) }
+                winner.rule.answer.capture?.publish(input, admission.event)
                 let result = await answer.perform(input, in: session, invocationID: admission.event.invocationID)
                 outcome = .answered(result, origin: nil)
-            } else {
+            case .conflict(let failure):
+                outcome = .answered(.failure(failure), origin: nil)
+            case .exhausted:
                 outcome = .unanswered(.exhaustedSequence)
             }
         } else if let forwarding {
@@ -1288,7 +1379,8 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         case .answered(.success(let output), let origin):
             // An optional Output may legitimately be nil. The outer .some still identifies a return.
             journal.complete(
-                admission, phase: .returned, origin: origin, replacing: completionProjection(history, .some(output))
+                admission, phase: .returned, origin: origin,
+                replacing: completionProjection(history, .some(output)), scenarioCompletion: scenarioCompletion
             )
             return .success(output)
         case .answered(.failure(let error), let origin):
