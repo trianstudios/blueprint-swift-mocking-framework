@@ -635,3 +635,9 @@ Swift SIL rejects passing a previously consumed ticket to the receiver and reusi
 GEN-037 now emits a checked witness for one direct synchronous `borrowing Span<UInt8>` input and an `Int` result in a Sendable protocol on Swift 6.4. The independent SwiftPM consumer invokes it while an array slice owns the view, observes an incomplete value assertion during projection, then verifies its owned byte prefix after the owner has left scope. Typed stubs and history use only the owned projection.
 
 Swift SIL checks reject an array retaining the borrowed view, an extension beyond its local owner's lifetime and an escaping projection capture. Standalone and configured generation agree. Unsupported signatures preserve the prior Swift shard and index. Other lifetime-bound declarations, older compiler profiles and native platform qualification remain open.
+
+## A3.4 MainActor UI view model
+
+The UI view-model fixture injects a generated MainActor surface into a real editor model. A stateful property stores a deliberately non-Sendable document. Initial rendering, replacement and renaming preserve object identity across the asynchronous render path. The generated verification confirms the returned get, set and render calls. A test-first control that edits a new object fails the stored-document and identity assertions.
+
+Swift SIL rejects reading the document across the actor boundary with either default isolation setting. The intentional Swift Testing run records one verification failure at the marked user assertion and exits unsuccessfully. This is the third locally exercised A3.4 scenario. Five other scenarios and native release qualification remain open.

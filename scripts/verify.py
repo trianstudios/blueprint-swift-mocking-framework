@@ -80,6 +80,23 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--bind-associated-type", binding])
     return arguments
 
+def verify_ui_view_model_reporter(command, fixture, env):
+    test = "SYS006_uiViewModelReportsIntentionalVerificationAtUserSource"
+    expected_line, = (
+        number for number, line in enumerate(fixture.read_text(encoding="utf-8").splitlines(), 1)
+        if line.endswith("// UI view-model attribution")
+    )
+    issue = rf"{test}\(\) recorded an issue at "
+    location = issue + rf"(?:[^\n]*/)?{re.escape(fixture.name)}:{expected_line}:\d+:"
+    output = run("ui-view-model-intentional-reporter-failure", [*command, "--filter", test],
+                 env=env | {"BLUEPRINT_EXPECT_UI_VIEW_MODEL_FAILURE": "1"}, fails=True, patterns=[
+                     location, r"Expected exactly 0 calls; observed 1",
+                     r"Test run with 1 test[^\n]*failed[^\n]*with 1 issue\b",
+                 ])
+    if len(re.findall(issue, output)) != 1:
+        raise ValueError("Expected exactly one intentional UI view-model issue")
+
+
 def verify_fluent_self_generation(tool, source, generated, fixed, scratch):
     run("fluent-self-generation", generate(tool, source, generated, "FluentDirectory"))
     with tempfile.TemporaryDirectory(prefix="FluentSelf-", dir=scratch) as directory:
@@ -646,6 +663,7 @@ def main():
         raise RuntimeError("xcrun must select an installed macOS SDK")
     deployment_target = (ROOT / "scripts/macos-deployment-target").read_text().strip()
     swift_environment = os.environ | {"SWIFT_EXEC": str(swiftc), "SDKROOT": sdk}
+    swift_environment.pop("BLUEPRINT_EXPECT_UI_VIEW_MODEL_FAILURE", None)
     swift_environment.pop("BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE", None)
     swift_environment.pop("BLUEPRINT_EXPECT_PARAMETERIZED_REPORTER_FAILURE", None)
     swift_environment.pop("BLUEPRINT_CLOSED_OWNER_BRIDGE", None)
@@ -1029,6 +1047,11 @@ def main():
         verify_borrowed_span_generation(tool, temp, swift, swiftc, sdk, swift_environment)
     resource_source = source.with_name("ResourceTransferCheckout.swift")
     resource_mock = temp / "ResourceTransferCheckoutMock.swift"
+    ui_mock = temp / "DraftEditorSurfaceMock.swift"
+    run("ui-view-model-generation", generate(
+        tool, source.with_name("DraftEditorViewModel.swift"), ui_mock, "DraftEditorSurface"))
+    if ui_mock.read_bytes() != generated.with_name(ui_mock.name).read_bytes():
+        raise ValueError("The committed UI view-model fixture differs from standalone generation")
     run("resource-transfer-generation", generate(
         tool, resource_source, resource_mock, "ResourceTransferCheckout",
         sources=[("ConsumerDomain", source.with_name("FreshOwnedTicketSource.swift"))]))
@@ -1905,6 +1928,7 @@ def main():
                   r"RUN015_closedOverlayRejectsPendingCompletionOnItsPinnedScenario\(\) passed",
                   r"RUN015_detachedCompletionAndReusablePlanPreserveIndependentCursors\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
+                  r"SYS006_uiViewModelRendersStatefulNonSendableDocuments\(\) passed",
                   r"SYS006_resourceTransferIssuesFreshTicketsAndConsumesEachExactlyOnce\(\) passed",
                   r"GEN031_ownerFilePrivateSeamUsesLiveAndGeneratedAdapters\(\) passed",
                   r"SYS006_concurrentRepositoryRetryComposesProjectionRevisionCancellationAndDeadlines\(\) passed",
@@ -2131,6 +2155,7 @@ def main():
         ),
         "FluentSelfExistentialInput": r"member 'accepts' cannot be used on value of type 'any SelfOperand'",
         "WrongResult": r"cannot convert value of type 'Int'",
+        "DraftEditorOffActorDocument": r"non-[Ss]endable type 'DraftEditorDocument'.*cannot exit main actor-isolated context",
         "ReturnOnlyOverloadWrongResult": (
             r"ReturnOnlyOverloadWrongResult\.swift:\d+:\d+: error: "
             r"cannot convert value of type 'String' to expected argument type 'Int'"
@@ -2263,6 +2288,8 @@ def main():
             compiler_stage = ["-emit-sil", "-o", os.devnull]
         if fixture.stem == "IsolatedAnyCallbackUnavailable":
             diagnostic_patterns.append(r"'IsolatedAnyCallbackDirectoryMock' is only available in macOS 15\.0 or newer")
+        if fixture.stem == "DraftEditorOffActorDocument":
+            compiler_stage = ["-emit-sil", "-o", os.devnull]
         if fixture.stem == "CallbackSpyDetachedCapture":
             diagnostic_patterns.append(r"passing closure as a 'sending' parameter risks causing data races")
         if fixture.stem in {"ConsumingInputUseAfterConsume", "ConsumingInputDuplicateTransfer", "ConsumingInputEscapedBorrow",
@@ -2290,7 +2317,7 @@ def main():
                             "ConsumingInputUseAfterConsume", "ConsumingInputDuplicateTransfer", "ConsumingInputEscapedBorrow",
                             "OwnedResultCapturedReplay", "OwnedResultErasure", "OwnedResultFixedReturn",
                             "SendingRetainedInput", "SendingUseAfterTransfer", "SendingRetainedResult", "SendingFixedResult",
-                            "ByteBufferDeferredAddressCapture",
+                            "ByteBufferDeferredAddressCapture", "DraftEditorOffActorDocument",
                             "OrdinaryInoutOverlappingAccess",
                             "EscapingCallbackMainActorConversion", "MainActorEscapingCallbackNonisolatedReplay",
                             "MainActorAsyncEscapingCallbackNonisolatedReplay",
@@ -2301,6 +2328,10 @@ def main():
             run(check_name + "-DefaultIsolation",
                 [*compiler_command, "-default-isolation", "MainActor", fixture],
                 env=swift_environment, fails=True, patterns=diagnostic_patterns)
+    verify_ui_view_model_reporter(
+        [swift, "test", "--package-path", "Fixtures/ProtocolConsumer"],
+        ROOT / "Fixtures/ProtocolConsumer/Tests/ConsumerTests/DraftEditorViewModelScenarioTests.swift",
+        swift_environment)
     run_swift("reporter-intentional-failure", [
         "test", "--package-path", "Fixtures/ProtocolConsumer",
         "--filter", "DX022_intentionalReporterFailure"], fails=True,
