@@ -129,7 +129,7 @@ func GEN016_scheduledCallbackFinishRetiresPendingDelivery() throws {
     let continuous = MockSession()
     let continuousFixture = try scheduledCallbackFixture(session: continuous, using: callback)
     #expect(throws: CallbackSchedulingError.requiresManualClock) {
-        try scheduleCallback(continuousFixture.capture, input: 43, delay: .seconds(1))
+        try continuousFixture.capture.scheduleRepeating(43, after: [.seconds(1)])
     }
     #expect(continuousFixture.captor.captures.count == 1)
     #expect(received.get().isEmpty)

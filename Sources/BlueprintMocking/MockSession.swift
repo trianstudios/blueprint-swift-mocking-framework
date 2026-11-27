@@ -173,6 +173,11 @@ public final class MockSession: Sendable {
         state = CriticalState(State(sessionID: id, clock: SessionClockState(clock)))
     }
 
+    deinit {
+        let pending = state.withLock { $0.retirePendingCallbacks() }
+        for request in pending where request.timer != nil { request.retire() }
+    }
+
     public func makeMock() -> MockScope {
         let mockID = state.withLock { $0.makeMockID() }
         return MockScope(id: mockID, session: self)
@@ -202,8 +207,29 @@ public final class MockSession: Sendable {
         callbacks.publish()
     }
 
-    func removeScheduledCallbacks(id: ObjectIdentifier) -> [PendingCallbackDelivery] {
-        state.withLock { $0.removeScheduledCallbacks(id: id) }
+    func removeScheduledCallbacks(id: ScheduledCallbackID) -> [PendingCallbackDelivery] {
+        let removed = state.withLock { $0.removeScheduledCallbacks(id: id) }
+        for request in removed { request.timer?.cancel() }
+        return removed
+    }
+
+    private func makeScheduledCallbackTimer(
+        id: ScheduledCallbackID, until deadline: ContinuousClock.Instant
+    ) -> Task<Void, Never> {
+        Task { [weak self] in
+            do {
+                try await ContinuousClock().sleep(until: deadline, tolerance: .zero)
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
+            self?.deliverScheduledCallback(id: id)
+        }
+    }
+
+    private func deliverScheduledCallback(id: ScheduledCallbackID) {
+        let acquired = state.withLock { $0.acquireContinuousCallback(id: id) }
+        acquired?.publish()
     }
 
     func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
@@ -339,27 +365,44 @@ public final class MockSession: Sendable {
         }
 
         mutating func scheduleCallbacks(
-            id: ObjectIdentifier, occurrences: [ScheduledCallbackOccurrence]
+            id: ScheduledCallbackID, occurrences: [ScheduledCallbackOccurrence], continuousOwner: MockSession?
         ) throws(CallbackSchedulingError) -> [ScheduledCallbackAction] {
-            guard case .manual(let elapsed) = clock else { throw .requiresManualClock }
+            if case .continuous = clock {
+                guard continuousOwner != nil, occurrences.count == 1 else { throw .requiresManualClock }
+            }
+            let elapsed = clock.elapsed
             var immediate: [ScheduledCallbackAction] = []
             for (index, occurrence) in occurrences.enumerated() {
                 if occurrence.delay == .zero {
                     immediate.append(occurrence.acquire())
                 } else {
+                    let deadline = elapsed + occurrence.delay
+                    // Install the timer with its request so an early wake cannot race registration.
+                    let timer = clock.continuousInstant(at: deadline).flatMap { instant in
+                        continuousOwner?.makeScheduledCallbackTimer(id: id, until: instant)
+                    }
                     pendingCallbacks.append(PendingCallbackDelivery(
-                        id: id, occurrence: index, deadline: elapsed + occurrence.delay,
-                        acquire: occurrence.acquire, retire: occurrence.retire
+                        id: id, occurrence: index, deadline: deadline,
+                        acquire: occurrence.acquire, onRetire: occurrence.retire, timer: timer
                     ))
                 }
             }
             return immediate
         }
 
-        fileprivate mutating func removeScheduledCallbacks(id: ObjectIdentifier) -> [PendingCallbackDelivery] {
-            let removed = pendingCallbacks.filter { $0.id == id }
-            pendingCallbacks.removeAll { $0.id == id }
+        fileprivate mutating func removeScheduledCallbacks(id: ScheduledCallbackID) -> [PendingCallbackDelivery] {
+            let removed = pendingCallbacks.filter { $0.id === id }
+            pendingCallbacks.removeAll { $0.id === id }
             return removed
+        }
+
+        fileprivate mutating func acquireContinuousCallback(id: ScheduledCallbackID) -> AcquiredCallbackDeliveries? {
+            let elapsed = clock.elapsed
+            guard let index = pendingCallbacks.firstIndex(where: { $0.id === id && $0.deadline <= elapsed }) else {
+                return nil
+            }
+            let request = pendingCallbacks.remove(at: index)
+            return AcquiredCallbackDeliveries(requests: [request], actions: [request.acquire()])
         }
 
         fileprivate mutating func acquireDueCallbacks() -> AcquiredCallbackDeliveries {

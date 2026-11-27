@@ -121,10 +121,11 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
         return callback(input)
     }
 
-    /// Schedules one invocation on the capture's manual session clock. A positive delay
-    /// is measured from registration. A zero delay acquires and delivers immediately.
-    /// As the clock reaches the deadline, the session acquires the callback under its gate
-    /// and runs it after unlocking. Earlier reset or finish makes the receipt unavailable.
+    /// Schedules one invocation on the capture's session clock. A positive delay is
+    /// measured from registration. A zero delay acquires and delivers immediately.
+    /// A manual advance acquires due work. A continuous timer competes to acquire the
+    /// callback at or after its deadline. Cancellation, reset, and finish can retire
+    /// queued work before acquisition. Callbacks run after unlocking.
     @discardableResult
     public func schedule(
         _ input: Input, after delay: Duration
@@ -133,7 +134,7 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
         guard let storage else { throw .unavailable }
         let delivery = ScheduledCallbackDelivery<Output>(session: storage.session)
         let occurrence = scheduledOccurrence(input, after: delay) { delivery.resolve($0) }
-        try registerScheduledCallbacks([occurrence], id: ObjectIdentifier(delivery), storage: storage)
+        try registerScheduledCallbacks([occurrence], id: delivery.id, storage: storage, allowsContinuous: true)
         return delivery
     }
 
@@ -150,7 +151,7 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
         let occurrences = delays.enumerated().map { index, delay in
             scheduledOccurrence(input, after: delay) { series.resolve($0, at: index) }
         }
-        try registerScheduledCallbacks(occurrences, id: ObjectIdentifier(series), storage: storage)
+        try registerScheduledCallbacks(occurrences, id: series.id, storage: storage)
         return series
     }
 
@@ -175,14 +176,16 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
 
     private func registerScheduledCallbacks(
         _ occurrences: [ScheduledCallbackOccurrence],
-        id: ObjectIdentifier,
-        storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>
+        id: ScheduledCallbackID,
+        storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>,
+        allowsContinuous: Bool = false
     ) throws(CallbackSchedulingError) {
         defer { withExtendedLifetime(storage) {} }
         let immediate = try storage.session.withLock { state throws(CallbackSchedulingError) in
             guard !state.isFinished, state.epoch == invocation.epoch,
                   storage.storedCallback(for: invocation) != nil else { throw .unavailable }
-            return try state.scheduleCallbacks(id: id, occurrences: occurrences)
+            return try state.scheduleCallbacks(id: id, occurrences: occurrences,
+                                               continuousOwner: allowsContinuous ? storage.session : nil)
         }
         for action in immediate { action() }
     }
