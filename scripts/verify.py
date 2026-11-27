@@ -791,6 +791,15 @@ def main():
     if registry_errors:
         raise ValueError("Invalid acceptance matrix:\n" + "\n".join(registry_errors))
     verify_release_checks()
+    performance_suite = "test_verify_runtime_performance.py"
+    run(performance_suite, [sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p",
+                            performance_suite, "-v"],
+        patterns=[r"(?m)^Ran [1-9]\d* tests? in ", r"(?m)^OK$"])
+    if os.environ.get("BLUEPRINT_VERIFY_RUNTIME_PERFORMANCE") == "1":
+        run("runtime-performance-local", [
+            sys.executable, "scripts/verify_runtime_performance.py",
+            "--evidence-dir", EVIDENCE / "runtime-performance",
+        ], timeout=480, patterns=[r"EVIDENCE: runtime-performance\.json SHA-256 [0-9a-f]{64}"])
     source = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDomain/UserRepository.swift"
     generated = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/UserRepositoryMock.swift"
     generation_environment = swift_environment | {

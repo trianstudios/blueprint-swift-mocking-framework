@@ -679,3 +679,9 @@ The fixture covers these configuration inputs on the bundled Xcode parser path. 
 The standalone generator binds one direct primary associated value type to Swift.String for an async, nonthrowing generic cache lookup. The typed polymorphic provider can return a value, handle an intentional nil or decline the call. Declined calls reach the injected real actor. The independent consumer invokes the spy through generic and constrained existential clients. It checks that only declined calls reach the actor and that each invocation retains its ID, specialization and terminal forwarding origin.
 
 Swift rejects an incompatible cache binding and a provider that adds a key constraint. The standalone generator rejects unsupported spy selections before replacing output, including an associated type that would shadow the generated behavior protocol. This is the fifth locally exercised A3.4 case. Configured plugin selection of this spy, broader generic shapes, three other scenarios and native certification remain open.
+
+## Report-only runtime performance
+
+DX-032 has an independent release-optimized SwiftPM probe built from a clean commit archive. The selected Swift toolchain builds the runtime with checked optimization in isolated SwiftPM state and a dependency-free graph. The report records hardware, process, source, executable and build provenance.
+
+The scalar latency workload runs ordinary recording with a matching typed rule. Eight workers submit 100,000 total calls, and the probe checks one admission and one return per ID in the original epoch. A separate workload checks release of retained values after reset and then session finish. The report compares observed latency with the published scalar threshold. Reference baselines, lock wait and generator metrics, complete lifecycle audits and native release qualification remain open.

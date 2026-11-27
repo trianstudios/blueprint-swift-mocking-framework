@@ -198,6 +198,18 @@ python3 scripts/verify_offline_runtime.py "$revision" \
 
 The verifier checks the bare Git mirror's object integrity before changing evidence or invoking SwiftPM. It isolates SwiftPM caches and mirror configuration, confirms OS-level network denial, then resolves, builds and runs the typed consumer. It checks Mach-O libraries and static link inputs for the runtime-only dependency boundary. Set `BLUEPRINT_VERIFY_OFFLINE_RUNTIME_MIRROR` to the same mirror path when running `scripts/verify.py` from a clean checkout to collect the offline install, corrupt-object rejection, and configured generation checks with the rest of the prototype evidence. The generation check compares the shard and index against a normal run and builds the independent consumer under the same network policy using the Xcode-bundled parser.
 
+### Report-only runtime performance on macOS
+
+From a clean checkout, use Python 3.12 or newer and the selected Xcode Swift toolchain.
+
+```sh
+python3 scripts/verify_runtime_performance.py --evidence-dir .build/runtime-performance-local
+```
+
+Choose an empty evidence directory, either ignored by Git or outside the checkout. The verifier archives the exact commit, builds the dependency-free runtime and its SwiftPM consumer in checked release optimization with networking denied, and discards the isolated build state after measurement. The report records source and executable hashes, the selected hardware and toolchain, and the measured latency, concurrent admission, live malloc heap and teardown results.
+
+The local report shows how the latency samples compare with the published 2 µs target. Release approval requires the declared reference hardware, compatible baseline comparisons and the rest of D4.3, including generation, build, lock-wait and cancellation evidence.
+
 ### Prepared parser parity
 
 Run this on the prepared macOS host after independently building the bundled generator using `scripts/generate.sh` and the packaged `blueprint-mocking` product using the native SwiftPM debug build system. Use the same authoring revision, selected Xcode `swiftc` and macOS SDK for both. The SwiftPM build comes from `Packages/Tooling` in an exact authoring checkout and resolves the pinned SwiftSyntax 600.0.1 source. Retain its unstripped executable, scratch directory with `checkouts/swift-syntax` and object files, `Package.resolved`, and `blueprint-mocking.product/Objects.LinkFileList` next to the executable.
