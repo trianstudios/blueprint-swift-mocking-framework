@@ -2026,6 +2026,7 @@ def main():
         r"DX027_checkedVerificationBoundsTheFailureWithoutDescribingPayloads\(\) passed",
         r"DX027_mainActorVerificationUsesTheSameBoundedRenderer\(\) passed",
         r"DX027_renderingPreservesSmallAndExactlyBudgetedCountFailures\(\) passed",
+        r"unscopedAdmissionWakesObserverBeforeAnswerAndCompletesItsOriginalEpoch\(\) passed",
         r"RUN017_safePrimitivePresetIsOptInAndCanBeOverridden\(\) passed",
         r"RUN017_safeContainerRecipesRegisterOnlyTheirExactTypes\(\) passed",
         r"RUN017_registryResolvesExactTypedFactoriesAndKeepsPublishedCopiesIndependent\(\) passed",

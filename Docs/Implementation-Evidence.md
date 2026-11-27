@@ -703,3 +703,9 @@ The caller supplies the original final SDK instance to the live adapter, or inje
 DX-006 adds separate SwiftPM command products for inspection and checking, and for generation. Each calls the canonical executable with structured arguments and reports the invocation. Inspection and checking require no package-write permission. The SwiftPM host denies unapproved generation before invoking the CLI. With a grant, generation reserves a fresh package-relative directory under an existing parent and produces the same files as direct CLI generation.
 
 The native consumer checks discovery, permission denial, missing output, stale output, and literal characters in a destination. Existing output, traversal, absolute destinations and symbolic-link parents are rejected. An invalid request retires the empty reservation. Both plugin sources are included in the tooling export. The native run used the local bundled-Xcode artifact. Xcode command hosting, migration, source-built execution and updates to existing output remain open.
+
+## Ordinary admission without empty overlay pinning
+
+Ordinary checked calls now reserve and record under the established session-then-endpoint lock order through a direct unscoped path. The scoped path shares the same recording transition. The deterministic runtime regression holds an admitted answer and checks observer publication before release, then detaches the active invocation and confirms completion in the original epoch. Existing scoped and projection tests cover their respective paths.
+
+On the selected Mac, ten alternating optimized baseline/candidate pairs showed an 8.1% median reduction in scalar p50. Candidate medians ranged from 3.67 to 3.83 µs. The 2 µs absolute target and formal reference-host qualification remain open.

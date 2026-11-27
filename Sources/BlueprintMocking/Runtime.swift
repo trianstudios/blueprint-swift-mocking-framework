@@ -354,8 +354,17 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func admit(_ input: Input) -> (admission: JournalAdmission, configuration: Configuration)? {
-        guard case .admitted(let admission, let configuration, _) = admit(input, scoped: []) else { return nil }
-        return (admission, configuration)
+        let (result, wake) = scope.session.withLock {
+            session -> ((JournalAdmission, Configuration)?, SessionObservationDelivery?) in
+            guard scope.admissionRejection(in: session) == nil else { return (nil, nil) }
+            let result = state.withLock { history in
+                let admission = recordAdmission(input, in: &session, history: &history)
+                return (admission, history.configuration)
+            }
+            return (result, session.observationWake())
+        }
+        wake?.publish()
+        return result
     }
 
     fileprivate func admit(_ input: Input, scoped keys: [ScopedConfigurationKey])
@@ -371,25 +380,32 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
                 case .success(let plans): overlays = plans
                 case .failure(let error): return .invalidScope(error)
                 }
-                state.nextID += 1
-                let id = state.nextID
-                let event = session.admit(mockID: scope.id, endpoint: endpoint,
-                                          configurationRevision: state.revision)
-                state.calls.append(Invocation(id: id, input: input, configurationRevision: state.revision,
-                                             sessionInvocationID: event.invocationID, epoch: event.epoch,
-                                             phase: .admitted, origin: nil))
-                if !tracksProjectionTimeline.isEmpty {
-                    state.projectionEvents.append(ProjectionJournalEvent(
-                        ordinal: event.ordinal, elapsed: event.elapsed, invocationID: event.invocationID, change: .admitted
-                    ))
-                }
-                return .admitted(JournalAdmission(id: id, event: event), base: state.configuration, overlays: overlays)
+                let admission = recordAdmission(input, in: &session, history: &state)
+                return .admitted(admission, base: state.configuration, overlays: overlays)
             }
             if case .admitted = result { return (result, session.observationWake()) }
             return (result, nil)
         }
         wake?.publish()
         return result
+    }
+
+    // The session and endpoint locks are held in that order by the caller.
+    private func recordAdmission(
+        _ input: Input, in session: inout MockSession.State, history: inout State
+    ) -> JournalAdmission {
+        history.nextID += 1
+        let id = history.nextID
+        let event = session.admit(mockID: scope.id, endpoint: endpoint, configurationRevision: history.revision)
+        history.calls.append(Invocation(id: id, input: input, configurationRevision: history.revision,
+                                        sessionInvocationID: event.invocationID, epoch: event.epoch,
+                                        phase: .admitted, origin: nil))
+        if !tracksProjectionTimeline.isEmpty {
+            history.projectionEvents.append(ProjectionJournalEvent(
+                ordinal: event.ordinal, elapsed: event.elapsed, invocationID: event.invocationID, change: .admitted
+            ))
+        }
+        return JournalAdmission(id: id, event: event)
     }
 
     private static func pinScopedConfigurations(
