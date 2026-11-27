@@ -802,6 +802,8 @@ def main():
         ], timeout=480, patterns=[r"EVIDENCE: runtime-performance\.json SHA-256 [0-9a-f]{64}"])
     source = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDomain/UserRepository.swift"
     generated = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/UserRepositoryMock.swift"
+    temp = ROOT / ".build/verification"
+    temp.mkdir(parents=True, exist_ok=True)
     generation_environment = swift_environment | {
         "BLUEPRINT_VERIFY_SWIFTC": str(swiftc),
         "BLUEPRINT_VERIFY_SDK_PATH": sdk,
@@ -1249,8 +1251,6 @@ def main():
     run("projected-variadic-forwarding-generation", generate(
         tool, variadic_source, variadic_projected, "VariadicDirectory",
         projections=("sample(_:)",), forwarding=("sample(_:)",)))
-    temp = ROOT / ".build/verification"
-    temp.mkdir(parents=True, exist_ok=True)
     result_source = source.with_name("ResultOverloadDirectory.swift")
     result_mock = generated.with_name("ResultOverloadDirectoryMock.swift")
     run("return-only-overload-generation", generate(
