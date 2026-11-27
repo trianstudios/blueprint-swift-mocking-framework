@@ -794,6 +794,7 @@ def verify_local_release_checks():
 def verify_conditional_generation(tool, temp):
     source = ROOT / "Fixtures/ConditionalConsumer/Sources/ConditionalDomain/ConditionalDirectory.swift"
     flag = "BLUEPRINT_DOMAIN_INT"
+    disable_fallback = "BLUEPRINT_DISABLE_FALLBACK"
     module = "ConditionalDomain"
     selection = {"schemaVersion": 1, "selections": [
         {"module": module, "type": "ConditionalDirectory", "kind": "protocol"},
@@ -805,7 +806,9 @@ def verify_conditional_generation(tool, temp):
         "--config", configuration, "--output", output, "--input-set-id", "7", "--source", module, source,
     ]
     true_context = ["--source-condition", module, flag, "true"]
-    false_context = ["--source-condition", module, flag, "false"]
+    primary_false = ["--source-condition", module, flag, "false"]
+    false_context = [*primary_false, "--source-condition", module, disable_fallback, "false"]
+    else_context = [*primary_false, "--source-condition", module, disable_fallback, "true"]
     report = json.loads(run("conditional-config-inspection", [
         tool, "inspect", *arguments, *true_context, "--format", "json",
     ]))
@@ -816,11 +819,30 @@ def verify_conditional_generation(tool, temp):
     previous = [file.read_bytes() for file in files]
     assert b"public func value() -> Int {" in previous[0] and b"#if" not in previous[0]
     assert b'line: 3, column: 1' in previous[0]
+    assert b"public func chained() -> Int {" in previous[0]
+    assert b'line: 13, column: 1' in previous[0]
     run("conditional-config-string", [tool, "generate", *arguments, *false_context])
     current = [(file.read_bytes(), file.stat().st_mtime_ns) for file in files]
     assert b"public func value() -> String {" in current[0][0] and b"#if" not in current[0][0]
     assert b'line: 5, column: 1' in current[0][0]
     assert all(old != new for old, (new, _) in zip(previous, current, strict=True))
+    assert b"public func chained() -> String {" in current[0][0]
+    assert b'line: 15, column: 1' in current[0][0]
+
+    run("conditional-config-elseif-else", [tool, "generate", *arguments, *else_context])
+    else_outputs = [(file.read_bytes(), file.stat().st_mtime_ns) for file in files]
+    assert b"public func chained() -> Bool {" in else_outputs[0][0]
+    assert b'line: 17, column: 1' in else_outputs[0][0]
+    assert all(old != new for (old, _), (new, _) in zip(current, else_outputs, strict=True))
+    current = else_outputs
+    run("reject-conditional-config-missing-elseif", [
+        tool, "generate", *arguments, *primary_false,
+        "--source-condition", "ConditionalProbe", disable_fallback, "false",
+    ], fails=True, patterns=[
+        rf"ConditionalDirectory\.swift:14:10: error: BPM001: Missing compilation condition '{disable_fallback}' "
+        rf"for source module '{module}'",
+    ])
+    assert [(file.read_bytes(), file.stat().st_mtime_ns) for file in files] == current
 
     run("reject-conditional-config-missing", [
         tool, "generate", *arguments, "--source-condition", "ConditionalProbe", flag, "true",
@@ -832,6 +854,19 @@ def verify_conditional_generation(tool, temp):
 
     nested_source = temp / "ConditionalDirectory.swift"
     original = source.read_text()
+    chained_compound = original.replace(f"#elseif !{disable_fallback}",
+                                       f"#elseif !{disable_fallback} && BLUEPRINT_OTHER")
+    assert chained_compound != original
+    nested_source.write_text(chained_compound, encoding="utf-8")
+    run("reject-conditional-config-elseif-compound", [
+        tool, "generate", *arguments[:-1], nested_source, *false_context,
+        "--source-condition", module, "BLUEPRINT_OTHER", "true",
+    ], fails=True, patterns=[
+        r"ConditionalDirectory\.swift:14:9: error: BPM001: Unsupported compilation condition\. "
+        r"Use one bare custom identifier",
+    ])
+    assert [(file.read_bytes(), file.stat().st_mtime_ns) for file in files] == current
+
     nested = original.replace("    func value() -> String", (
         "#if BLUEPRINT_NESTED\n    func value() -> Bool\n#else\n    func value() -> String\n#endif"
     ))

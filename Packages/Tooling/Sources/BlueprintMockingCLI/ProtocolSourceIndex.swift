@@ -144,42 +144,53 @@ final class ProtocolSourceIndex {
         let module = declaration.origin.module
         var active: [MemberBlockItemSyntax] = []
 
+        func selectClause(in directive: IfConfigDeclSyntax) throws -> IfConfigClauseSyntax? {
+            func unsupported(at node: some SyntaxProtocol) throws -> Never {
+                throw Self.error(at: origin(of: node), "Unsupported conditional compilation directive. "
+                                 + "Use #if, optional #elseif clauses, and an optional final #else.")
+            }
+
+            let clauses = Array(directive.clauses)
+            guard clauses.first?.poundKeyword.text == "#if" else { try unsupported(at: directive) }
+            let fallback = clauses.last.flatMap {
+                $0.poundKeyword.text == "#else" && $0.condition == nil ? $0 : nil
+            }
+            let conditionalClauses = fallback == nil ? clauses[...] : clauses.dropLast()
+
+            // Check every header, but require a flag value only if selection reaches that condition.
+            let predicates = try conditionalClauses.enumerated().map {
+                offset, clause -> (IfConfigClauseSyntax, DeclReferenceExprSyntax, String, Bool) in
+                let expectedKeyword = offset == 0 ? "#if" : "#elseif"
+                guard clause.poundKeyword.text == expectedKeyword else { try unsupported(at: clause.poundKeyword) }
+                let negation = clause.condition?.as(PrefixOperatorExprSyntax.self)
+                guard let expression = clause.condition, negation == nil || negation?.operator.text == "!",
+                      let reference = (negation?.expression ?? expression).as(DeclReferenceExprSyntax.self),
+                      reference.argumentNames == nil,
+                      case .identifier(let flag) = reference.baseName.tokenKind,
+                      Self.isConditionIdentifier(flag) else {
+                    let site = clause.condition.map { origin(of: $0) } ?? origin(of: clause.poundKeyword)
+                    throw Self.error(at: site, "Unsupported compilation condition. "
+                                     + "Use one bare custom identifier in #if, optionally prefixed with !.")
+                }
+                return (clause, reference, flag, negation != nil)
+            }
+            for (clause, reference, flag, negated) in predicates {
+                guard let enabled = conditions[module]?[flag] else {
+                    throw Self.error(at: origin(of: reference), "Missing compilation condition '\(flag)' for source module "
+                                     + "'\(module)'. Supply --source-condition \(module) \(flag) true or false.")
+                }
+                if enabled != negated { return clause }
+            }
+            return fallback
+        }
+
         func collect(_ members: MemberBlockItemListSyntax) throws {
             for member in members {
                 guard let directive = member.decl.as(IfConfigDeclSyntax.self) else {
                     active.append(member)
                     continue
                 }
-                let clauses = Array(directive.clauses)
-                guard let first = clauses.first, first.poundKeyword.text == "#if" else {
-                    throw Self.error(at: origin(of: directive), "Unsupported conditional compilation directive. "
-                                     + "Use #if with an optional #else.")
-                }
-                if let unexpected = clauses.dropFirst().first(where: { $0.poundKeyword.text != "#else" }) {
-                    throw Self.error(at: origin(of: unexpected.poundKeyword),
-                                     "Unsupported conditional compilation directive. Use #if with an optional #else.")
-                }
-                guard clauses.count <= 2, clauses.dropFirst().first?.condition == nil else {
-                    throw Self.error(at: origin(of: directive), "Unsupported conditional compilation directive. "
-                                     + "Use #if with an optional #else.")
-                }
-                let negation = first.condition?.as(PrefixOperatorExprSyntax.self)
-                guard let expression = first.condition, negation == nil || negation?.operator.text == "!",
-                      let reference = (negation?.expression ?? expression).as(DeclReferenceExprSyntax.self),
-                      reference.argumentNames == nil,
-                      case .identifier(let flag) = reference.baseName.tokenKind,
-                      Self.isConditionIdentifier(flag) else {
-                    let site = first.condition.map { origin(of: $0) } ?? origin(of: first.poundKeyword)
-                    throw Self.error(at: site, "Unsupported compilation condition. "
-                                     + "Use one bare custom identifier in #if, optionally prefixed with !.")
-                }
-                guard let enabled = conditions[module]?[flag] else {
-                    throw Self.error(at: origin(of: reference), "Missing compilation condition '\(flag)' for source module "
-                                     + "'\(module)'. Supply --source-condition \(module) \(flag) true or false.")
-                }
-                let selectsFirst = negation == nil ? enabled : !enabled
-                let selected = selectsFirst ? first : clauses.dropFirst().first
-                guard let branch = selected, let payload = branch.elements else { continue }
+                guard let branch = try selectClause(in: directive), let payload = branch.elements else { continue }
                 guard case .decls(let nested) = payload else {
                     throw Self.error(at: origin(of: branch), "Expected a protocol member block in the selected clause.")
                 }

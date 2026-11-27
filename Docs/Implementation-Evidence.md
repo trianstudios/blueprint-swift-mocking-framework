@@ -823,3 +823,9 @@ The consumer holds an already reserved answer, invokes two peers and then cancel
 DX-032 now exercises the canonical configured generator with the published declaration counts. A cold process starts with an absent output directory and selects 10,000 scalar requirements across 1,000 protocols. A second corpus selects one requirement per protocol. Its seed starts in an empty directory, then warm subprocesses reuse the complete output. The verifier checks each generated witness and both files' bytes, identities and modification times.
 
 The run records the exact bundled build receipt, selected compiler and parser libraries, source revision, process wall and CPU time, peak resident size and generated sizes. The fixture can run with three protocols as a structural smoke. Process launch remains in the wall measurement and the driver leaves OS caches in their existing state. Launch-excluded timing, a reviewed reference baseline and downstream compile impact remain open.
+
+## Explicit protocol member elseif selection
+
+GEN-004 selects the first true branch in a protocol member block with simple explicit source conditions. One or more elseif clauses and an optional final else are allowed. A flag may be bare or singly negated. The tool requires a value from the source module only when selection reaches its predicate. Unsupported expressions and missing reached flags produce a source-located diagnostic before output replacement.
+
+The native SwiftPM fixture changes only the domain target definitions and generation context for Int, String and Bool witnesses. The first branch does not need the later flag. The existing stale witness fails native compilation when the domain target switches. Configured generation verifies distinct shard and index bytes, selected source lines and output preservation on rejection. Automatic context discovery, top-level directives and built-in platform conditions remain open.
