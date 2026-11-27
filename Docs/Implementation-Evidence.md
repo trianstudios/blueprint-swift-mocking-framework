@@ -56,7 +56,7 @@ For SYS-008, the canonical verifier runs `test_check_release.py` and `test_verif
 
 The focused command `python3 scripts/verify.py --release-checks-only` runs those same suites without Swift builds. It writes `release-checks.json` after both suites execute successfully and the checkout is clean at the same revision before and after the run. Each result records the exit status and log hash. A failed or empty suite removes any prior scoped report. Certification requires reviewer approval of the applicable evaluator profiles and evidence from each profile at the selected revision.
 
-The [candidate release profile plan](Release-Profile-Plan.md) lists the reproduced profiles, native executions still required, and evidence fields for review.
+The release checker requires every profile artifact for a completed contract to bind to the same full candidate revision and to that artifact’s declared profile. A two-profile fixture certifies its synthetic contract with distinct matching results. Stale or substituted results and duplicate profile tuples fail. The [candidate release profile plan](Release-Profile-Plan.md) lists the proposed SYS-008 evaluator, the remaining native runs, and evidence requirements for review.
 
 ## Public SwiftPM installation
 

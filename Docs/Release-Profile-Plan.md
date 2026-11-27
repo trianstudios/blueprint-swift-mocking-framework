@@ -19,7 +19,33 @@ RUN-006 uses the runtime without generation, so separate macOS generator host va
 
 Run `python3 scripts/verify.py --release-checks-only` on each reviewed release-evaluation host from the same clean candidate revision. Keep its `release-checks.json` and both hashed logs. The full verifier also records the suites by their exact matrix names, `test_check_release.py` and `test_verify_release_candidate.py`. The suites exercise missing implementation references, required checks and profile results, and the signed-candidate boundary. They use disposable claims, keys, and repositories. The focused report records the actual evaluator and Git revision. The reviewed certification bundle must still bind the passing results to each applicable profile. [Checker tests](../scripts/tests/test_check_release.py) · [Signed-candidate tests](../scripts/tests/test_verify_release_candidate.py)
 
-Proposed minimal scope is the actual host that evaluates the release bundle. The checker is a Python command, separate from the deployed Swift runtime. Review must establish whether it is supported on additional macOS, Linux or Windows release-evaluation hosts. If advertised there, run the suite on those exact host OS and architecture tuples with the reviewed Python versions. Record the evaluator and the Swift candidate profile it checks separately. Apple device and simulator execution belongs to runtime contracts such as RUN-006.
+### Proposed evaluator profile for approval
+
+Support one native evaluator profile for SYS-008 initially. Name it `sys008-macos-27.0.1-26A434-arm64-cpython3.13.3`. This profile follows the release evaluator that already runs both suites locally. The maintainer must approve the profile and its scope before it appears in certification evidence.
+
+| Profile field | Proposed value |
+| --- | --- |
+| `host_os` | macOS 27.0.1, build 26A434 |
+| `host_arch` | arm64, native |
+| `test_runner` | CPython 3.13.3 standard-library `unittest`, Git 2.53.0, OpenSSH 10.3p1 with LibreSSL 3.3.6 |
+| `compiler`, `swift_syntax`, `sdk`, `target`, `default_isolation` | N/A for the Python evaluator |
+| `language_mode` | `6`, the Swift candidate’s language mode |
+| `feature_flags` | `[]`, no Swift flags for the evaluator |
+| Required checks | `test_check_release.py` and `test_verify_release_candidate.py` |
+
+The local interpreter is `/Library/Frameworks/Python.framework/Versions/3.13/bin/python3`. The arm64 Mac ran 12 checker tests and 9 signed-candidate tests at clean revision `5e3f56484e5fb24fdd568823de96922970d811c7`. The fixture signatures use disposable keys. The Mac can repeat the same checks at a nominated candidate revision. Record the actual host build, architecture, interpreter, Git and OpenSSH versions with the logs. A second evaluator OS, architecture or toolchain needs its own reviewed tuple and both passing suites at that same revision. Swift runtime and generator platforms keep their own profiles.
+
+From the candidate checkout root, set `candidate_revision` to the full nominated Git hash and `evaluator_evidence` to a dedicated external directory. Require the expected HEAD and a clean tree before starting. The focused verifier checks both again after the suites and records them in its report. Verify both log hashes against that report and confirm its `sourceRevision` equals the nominated hash before assembling the reviewed certification artifacts.
+
+```sh
+test "$(git rev-parse --verify HEAD)" = "$candidate_revision" &&
+test -z "$(git status --porcelain)" &&
+BLUEPRINT_EVIDENCE_DIRECTORY="$evaluator_evidence" \
+  /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
+  scripts/verify.py --release-checks-only
+```
+
+A release run needs a separately provisioned, controlled runner matching the approved evaluator profile. Pin its image and tools, install the reviewed gate outside the checkout, and record the approved verifier digest. Keep the external tag and runner signer policies separate. Keep the attestation key and publication credentials outside the candidate test process. The runner must execute the candidate checks and retain their external evidence before signing the release bundle described below.
 
 ## Evidence by source revision
 
@@ -38,7 +64,7 @@ Concrete instance subscripts support variadic indices (GEN-024). Generated Senda
 
 1. For each applicable profile, record the exact compiler and SwiftSyntax line or its inapplicability, host OS/build and architecture, SDK or container, target and minimum deployment, Swift 6 language mode, default isolation, feature flags, and test runner. Record the target execution OS/build separately from the build host when they differ. For SYS-008 record the Python version and the candidate Swift language mode. Where compiler, SwiftSyntax, isolation or SDK fields do not apply to the check, record that explicitly in their required string fields.
 2. At the selected full source revision, execute the reviewed checks and keep their logs. Use consistent result names per contract across profiles. A result may come from a platform-specific runner if it exercises the same reviewed assertions. The schema checks the same named evidence for every required profile, so linking and execution results must remain distinct. Repeat prior runs at the candidate revision and retain the runner output.
-3. Outside the evaluated source commit, write a schema-1 plan with `revision`, `profiles`, and `contracts`. Each contract includes the verbatim `acceptance_gate`, its `required_profiles`, and a mapping to relative artifact paths and SHA-256 digests. Each artifact binds `feature_id`, the same gate and full revision, the full profile, and results with unique `check`, `passed`, `exit`, and `expected_failure` fields. Registry implementation references stay relative to the source tree.
+3. Outside the evaluated source commit, write a schema-1 plan with `revision`, `profiles`, and `contracts`. Each contract includes the verbatim `acceptance_gate`, its `required_profiles`, and a mapping to relative artifact paths and SHA-256 digests. Each artifact binds `feature_id`, the same gate and full revision, the full profile, and results with unique `check`, `passed`, `exit`, and `expected_failure` fields. Each required profile for a contract must have a distinct tuple of exact profile fields and enabled feature flags. Extra annotations and flag order do not distinguish tuples. Registry implementation references stay relative to the source tree.
 4. Have a reviewer confirm that the profiles and passing checks cover the original gate, then validate the candidate registry with `python3 scripts/check_release.py --registry CANDIDATE.csv --certification PLAN.json --revision FULL_SOURCE_HASH --json`. The checker validates an input bundle's consistency and hashes. Execution, profile coverage and producer provenance require review. A valid but incomplete release registry still returns exit 1 in strict mode.
 
 [Release checker and field definitions](../scripts/check_release.py)

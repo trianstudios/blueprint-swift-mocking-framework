@@ -18,8 +18,9 @@ A Complete row needs implementation references and named checks, separated by
 semicolons. Reference paths are relative to the repository. Each required
 profile must pass every named check, including a diagnostic check's intended
 nonzero exit when expected_failure is true. Profiles record exact toolchain,
-host, SDK, target, isolation, feature flags, and runner. A capability unavailable
-on a profile needs its documented boundary evidence.
+host, SDK, target, isolation, feature flags, and runner. Required profiles for a
+contract must describe distinct tuples of those exact fields and enabled flags.
+A capability unavailable on a profile needs its documented boundary evidence.
 
 Reviewers determine which profiles and checks satisfy the textual acceptance
 gate. The checker validates consistency and artifact integrity against that
@@ -218,6 +219,18 @@ def certify(row, directory, plan, revision, repository):
     if (not isinstance(required, list) or not required or not all(nonempty(item) for item in required)
             or len(required) != len(set(required)) or any(profile not in profiles for profile in required)):
         raise ValueError("completed contract must list available, unique required profiles")
+    profile_ids_by_tuple = {}
+    for profile_id in required:
+        profile = profiles[profile_id]
+        profile_tuple = (
+            tuple(profile[field].strip() for field in sorted(PROFILE_FIELDS)),
+            frozenset(flag.strip() for flag in profile["feature_flags"]),
+        )
+        if profile_tuple in profile_ids_by_tuple:
+            other_id = profile_ids_by_tuple[profile_tuple]
+            raise ValueError(f"required profiles {other_id!r} and {profile_id!r} describe the same exact profile")
+        profile_ids_by_tuple[profile_tuple] = profile_id
+
     evidence = obj(claim.get("evidence"), "evidence")
     if set(required) != set(evidence):
         raise ValueError("evidence must cover each required profile exactly once")

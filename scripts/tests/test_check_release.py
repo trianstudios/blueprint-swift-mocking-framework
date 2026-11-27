@@ -26,6 +26,21 @@ PROFILE = {
 }
 
 
+SECOND_PROFILE_ID = "linux-x86_64"
+SECOND_PROFILE = {
+    "compiler": "Swift 6.4 (Linux example)",
+    "swift_syntax": "pinned SwiftSyntax example",
+    "host_os": "Ubuntu 24.04",
+    "host_arch": "x86_64",
+    "sdk": "Ubuntu 24.04 sysroot",
+    "target": "x86_64-unknown-linux-gnu",
+    "language_mode": "6",
+    "default_isolation": "nonisolated",
+    "feature_flags": [],
+    "test_runner": "Swift Testing Linux example",
+}
+
+
 class ReleaseCheckTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -87,6 +102,23 @@ class ReleaseCheckTests(unittest.TestCase):
             },
         }), encoding="utf-8")
 
+    def prepare_two_profile_claim(self, *, first=PROFILE, second=SECOND_PROFILE, second_id=SECOND_PROFILE_ID):
+        self.prepare_claim(profile=first)
+        plan = json.loads(self.plan.read_bytes())
+        plan["profiles"][second_id] = second
+        plan["contracts"][self.rows[0]["Feature ID"]]["required_profiles"].append(second_id)
+        artifact = json.loads(self.report.read_bytes()) | {"profile": second}
+        self.write_profile_artifact(plan, second_id, artifact)
+        return plan
+
+    def write_profile_artifact(self, plan, profile_id, artifact):
+        path = self.root / f"report-{profile_id}.json"
+        path.write_text(json.dumps(artifact), encoding="utf-8")
+        plan["contracts"][self.rows[0]["Feature ID"]]["evidence"][profile_id] = {
+            "file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        self.plan.write_text(json.dumps(plan), encoding="utf-8")
+
     def test_partial_registry_is_reviewable_but_blocks_release(self):
         self.rows[0]["Implementation status"] = "Partial"
         exit_code, result = self.run_check()
@@ -128,6 +160,53 @@ class ReleaseCheckTests(unittest.TestCase):
         self.assertEqual(result["errors"], [])
         self.assertEqual(result["counts"]["certified"], 1)
         self.assertEqual(self.run_check(evidence=True)[1], result)
+
+    def test_two_distinct_required_profiles_certify_one_contract(self):
+        self.prepare_two_profile_claim()
+        exit_code, result = self.run_check(evidence=True)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(result["state"], "incomplete")
+        self.assertEqual(result["counts"], {"certified": 1, "partial": 0, "unimplemented": 124})
+        self.assertEqual(result["errors"], [])
+
+    def test_stale_second_artifact_invalidates_the_contract(self):
+        plan = self.prepare_two_profile_claim()
+        second = json.loads(self.report.read_bytes()) | {"profile": SECOND_PROFILE, "revision": "3" * 40}
+        self.write_profile_artifact(plan, SECOND_PROFILE_ID, second)
+        exit_code, result = self.run_check(evidence=True)
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["state"], "invalid")
+        self.assertEqual(result["counts"]["certified"], 0)
+        diagnostic = " ".join(result["errors"])
+        self.assertIn(SECOND_PROFILE_ID, diagnostic)
+        self.assertIn("revision does not match", diagnostic)
+
+    def test_first_profile_artifact_cannot_supply_second_profile_evidence(self):
+        plan = self.prepare_two_profile_claim()
+        self.write_profile_artifact(plan, SECOND_PROFILE_ID, json.loads(self.report.read_bytes()))
+        exit_code, result = self.run_check(evidence=True)
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(result["state"], "invalid")
+        self.assertEqual(result["counts"]["certified"], 0)
+        diagnostic = " ".join(result["errors"])
+        self.assertIn(SECOND_PROFILE_ID, diagnostic)
+        self.assertIn("artifact does not match the required profile", diagnostic)
+
+    def test_two_aliases_of_the_same_exact_profile_cannot_certify_one_contract(self):
+        flags = ["-strict-concurrency=complete", "-warnings-as-errors"]
+        first = PROFILE | {"feature_flags": flags, "label": "First review", "note": "First description"}
+        second = PROFILE | {"feature_flags": flags[::-1], "label": "Second review", "note": "Second description"}
+        alias_id = "desktop-apple-alias"
+        self.prepare_two_profile_claim(first=first, second=second, second_id=alias_id)
+
+        exit_code, result = self.run_check(evidence=True)
+        self.assertEqual(exit_code, 2, result)
+        self.assertEqual(result["state"], "invalid")
+        self.assertEqual(result["counts"]["certified"], 0)
+        diagnostic = " ".join(result["errors"])
+        self.assertIn("macos-arm64", diagnostic)
+        self.assertIn(alias_id, diagnostic)
+        self.assertIn("same exact profile", diagnostic)
 
     def test_expected_compiler_failure_can_be_passing_evidence(self):
         self.prepare_claim(result={
