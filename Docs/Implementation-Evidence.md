@@ -595,3 +595,9 @@ Swift SIL checks reject retaining an actor-stored input alias, using a packet af
 GEN-021 adds a standalone checked provider for one synchronous nonthrowing Sendable value pack and the same result shape. The witness repeats the original typed arguments directly. The session records lifecycle metadata and a process-local ordered vector of element type identities. Scalar and pack identities are distinct. The independent SwiftPM fixture covers zero, one and heterogeneous many arguments, an unseen custom type, a tuple argument versus its component types, and one `Void` argument versus the empty pack.
 
 Swift rejects fixed-arity and mismatched returned pack shapes against the generated provider protocol. Six unsupported generation shapes preserve output bytes and timestamp. The existing scalar provider regenerates byte-for-byte. Concrete pack stubs, multiple packs, type-level nominal packs and broader native qualification remain open.
+
+## Explicit bounded byte-buffer projections
+
+GEN-040 adds an explicit `UnsafeBufferPointer<UInt8>` adapter helper for synchronous calls. Its default captures count and base-address presence. The caller can request an owned prefix with a nonnegative byte limit. The independent SwiftPM fixture passes a domain-owned copyable value to a normal generated mock. It verifies cases above, at and below the limit, metadata-only and empty cases, and retained values after overwriting and releasing the original buffer.
+
+The selected Swift compiler rejects an attempted deferred raw address capture in the generated `@Sendable` answer. The configured and standalone generators produce matching ordinary snapshot witnesses. Direct raw-buffer generation rejects the selected protocol and preserves existing output. Broader pointer shapes, ownership policies and native qualification remain open.

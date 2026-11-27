@@ -336,6 +336,8 @@ A direct synchronous nonthrowing requirement can also return a concrete same-mod
 
 A supported direct `Sendable` protocol can use `func exchange(_ input: sending Packet) async -> sending Packet` for a public final class declared in the same module. The mock initializer takes `projectSendingInput` and `projectSendingResult`, each returning `Int` metadata. The typed async answer preserves `sending` in both directions. Verification reads the snapshots, including pending state during the transfer.
 
+An explicit synchronous adapter can use `ByteBufferProjection().snapshot(buffer)` to record a byte count and base-address presence. To copy bytes during the buffer's valid lifetime, use `ByteBufferProjection(copyingPrefixAtMost: limit)` and pass the owned snapshot into your domain's mockable protocol. The snapshot includes the optional copied bytes and a truncation flag.
+
 An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
 
 ```swift
