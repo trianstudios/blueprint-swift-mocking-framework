@@ -115,7 +115,7 @@ public struct MockThrowingConstructionAttempt: ~Copyable, Sendable {
     }
 }
 
-/// Explicit preparation result for a synchronous failable initializer.
+/// Explicit preparation result for a failable initializer.
 public enum FailableConstructionDecision: Sendable {
     case initialize
     case returnNil
@@ -124,6 +124,14 @@ public enum FailableConstructionDecision: Sendable {
 /// An admitted failable construction awaiting its configured decision.
 public struct MockFailableConstructionAttempt: ~Copyable, Sendable {
     fileprivate let preparation: MockThrowingConstructionAttempt
+
+    /// Records cancellation during async preparation without changing its failable result.
+    public borrowing func observingCancellation<Value: Sendable>(
+        isolation: isolated (any Actor)? = #isolation,
+        _ operation: () async -> Value
+    ) async -> Value {
+        await preparation.observingCancellation(isolation: isolation, operation)
+    }
 
     /// Reserves an identity after a decision to initialize. Completion publishes the instance link.
     public consuming func reserveInstance() -> MockConstructionAttempt {

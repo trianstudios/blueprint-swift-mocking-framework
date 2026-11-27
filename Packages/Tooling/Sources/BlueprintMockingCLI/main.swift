@@ -1490,7 +1490,8 @@ func generate(
             let isFailable = initializer.optionalMark?.text == "?"
             let isAsync = effects?.asyncSpecifier?.text == "async"
             let message = "Construction scopes support one ordinary direct Sendable init(seed: Int), init?(seed: Int), "
-                + "init(seed: Int) async, init(seed: Int) throws, or init(seed: Int) [async] throws(PublicError) without other generation modes"
+                + "init(seed: Int) async, init?(seed: Int) async, init(seed: Int) throws, or "
+                + "init(seed: Int) [async] throws(PublicError) without other generation modes"
             guard constructor == nil, declarationID == proto.id, declarations.count == 1,
                   isolation == .sendable, !fromTextualInterface, !hasBindings, !spy, !specializesGenerics,
                   projections.isEmpty, variadicForwarding.isEmpty, scopedRuleSelectors.isEmpty,
@@ -1498,7 +1499,7 @@ func generate(
                   initializer.attributes.isEmpty, initializer.modifiers.isEmpty, initializer.body == nil,
                   initializer.optionalMark == nil || isFailable, initializer.genericParameterClause == nil,
                   initializer.genericWhereClause == nil, effects?.asyncSpecifier == nil || isAsync,
-                  !isFailable || (!isAsync && effects?.throwsClause == nil),
+                  !isFailable || effects?.throwsClause == nil,
                   parameters.count == 1, let parameter = parameters.first,
                   parameter.firstName.text == "seed", parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
                   parameter.defaultValue == nil, parameter.ellipsis == nil,
@@ -2596,7 +2597,7 @@ func generate(
                 let member = members[index]
                 return "__setup\(index): \(member.family)Stubbing<\(member.genericArguments)>()"
             }.joined(separator: ", ")
-            if constructor.isAsync && constructor.failure == nil {
+            if constructor.isAsync && !constructor.isFailable && constructor.failure == nil {
                 witness = """
                 let attempt = construction.__scope.beginAsyncConstruction(
                     of: endpoint, reporter: construction.__reporter, source: source

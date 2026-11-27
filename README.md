@@ -417,6 +417,8 @@ A direct synchronous `init(seed: Int) throws` accepts any Swift error from the s
 
 For one direct synchronous `init?(seed: Int)`, the setup closure returns `FailableConstructionDecision.initialize` or `.returnNil`. A configured nil completes the attempt with no instance link. The successful terminal records the initialized mock's ID. [Failable constructor consumer](Fixtures/TypedConstructionConsumer/FailableIndependentConsumer.swift)
 
+A direct `init?(seed: Int) async` also supports an asynchronous failable setup decision. A nil decision completes the attempt without allocating an instance. During setup the session records a cancellation request independently of the configured decision. [Async failable constructor consumer](Fixtures/TypedConstructionConsumer/AsyncFailableIndependentConsumer.swift)
+
 For one direct nonthrowing `init(seed: Int) async`, the generated construction scope takes an async typed setup closure. The attempt stays active across suspension. During async setup the session records cancellation separately from completion. The generated witness attaches the initialized instance when setup returns. [Async constructor consumer](Fixtures/TypedConstructionConsumer/AsyncIndependentConsumer.swift)
 
 The direct async constructor also supports `init(seed: Int) async throws(Failure)` with a public same-module error enum. During suspended setup the session records a cancellation request separately from the typed result. Setup can throw a declared failure or finish successfully. [Async typed constructor consumer](Fixtures/TypedConstructionConsumer/AsyncThrowingIndependentConsumer.swift)

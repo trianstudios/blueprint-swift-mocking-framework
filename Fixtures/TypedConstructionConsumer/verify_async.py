@@ -98,7 +98,7 @@ def verify(options):
         protocol = original.split("\n\n", 1)[0] + "\n"
         for name, source in [
             ("wrong-label", protocol.replace("init(seed: Int) async", "init(value: Int) async")),
-            ("async-failable", protocol.replace("init(seed: Int) async", "init?(seed: Int) async")),
+            ("async-failable-throwing", protocol.replace("init(seed: Int) async", "init?(seed: Int) async throws")),
             ("async-untyped-throwing", protocol.replace("init(seed: Int) async", "init(seed: Int) async throws")),
         ]:
             domain.write_text(source, encoding="utf-8")

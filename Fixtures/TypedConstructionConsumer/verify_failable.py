@@ -88,7 +88,7 @@ def verify(options):
         protocol = original.split("\n\n", 1)[0] + "\n"
         for name, source in [
             ("wrong-label", protocol.replace("init?(seed: Int)", "init?(value: Int)")),
-            ("async-failable", protocol.replace("init?(seed: Int)", "init?(seed: Int) async")),
+            ("async-failable-wrong-label", protocol.replace("init?(seed: Int)", "init?(value: Int) async")),
             ("typed-throwing-failable", "public enum Failure: Error { case unavailable }\n" +
              protocol.replace("init?(seed: Int)", "init?(seed: Int) throws(Failure)")),
         ]:

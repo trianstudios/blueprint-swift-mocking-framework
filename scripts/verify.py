@@ -2419,7 +2419,7 @@ def main():
         "--evidence-dir", EVIDENCE / "failable-construction",
     ], env=swift_environment, timeout=300, patterns=[
         r"PASS: GEN026-failable run-metatype-consumer",
-        r"PASS: GEN026-failable reject-async-failable",
+        r"PASS: GEN026-failable reject-async-failable-wrong-label",
     ])
     run("async-construction-consumer", [
         sys.executable, "Fixtures/TypedConstructionConsumer/verify_async.py", "--tool", tool, "--swiftc", swiftc,
@@ -2430,6 +2430,16 @@ def main():
         r"PASS: GEN026-async reject-missing-await-ordinary",
         r"PASS: GEN026-async reject-missing-await-main-default",
         r"PASS: GEN026-async reject-async-untyped-throwing",
+    ])
+    run("async-failable-construction-consumer", [
+        sys.executable, "Fixtures/TypedConstructionConsumer/verify_async_failable.py", "--tool", tool,
+        "--swiftc", swiftc, "--sdk", sdk, "--runtime-modules", modules, "--runtime-library", modules / "BlueprintMocking.o",
+        "--evidence-dir", EVIDENCE / "async-failable-construction",
+    ], env=swift_environment, timeout=300, patterns=[
+        r"PASS: GEN026-async-failable run-metatype-consumer",
+        r"PASS: GEN026-async-failable reject-runtime-unscoped",
+        r"PASS: GEN026-async-failable reject-async-failable-throwing",
+        r"PASS: GEN026-async-failable reject-async-failable-typed-throwing",
     ])
     run("async-typed-construction-consumer", [
         sys.executable, "Fixtures/TypedConstructionConsumer/verify_async_throwing.py", "--tool", tool,
