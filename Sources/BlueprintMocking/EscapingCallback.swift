@@ -53,27 +53,55 @@ private final class CallbackCaptureStorage<Callback: Sendable>: SessionJournalRe
     }
 
     // The winning claim moves the closure out of storage while the session gate
-    // still pins the capture's epoch. Its invocation or release happens after unlocking.
+    // still pins the capture's epoch. Invocation and release happen after unlocking.
     func retire(
         _ invocation: SessionEvent, as retirement: Retirement
     ) throws(OneShotCallbackDeliveryError) -> Callback {
         try session.withLock { state throws(OneShotCallbackDeliveryError) in
-            guard state.epoch == invocation.epoch else { throw .unavailable }
-            guard !state.isFinished else { throw .finished }
-            return try storage.withLock { entries throws(OneShotCallbackDeliveryError) in
-                let id = invocation.invocationID
-                guard let entry = entries[id] else { throw .unavailable }
-                switch entry.payload {
-                case .available(let callback):
-                    entries[id]?.payload = switch retirement {
-                    case .acquisition: .acquired
-                    case .cancellation: .cancelled
-                    }
-                    return callback
-                case .acquired: throw .alreadyAcquired
-                case .cancelled: throw .cancelled
-                }
+            try requireLiveEpoch(for: invocation, in: state)
+            return try retireWhileSessionLocked(invocation, as: retirement)
+        }
+    }
+
+    // Due deliveries already hold the session gate. Reset and finish drain the
+    // queued requests under that same gate when invalidating captures.
+    func retireWhileSessionLocked(
+        _ invocation: SessionEvent, as retirement: Retirement
+    ) throws(OneShotCallbackDeliveryError) -> Callback {
+        try storage.withLock { entries throws(OneShotCallbackDeliveryError) in
+            let id = invocation.invocationID
+            let callback = try readyCallback(entries[id])
+            entries[id]?.payload = switch retirement {
+            case .acquisition: .acquired
+            case .cancellation: .cancelled
             }
+            return callback
+        }
+    }
+
+    // Validate registration without reserving a future delivery.
+    func requireAvailableCapture(
+        for invocation: SessionEvent, in state: MockSession.State
+    ) throws(OneShotCallbackDeliveryError) {
+        try requireLiveEpoch(for: invocation, in: state)
+        try storage.withLock { entries throws(OneShotCallbackDeliveryError) in
+            _ = try readyCallback(entries[invocation.invocationID])
+        }
+    }
+
+    private func requireLiveEpoch(
+        for invocation: SessionEvent, in state: MockSession.State
+    ) throws(OneShotCallbackDeliveryError) {
+        guard state.epoch == invocation.epoch else { throw .unavailable }
+        guard !state.isFinished else { throw .finished }
+    }
+
+    private func readyCallback(_ entry: Entry?) throws(OneShotCallbackDeliveryError) -> Callback {
+        switch entry?.payload {
+        case .available(let callback)?: callback
+        case .acquired?: throw .alreadyAcquired
+        case .cancelled?: throw .cancelled
+        case nil: throw .unavailable
         }
     }
 
@@ -218,7 +246,7 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
                     resolve(.unavailable)
                 }
             }
-        }, retire: { resolve(.unavailable) })
+        }, retire: { _ in resolve(.unavailable) })
     }
 
     private func registerScheduledCallbacks(
@@ -282,6 +310,55 @@ public struct OneShotEscapingCallbackCapture<Input: Sendable, Output: Sendable>:
         guard let storage else { throw .unavailable }
         let callback = try storage.retire(invocation, as: .cancellation)
         withExtendedLifetime(callback) {}
+    }
+
+    /// Queues an attempt on a manual clock. Acquisition competes with direct
+    /// invocation and any other scheduled attempt for this capture.
+    /// Zero delay acquires and runs inline. A positive delay leaves the capture
+    /// available until the advance that reaches the deadline.
+    @discardableResult
+    public func schedule(
+        _ input: Input, after delay: Duration
+    ) throws(OneShotCallbackSchedulingError) -> ScheduledOneShotCallbackDelivery<Output> {
+        guard delay >= .zero else { throw .negativeDelay }
+        guard let storage else { throw .delivery(.unavailable) }
+        let session = storage.session
+        let delivery = ScheduledOneShotCallbackDelivery<Output>(session: session)
+        let occurrence = ScheduledCallbackOccurrence(delay: delay, acquire: { [weak storage, invocation] in
+            let owner = storage
+            let claim: Result<NonisolatedCallback<Input, Output>, OneShotCallbackDeliveryError>
+            do throws(OneShotCallbackDeliveryError) {
+                guard let owner else { throw .unavailable }
+                claim = .success(try owner.retireWhileSessionLocked(invocation, as: .acquisition))
+            } catch {
+                claim = .failure(error)
+            }
+            return {
+                // A weak upgrade can be the last owner. Release it outside the session gate.
+                defer { withExtendedLifetime(owner) {} }
+                switch claim {
+                case .success(let callback): delivery.resolve(.success(callback(input)))
+                case .failure(let error): delivery.resolve(.failure(error))
+                }
+            }
+        }, retire: { reason in
+            switch reason {
+            case .unavailable: delivery.resolve(.failure(.unavailable))
+            case .finished: delivery.resolve(.failure(.finished))
+            }
+        })
+        defer { withExtendedLifetime((storage, occurrence)) {} }
+        let immediate = try session.withLock { state throws(OneShotCallbackSchedulingError) in
+            do throws(OneShotCallbackDeliveryError) {
+                try storage.requireAvailableCapture(for: invocation, in: state)
+            } catch {
+                throw .delivery(error)
+            }
+            guard state.usesManualClock else { throw .requiresManualClock }
+            return state.scheduleCallbacks(id: delivery.id, occurrences: [occurrence])
+        }
+        for action in immediate { action() }
+        return delivery
     }
 }
 

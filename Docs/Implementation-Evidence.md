@@ -375,7 +375,13 @@ Additional parameter shapes, direct spy forwarding and child delivery events rem
 
 RUN-010 adds an opt-in typed one-shot captor for a synchronous nonisolated callback. Delivering or cancelling claims the same pending closure under the session and capture locks. Invocation and final payload release occur outside both locks. The originating registration metadata remains available for duplicate diagnostics until reset or finish.
 
-The independent SwiftPM consumer holds one callback after it acquires the closure and proves a concurrent attempt fails. It finishes the session while the winner is held and verifies that the winner returns successfully and a later attempt reports `.finished`. A separate test cancels one pending capture while another capture with the same registration arguments can still deliver. A reset invalidates the earlier handle. A scheduled delivery with the same one-shot claim, additional effects and child delivery events require separate work.
+The independent SwiftPM consumer holds one callback after it acquires the closure and proves a concurrent attempt fails. It finishes the session while the winner is held and verifies that the winner returns successfully and a later attempt reports `.finished`. A separate test cancels one pending capture while another capture with the same registration arguments can still deliver. A reset invalidates the earlier handle. A callback with additional effects and child delivery events require separate work.
+
+## Scheduled one-shot callbacks on the manual clock
+
+A manual-clock attempt shares the capture's claim with direct invocation and any other scheduled attempt. Registration validates the live capture and leaves it available. A zero-delay attempt acquires it inline. For a positive delay the session acquires it when an advance reaches the deadline, then invokes the closure after unlocking. Exact receipt cancellation removes a queued attempt and leaves the capture available. Capture cancellation causes an outstanding attempt to be rejected when it reaches acquisition. Reset, finish and session deallocation resolve queued receipts with their retirement outcomes.
+
+The independent SwiftPM fixture tests one nanosecond before and at the deadline, both orders of direct and scheduled acquisition, and the earliest of two due attempts. A gated callback holds the acquired closure while the consumer makes another direct call, attempts cancellation and finishes the session. The acquired result still returns once. Invalid delays and continuous clocks fail without claiming the capture. Continuous-clock delivery for this one-shot policy, actor and effect combinations, and child events remain open.
 
 
 ## MainActor escaping callback capture

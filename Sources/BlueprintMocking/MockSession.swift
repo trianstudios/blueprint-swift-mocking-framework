@@ -229,8 +229,8 @@ public final class MockSession: Sendable {
     }
 
     deinit {
-        let pending = state.withLock { $0.retirePendingContinuousCallbacks() }
-        for request in pending { request.retire() }
+        let pending = state.withLock { $0.retirePendingCallbacks() }
+        for request in pending { request.retire(because: .unavailable) }
     }
 
     public func makeMock() -> MockScope {
@@ -331,7 +331,7 @@ public final class MockSession: Sendable {
             return (retirement, state.closeObservations(), state.resolveQuiescentReplacements(publishAtIdle: false),
                     state.retirePendingCallbacks())
         }
-        for callback in callbacks { callback.retire() }
+        for callback in callbacks { callback.retire(because: .unavailable) }
         for replacement in replacements { replacement.publish() }
         wake?.publish()
         // User destructors and last-owner journal destruction may reenter this session.
@@ -348,7 +348,7 @@ public final class MockSession: Sendable {
             let (snapshot, retirement) = try state.finishIfQuiescent()
             return (snapshot, state.closeObservations(), retirement, state.retirePendingCallbacks())
         }
-        for callback in callbacks { callback.retire() }
+        for callback in callbacks { callback.retire(because: .finished) }
         wake?.publish()
         withExtendedLifetime(retirement) {}
         return snapshot
@@ -381,6 +381,10 @@ public final class MockSession: Sendable {
         private var pendingCallbacks: [PendingCallbackDelivery] = []
 
         var isFinished: Bool { finishedElapsed != nil }
+
+        var usesManualClock: Bool {
+            if case .manual = clock { true } else { false }
+        }
         private var nextMockNumber: UInt64 = 0
         private var nextInvocationNumber: UInt64 = 0
         private var lastEventOrdinal: UInt64 = 0
@@ -501,11 +505,6 @@ public final class MockSession: Sendable {
             let due = pendingCallbacks.filter { $0.deadline <= elapsed }.sorted { $0.deadline < $1.deadline }
             pendingCallbacks.removeAll { $0.deadline <= elapsed }
             return AcquiredCallbackDeliveries(requests: due, actions: due.map { $0.acquire() })
-        }
-
-        fileprivate mutating func retirePendingContinuousCallbacks() -> [PendingCallbackDelivery] {
-            guard case .continuous = clock else { return [] }
-            return retirePendingCallbacks()
         }
 
         fileprivate mutating func retirePendingCallbacks() -> [PendingCallbackDelivery] {

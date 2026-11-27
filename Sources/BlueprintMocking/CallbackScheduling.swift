@@ -56,6 +56,57 @@ public final class ScheduledCallbackDelivery<Output: Sendable>: Sendable {
     }
 }
 
+/// An error raised before a one-shot callback attempt has been scheduled.
+public enum OneShotCallbackSchedulingError: Error, Equatable, Sendable {
+    case negativeDelay
+    case requiresManualClock
+    case delivery(OneShotCallbackDeliveryError)
+}
+
+/// The current outcome of one scheduled attempt on a one-shot capture.
+public enum ScheduledOneShotCallbackOutcome<Output: Sendable>: Sendable {
+    /// The attempt is queued or its acquired callback is still running.
+    case pending
+    case delivered(Output)
+    /// Cancellation removed this receipt's queued attempt.
+    case cancelled
+    /// The shared capture could not be acquired, or its session retired this attempt.
+    case rejected(OneShotCallbackDeliveryError)
+}
+
+extension ScheduledOneShotCallbackOutcome: Equatable where Output: Equatable {}
+
+/// A receipt for a scheduled attempt on a one-shot capture.
+public final class ScheduledOneShotCallbackDelivery<Output: Sendable>: Sendable {
+    private let request: ScheduledCallbackDelivery<Result<Output, OneShotCallbackDeliveryError>>
+
+    init(session: MockSession) {
+        request = ScheduledCallbackDelivery(session: session)
+    }
+
+    var id: ScheduledCallbackID { request.id }
+
+    public var outcome: ScheduledOneShotCallbackOutcome<Output> {
+        switch request.outcome {
+        case .pending: .pending
+        case .delivered(.success(let output)): .delivered(output)
+        case .delivered(.failure(let reason)): .rejected(reason)
+        case .cancelled: .cancelled
+        case .unavailable: .rejected(.unavailable)
+        }
+    }
+
+    /// Withdraws this queued attempt. Other attempts can still claim a pending capture.
+    @discardableResult
+    public func cancel() -> Bool {
+        request.cancel()
+    }
+
+    func resolve(_ result: Result<Output, OneShotCallbackDeliveryError>) {
+        request.resolve(.delivered(result))
+    }
+}
+
 /// The receipt for a finite series of invocations of the same captured callback.
 public final class ScheduledCallbackSeries<Output: Sendable>: Sendable {
     let id = ScheduledCallbackID()
@@ -94,10 +145,15 @@ public final class ScheduledCallbackSeries<Output: Sendable>: Sendable {
 
 typealias ScheduledCallbackAction = @Sendable () -> Void
 
+enum ScheduledCallbackRetirement: Sendable {
+    case unavailable
+    case finished
+}
+
 struct ScheduledCallbackOccurrence: Sendable {
     let delay: Duration
     let acquire: @Sendable () -> ScheduledCallbackAction
-    let retire: ScheduledCallbackAction
+    let retire: @Sendable (ScheduledCallbackRetirement) -> Void
 }
 
 struct PendingCallbackDelivery: Sendable {
@@ -106,13 +162,13 @@ struct PendingCallbackDelivery: Sendable {
     let deadline: Duration
     /// Acquires the closure under the session gate and returns work to do after unlocking.
     let acquire: @Sendable () -> ScheduledCallbackAction
-    let onRetire: ScheduledCallbackAction
+    let onRetire: @Sendable (ScheduledCallbackRetirement) -> Void
     // Only the next queued occurrence of a continuous series has a sleeper.
     var timer: Task<Void, Never>?
 
-    func retire() {
+    func retire(because reason: ScheduledCallbackRetirement) {
         timer?.cancel()
-        onRetire()
+        onRetire(reason)
     }
 }
 
