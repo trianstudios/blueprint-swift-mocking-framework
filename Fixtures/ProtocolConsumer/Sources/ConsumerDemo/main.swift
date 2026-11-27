@@ -33,6 +33,20 @@ import ConsumerDoubles
             let service = GenericSubscriptClient(directory: mock)
             _ = service.read(true)
         }
+        if CommandLine.arguments.contains("--missing-generic-method-specialization") {
+            let session = MockSession()
+            let reporter = FailureReporter { issue in
+                let events = session.snapshot().events
+                precondition(events.map(\.phase) == [.admitted, .terminated])
+                precondition(events[0].invocationID == events[1].invocationID)
+                precondition(events.allSatisfy { $0.endpoint == issue.endpoint })
+                precondition(issue.endpoint.specialization?.typeName == String(reflecting: Bool.self))
+                FileHandle.standardError.write(Data("MOCK ISSUE: \(issue.message)\n".utf8))
+            }
+            let mock = GenericMethodDirectoryMock(failureReporter: reporter, session: session) { _ in }
+            let service = GenericMethodClient(directory: mock)
+            _ = service.transform(true)
+        }
         if CommandLine.arguments.contains("--type-subscript-closed-orphan") {
             let session = MockSession(orphanFailures: OrphanFailureBuffer())
             let ownerReporter = FailureReporter { _ in fatalError("Closed orphan reached the owning reporter") }

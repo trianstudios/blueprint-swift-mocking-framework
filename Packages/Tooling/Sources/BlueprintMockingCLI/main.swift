@@ -206,14 +206,27 @@ struct Parameter {
     }
     var runtimeType: String { isVariadic ? "[\(type)]" : type }
 }
-struct GenericSubscript {
+struct GenericWitness {
+    enum Kind {
+        case method(String)
+        case subscriptGetter
+    }
+
+    let kind: Kind
     let label: String
     let constraints: [String]
     let outputType: String
     let usesGenericResult: Bool
     let origin: ProtocolSourceOrigin
 
-    var selector: String { "get_subscript(\(label):)" }
+    var descriptorName: String {
+        switch kind {
+        case .method(let name): name
+        case .subscriptGetter: "get_subscript"
+        }
+    }
+
+    var selector: String { "\(descriptorName)(\(label):)" }
 
     var genericClause: String {
         constraints.isEmpty ? "<__BlueprintKey>" : "<__BlueprintKey: \(constraints.joined(separator: " & "))>"
@@ -221,10 +234,29 @@ struct GenericSubscript {
 
     var endpoint: String {
         let constraintClause = constraints.isEmpty ? "T" : "T:" + constraints.joined(separator: "&")
-        return "subscript<\(constraintClause)>(\(label):T).get"
+        switch kind {
+        case .method(let name): return "\(name)<\(constraintClause)>(\(label):T)"
+        case .subscriptGetter: return "subscript<\(constraintClause)>(\(label):T).get"
+        }
     }
 
     var resultIdentity: String { usesGenericResult ? "T" : outputType }
+
+    var signature: String {
+        let result = usesGenericResult ? "__BlueprintKey" : outputType
+        let shape = "\(genericClause)(\(label) input: __BlueprintKey) -> \(result)"
+        switch kind {
+        case .method(let name): return "func \(name)" + shape
+        case .subscriptGetter: return "subscript" + shape
+        }
+    }
+
+    var mismatch: String {
+        switch kind {
+        case .method: "Mismatched method specialization result"
+        case .subscriptGetter: "Mismatched subscript specialization result"
+        }
+    }
 }
 
 enum WitnessKind {
@@ -235,7 +267,7 @@ enum WitnessKind {
     case subscriptSetter(String)
     case typeSubscriptGetter(String)
     case typeSubscriptSetter(String)
-    case specializedSubscriptGetter(GenericSubscript, String)
+    case specializedGeneric(GenericWitness, String)
 }
 struct Member {
     let name: String
@@ -317,7 +349,7 @@ struct Member {
         var declarations = metadataParameters.enumerated().map { index, parameter in
             "\(parameter.label) \(matcherName(index)): \(isolation.prefix)Matcher<\(parameter.runtimeType)>"
         }
-        if case .specializedSubscriptGetter(_, let type) = kind {
+        if case .specializedGeneric(_, let type) = kind {
             declarations.append("as _: (\(type)).Type")
         }
         if requiresResultMetatype {
@@ -363,7 +395,8 @@ struct GeneratedProtocolMock {
 
 func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
-    subscriptSpecializations: [String], spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
+    subscriptSpecializations: [String], methodSpecializations: [String] = [],
+    spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
 ) throws -> GeneratedProtocolMock {
     let input = root.origin.path
     let module = root.origin.module
@@ -397,8 +430,9 @@ func generate(
         try reject(proto, "Use a public Sendable protocol without attributes or a public @MainActor protocol without inheritance")
     }
 
+    let specializesGenerics = !subscriptSpecializations.isEmpty || !methodSpecializations.isEmpty
     if spy {
-        guard projections.isEmpty, variadicForwarding.isEmpty, subscriptSpecializations.isEmpty else {
+        guard projections.isEmpty, variadicForwarding.isEmpty, !specializesGenerics else {
             try reject(proto, "Direct spy forwarding cannot be combined with projections, variadic adapters or generic specializations")
         }
     }
@@ -409,12 +443,12 @@ func generate(
     let bindings = try ConcreteAssociatedTypeBindings(
         options: associatedTypeBindings, root: root, inheritance: inheritance, activeMembers: activeMembers, index: index)
     let hasBindings = !bindings.types.isEmpty
-    if hasBindings && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || !subscriptSpecializations.isEmpty) {
+    if hasBindings && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || specializesGenerics) {
         try reject(proto, "Concrete associated-type bindings support ordinary witnesses without forwarding, projections or generic specializations")
     }
     let declarations = inheritance.declarations
     let hasImportedRequirements = declarations.contains { $0.origin.module != module }
-    if hasImportedRequirements && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || !subscriptSpecializations.isEmpty) {
+    if hasImportedRequirements && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || specializesGenerics) {
         try reject(proto, "Supplied cross-module inheritance supports ordinary witnesses without forwarding, projections or generic specializations")
     }
 
@@ -493,6 +527,8 @@ func generate(
     func witnessName(_ name: String, kind: WitnessKind) -> String? {
         switch kind {
         case .method: name
+        case .specializedGeneric(let declaration, _):
+            if case .method(let name) = declaration.kind { name } else { nil }
         case .getter(let property), .setter(let property): property
         default: nil
         }
@@ -513,7 +549,7 @@ func generate(
             "\($0.label):\($0.isInout ? "Int" : $0.runtimeType)"
         }.joined(separator: ",")
         let specialization: String
-        if case .specializedSubscriptGetter(_, let type) = kind {
+        if case .specializedGeneric(_, let type) = kind {
             specialization = ",as:\(type).Type"
         } else {
             specialization = ""
@@ -539,7 +575,7 @@ func generate(
             }
             guard case .method = kind, case .method = previous.kind,
                   declarations.count == 1, isolation == .sendable, !hasBindings, !spy,
-                  projections.isEmpty, variadicForwarding.isEmpty, subscriptSpecializations.isEmpty,
+                  projections.isEmpty, variadicForwarding.isEmpty, !specializesGenerics,
                   !effect.isAsync, effect.failure == nil, !previous.effect.isAsync, previous.effect.failure == nil,
                   !previous.requiresResultMetatype,
                   Set([outputType, previous.outputType]) == ["Int", "String"],
@@ -561,7 +597,7 @@ func generate(
         case .subscriptSetter(let indices): endpoint = "subscript:\(indices).set(\(parameterTypes))"
         case .typeSubscriptGetter(let indices): endpoint = "type:subscript:\(indices).get"
         case .typeSubscriptSetter(let indices): endpoint = "type:subscript:\(indices).set(\(parameterTypes))"
-        case .specializedSubscriptGetter(let declaration, _):
+        case .specializedGeneric(let declaration, _):
             endpoint = declaration.endpoint
             resultIdentity = declaration.resultIdentity
         }
@@ -763,7 +799,7 @@ func generate(
         }
     }
 
-    var genericSubscripts: [(declaration: GenericSubscript, node: SubscriptDeclSyntax)] = []
+    var genericSubscripts: [(declaration: GenericWitness, node: SubscriptDeclSyntax)] = []
     func collectGenericSubscript(
         _ decl: SubscriptDeclSyntax, indices: [Parameter], output: String,
         effect: Effect, setter: AccessorDeclSyntax?, getter: AccessorDeclSyntax
@@ -801,8 +837,8 @@ func generate(
         if output == "Void" {
             try reject(decl.returnClause, "Specialized generic subscripts require a value result")
         }
-        let declaration = GenericSubscript(
-            label: keyParameter.label, constraints: constraints, outputType: output, usesGenericResult: usesGenericResult,
+        let declaration = GenericWitness(
+            kind: .subscriptGetter, label: keyParameter.label, constraints: constraints, outputType: output, usesGenericResult: usesGenericResult,
             origin: index.origin(of: getter)
         )
         genericSubscripts.append((declaration, decl))
@@ -856,7 +892,47 @@ func generate(
         }
     }
 
-    for item in activeMembers.flatMap({ $0.items }) {
+    var genericMethods: [(declaration: GenericWitness, node: FunctionDeclSyntax)] = []
+    func collectGenericMethod(_ fn: FunctionDeclSyntax, isDirect: Bool) throws {
+        let parameters = fn.signature.parameterClause.parameters
+        guard isDirect, isolation == .sendable, !spy, !hasBindings,
+              projections.isEmpty, variadicForwarding.isEmpty,
+              fn.attributes.isEmpty, fn.genericWhereClause == nil, fn.signature.effectSpecifiers == nil,
+              let generic = fn.genericParameterClause, generic.parameters.count == 1,
+              let key = generic.parameters.first, simple(key.name.text),
+              key.attributes.isEmpty, key.firstToken(viewMode: .sourceAccurate)?.id == key.name.id,
+              let bounds = key.inheritedType?.as(CompositionTypeSyntax.self), bounds.elements.count == 2,
+              parameters.count == 1, let parameter = parameters.first,
+              parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+              parameter.ellipsis == nil, parameter.defaultValue == nil,
+              parameter.type.trimmedDescription == key.name.text,
+              fn.signature.returnClause?.type.trimmedDescription == key.name.text else {
+            try reject(fn, "Generic method specialization requires a direct synchronous nonthrowing Sendable requirement with one generic parameter and a T-to-T signature")
+        }
+        let label = parameter.firstName.text
+        guard label == "_" || simple(label) else {
+            try reject(parameter, "Use a simple external label for the generic method parameter")
+        }
+        try index.requireUnshadowedQualifier("Swift", at: fn)
+        let constraints = try bounds.elements.map { bound -> String in
+            let spelling = bound.type.trimmedDescription
+            if ["Hashable", "Sendable"].contains(spelling), spelling != key.name.text {
+                try index.requireUnshadowedQualifier(spelling, at: bound.type)
+                return "Swift." + spelling
+            }
+            return spelling
+        }.sorted()
+        guard constraints == ["Swift.Hashable", "Swift.Sendable"] else {
+            try reject(bounds, "Generic method specialization requires inline Hashable and Sendable constraints")
+        }
+        let declaration = GenericWitness(
+            kind: .method(fn.name.text), label: label, constraints: constraints,
+            outputType: key.name.text, usesGenericResult: true, origin: index.origin(of: fn)
+        )
+        genericMethods.append((declaration, fn))
+    }
+
+    for (declarationID, item) in activeMembers.flatMap({ entry in entry.items.map { (entry.declarationID, $0) } }) {
         if item.decl.is(AssociatedTypeDeclSyntax.self) { continue }
         if hasBindings && !item.decl.is(FunctionDeclSyntax.self) {
             try reject(item, "Concrete associated-type bindings currently support ordinary instance methods")
@@ -878,8 +954,14 @@ func generate(
             try reject(item, "Only function, property and instance subscript requirements are supported in this slice")
         }
         guard fn.body == nil, fn.modifiers.isEmpty,
-              fn.genericParameterClause == nil, fn.genericWhereClause == nil,
               simple(fn.name.text), !["init", "verify", "Stubs", "Verification"].contains(fn.name.text) else {
+            try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
+        }
+        if fn.genericParameterClause != nil {
+            try collectGenericMethod(fn, isDirect: declarationID == proto.id)
+            continue
+        }
+        guard fn.genericWhereClause == nil else {
             try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
         }
         if hasBindings {
@@ -1007,7 +1089,42 @@ func generate(
             try addMember(name: "get_subscript", parameters: [Parameter(label: declaration.label, type: type)],
                           outputType: declaration.usesGenericResult ? type : declaration.outputType,
                           effect: Effect(isAsync: false, failure: nil),
-                          kind: .specializedSubscriptGetter(declaration, type), at: node)
+                          kind: .specializedGeneric(declaration, type), at: node)
+        }
+    }
+    var methodTypes: [String: Set<String>] = [:]
+    for option in methodSpecializations {
+        let fields = option.split(separator: "=", maxSplits: 1)
+        guard fields.count == 2 else {
+            try reject(proto, "Use --specialize-method 'method(label:)=Int' or '=String'")
+        }
+        let selector = fields[0].trimmingCharacters(in: .whitespaces)
+        let candidates = genericMethods.filter { $0.declaration.selector == selector }
+        guard let entry = candidates.first else {
+            try reject(proto, "Unknown generic method selector '\(selector)'")
+        }
+        guard candidates.count == 1 else {
+            try reject(entry.node, "Ambiguous generic method selector '\(selector)'. Use distinct argument labels.")
+        }
+        let spelling = fields[1].trimmingCharacters(in: .whitespaces)
+        let type: String
+        switch spelling {
+        case "Int", "Swift.Int": type = "Swift.Int"
+        case "String", "Swift.String": type = "Swift.String"
+        default: try reject(entry.node, "Unsupported generic method specialization type '\(spelling)'. Use Int or String.")
+        }
+        guard methodTypes[selector, default: []].insert(type).inserted else {
+            try reject(entry.node, "Duplicate generic method specialization '\(type)' for '\(selector)'")
+        }
+    }
+    for (declaration, node) in genericMethods {
+        guard let types = methodTypes[declaration.selector] else {
+            try reject(node, "Generic methods require explicit specialization using --specialize-method '\(declaration.selector)=Type'")
+        }
+        for type in types.sorted() {
+            try addMember(name: declaration.descriptorName, parameters: [Parameter(label: declaration.label, type: type)],
+                          outputType: type, effect: Effect(isAsync: false, failure: nil),
+                          kind: .specializedGeneric(declaration, type), at: node)
         }
     }
     guard !members.isEmpty else { try reject(proto, "The selected protocol has no supported requirements") }
@@ -1032,7 +1149,7 @@ func generate(
             switch member.kind {
             case .method: return true
             case .subscriptGetter, .subscriptSetter: return includeSubscripts
-            case .getter, .setter, .specializedSubscriptGetter, .typeSubscriptGetter, .typeSubscriptSetter:
+            case .getter, .setter, .specializedGeneric, .typeSubscriptGetter, .typeSubscriptSetter:
                 return false
             }
         }
@@ -1165,7 +1282,7 @@ func generate(
         output += "    public typealias \(binding.name) = \(binding.type)\n"
     }
     let specializedEndpoints = Dictionary(grouping: members.indices.filter {
-        if case .specializedSubscriptGetter = members[$0].kind { return true }
+        if case .specializedGeneric = members[$0].kind { return true }
         return false
     }, by: { members[$0].identity })
     if !specializedEndpoints.isEmpty {
@@ -1402,7 +1519,7 @@ func generate(
         let projection = projectedIndices.contains(i) ? ", projection: projection\(i)" : ""
         let identity = String(reflecting: m.identity)
         var endpointID = "EndpointID(\(identity))"
-        if case .specializedSubscriptGetter(let declaration, let type) = m.kind {
+        if case .specializedGeneric(let declaration, let type) = m.kind {
             endpointID = "EndpointID(\(identity), specializedFor: (\(type)).self)"
             if !declaration.constraints.isEmpty, let first = specializedEndpoints[m.identity]?.first {
                 output += "        Self.__validateSpecialization\(first)((\(type)).self)\n"
@@ -1512,20 +1629,19 @@ func generate(
                 output += "        set {\n            \(call(setter, arguments))\n        }\n"
             }
             output += "    }\n"
-        case .specializedSubscriptGetter(let declaration, _):
+        case .specializedGeneric(let declaration, _):
             let indices = specializedEndpoints[m.identity]!
             guard indices.first == i else { continue }
             if !declaration.constraints.isEmpty {
                 output += "\n    private static func __validateSpecialization\(i)\(declaration.genericClause)(_: __BlueprintKey.Type) {}\n"
             }
-            let result = declaration.usesGenericResult ? "__BlueprintKey" : declaration.outputType
-            output += "\n    public subscript\(declaration.genericClause)(\(declaration.label) input: __BlueprintKey) -> \(result) {\n"
+            output += "\n    public \(declaration.signature) {\n"
             for index in indices {
                 let type = members[index].inputType
                 output += "        if __BlueprintKey.self == (\(type)).self, let key = input as? \(type) {\n"
                 if declaration.usesGenericResult {
                     output += "            let value = \(call(index, "key", origin: declaration.origin))\n"
-                    output += "            guard let result = value as? __BlueprintKey else { preconditionFailure(\"Mismatched subscript specialization result\") }\n"
+                    output += "            guard let result = value as? __BlueprintKey else { preconditionFailure(\(String(reflecting: declaration.mismatch))) }\n"
                     output += "            return result\n"
                 } else {
                     output += "            return \(call(index, "key", origin: declaration.origin))\n"
@@ -1570,13 +1686,14 @@ private func run(_ arguments: [String]) throws {
         return
     }
     let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
-    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
+    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--specialize-method 'method(label:)=Type']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
     guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
           arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
     var options = arguments.dropFirst(8)
     var projections: [String] = []
     var variadicForwarding: [String] = []
     var subscriptSpecializations: [String] = []
+    var methodSpecializations: [String] = []
     var bindingArguments: [String] = []
     var spy = false
     var sourcePaths: [String: [String]] = [:]
@@ -1600,6 +1717,9 @@ private func run(_ arguments: [String]) throws {
         case "--specialize-subscript":
             guard let specialization = options.popFirst() else { throw usage }
             subscriptSpecializations.append(specialization)
+        case "--specialize-method":
+            guard let specialization = options.popFirst() else { throw usage }
+            methodSpecializations.append(specialization)
         case "--bind-associated-type":
             guard let binding = options.popFirst() else { throw usage }
             bindingArguments.append(binding)
@@ -1622,7 +1742,8 @@ private func run(_ arguments: [String]) throws {
     }
     let output = try generate(index: index, root: root, projections: projections,
                               variadicForwarding: variadicForwarding,
-                              subscriptSpecializations: subscriptSpecializations, spy: spy,
+                              subscriptSpecializations: subscriptSpecializations,
+                              methodSpecializations: methodSpecializations, spy: spy,
                               associatedTypeBindings: associatedTypeBindings)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.source.write(toFile: arguments[7], atomically: true, encoding: .utf8)

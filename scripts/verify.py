@@ -43,7 +43,7 @@ def record_result(name, output, returncode, valid, *, expected_failure):
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
              module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=(),
-             associated_bindings=()):
+             associated_bindings=(), method_specializations=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -52,6 +52,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--forward-variadic", method])
     for specialization in specializations:
         arguments.extend(["--specialize-subscript", specialization])
+    for specialization in method_specializations:
+        arguments.extend(["--specialize-method", specialization])
     if spy:
         arguments.append("--spy")
     for source_module, path in sources:
@@ -447,6 +449,12 @@ def main():
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
     run("type-subscript-generation", generate(
         tool, type_subscript_source, type_subscript_generated, "TypeSubscriptDirectory"))
+    generic_method_source = source.with_name("GenericMethodDirectory.swift")
+    generic_method_generated = generated.with_name("GenericMethodDirectoryMock.swift")
+    method_specializations = ("transform(_:)=Int", "transform(_:)=String")
+    run("generic-method-generation", generate(
+        tool, generic_method_source, generic_method_generated, "GenericMethodDirectory",
+        method_specializations=method_specializations))
     generic_subscript_source = source.with_name("GenericSubscriptDirectory.swift")
     generic_subscript_generated = generated.with_name("GenericSubscriptDirectoryMock.swift")
     generic_subscript_specializations = ("get_subscript(_:)=Int", "get_subscript(_:)=String",
@@ -821,6 +829,40 @@ def main():
         projections=("get_subscript(_:)",)), fails=True,
         patterns=[r"BPM001", r":\d+:\d+: error:", r"cannot be combined with generated projected mock types"])
     assert rejected_type_projection.read_text() == sentinel
+    repeated_generic_method = temp / "RepeatedGenericMethod.swift"
+    run("generic-method-generation-repeat", generate(
+        tool, generic_method_source, repeated_generic_method, "GenericMethodDirectory",
+        method_specializations=("transform(_:)=Swift.String", "transform(_:)=Swift.Int")))
+    run("generic-method-generation-repeat-compare", ["cmp", generic_method_generated, repeated_generic_method])
+    invalid_generic_method = temp / "RejectedGenericMethod.swift"
+    method_sentinel = b"// existing Swift output\n"
+    for label, options, diagnostic in (
+        ("missing", (), r"Generic methods require explicit specialization"),
+        ("duplicate", ("transform(_:)=Int", "transform(_:)=Swift.Int"), r"Duplicate generic method specialization"),
+        ("selector", ("unrelated(_:)=Int",), r"Unknown generic method selector"),
+        ("type", ("transform(_:)=Bool",), r"Unsupported generic method specialization type 'Bool'"),
+    ):
+        invalid_generic_method.write_bytes(method_sentinel)
+        initial_mtime = invalid_generic_method.stat().st_mtime_ns
+        run("generic-method-reject-" + label, generate(
+            tool, generic_method_source, invalid_generic_method, "GenericMethodDirectory",
+            method_specializations=options), fails=True, patterns=[r"error: BPM001: " + diagnostic])
+        if (invalid_generic_method.read_bytes(), invalid_generic_method.stat().st_mtime_ns) != (method_sentinel, initial_mtime):
+            raise ValueError("Rejected generic method options changed the existing output")
+
+    generic_body = generic_method_source.read_text(encoding="utf-8")
+    for label, original, edited, diagnostic in (
+        ("constraints", "Hashable & Sendable", "Equatable & Sendable",
+         r"Generic method specialization requires inline Hashable and Sendable constraints"),
+        ("async", "(_ value: T) -> T", "(_ value: T) async -> T",
+         r"Generic method specialization requires a direct synchronous nonthrowing Sendable requirement"),
+    ):
+        boundary = temp / f"GenericMethod-{label}.swift"
+        boundary.write_text(generic_body.replace(original, edited), encoding="utf-8")
+        run("generic-method-reject-" + label, generate(
+            tool, boundary, invalid_generic_method, "GenericMethodDirectory",
+            method_specializations=method_specializations), fails=True, patterns=[r"error: BPM001: " + diagnostic])
+
     repeated_generic_subscript = temp / "RepeatedGenericSubscript.swift"
     run("generic-subscript-generation-repeat", generate(
         tool, generic_subscript_source, repeated_generic_subscript, "GenericSubscriptDirectory",
@@ -1240,6 +1282,7 @@ def main():
                   r"BLUEPRINT_AVAILABILITY_GUARDED_RECEIPT Swift\.Int 47",
                   r"RUN011_generatedOrdinaryMockInvokesCallbackWithinWitness\(\) passed",
                   r"GEN019_generatedOrdinaryInoutWitnessWritesBackBeforeReturnAndThrow\(\) passed",
+                  r"GEN010_genericMethodSeparatesIntAndStringSpecializations\(\) passed",
                   r"GEN012_returnOnlyOverloadsUseSeparateTypedEndpoints\(\) passed",
                   r"RUN025_cancellationRequestKeepsGeneratedAnswerActiveUntilReturn\(\) passed",
                   r"RUN025_detachedCancellationRequestStaysWithTypedThrowingAdmission\(\) passed",
@@ -1369,6 +1412,8 @@ def main():
         "TypeSubscriptWrongNewValue": r"cannot convert value of type 'String' to expected argument type 'Int'",
         "ValueForNever": r"cannot convert value of type 'String'.*'Never'",
         "AsyncAnswerForSyncThrowing": r"to parameter expecting synchronous function type",
+        "GenericMethodWrongConstraint": r"requires that 'UnhashableGenericMethodValue' conform to 'Hashable'",
+        "GenericMethodWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptWrongConstraint": r"requires that 'UnhashableKey' conform to 'Hashable'",
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
@@ -1576,6 +1621,8 @@ def main():
                   rf"No matching stub for schema1\|ConsumerDomain\.{endpoint}\|Sendable$")
     unlisted = r"No configured specialization for schema1\|ConsumerDomain\.GenericSubscriptDirectory.*\[Swift.Bool\]$"
     run_fatal("generic-subscript-missing-terminates", "--missing-generic-specialization", unlisted)
+    unlisted_method = r"No configured specialization for schema1\|ConsumerDomain\.GenericMethodDirectory\|transform<.*\[Swift.Bool\]$"
+    run_fatal("generic-method-missing-terminates", "--missing-generic-method-specialization", unlisted_method)
     type_scope = r"Missing type-level mock scope for schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:"
     run_fatal("type-subscript-detached-reject", "--type-subscript-detached",
               type_scope + r".*\.get->Int\|Sendable$",

@@ -72,6 +72,12 @@ RUN-016 uses a typed `StoredSubscript` backing store for generated getters and s
 
 The independent SwiftPM consumer drives the generated subscript from concurrent writers and verifies separate getter and setter histories. Reentrant hash and equality fixtures change the index before commit, including replacing an entry at the same key. Tests confirm the outer operation uses the new index and keeps both writes. A replaced value’s destructor reads the committed value and reenters the store. This covers the checked Sendable route on the current Mac. Actor-local keyed storage and release-profile qualification remain open.
 
+## Generic method specializations
+
+GEN-010 supports explicit Int and String specializations for a direct synchronous, nonthrowing Sendable protocol method with one generic argument and the same generic result. The witness retains inline Hashable and Sendable requirements and dispatches only after checking the exact metatype. Each concrete descriptor configures and verifies its own typed endpoint. The external Swift 6 consumer verifies both results and distinct concrete identities under the same raw declaration ID. The compiler rejects an incompatible matcher and a caller type missing the authored Hashable constraint. The bounded child proves a Swift.Bool call reports its specialization and records one admission and terminal event before termination.
+
+Generation rejects missing, duplicate, and unsupported options before publishing. Reversed, fully qualified options emit byte-identical output. Generic subscript fixtures keep their existing bytes. Other shapes, configured plugin selection for generic methods, and applicable profile certification remain open.
+
 ## Return-only overloads
 
 GEN012-A supports a pair of synchronous nonthrowing methods on an ordinary Sendable protocol with the same arguments and distinct `Int` and `String` results. Both descriptors take an explicit result metatype. The independent SwiftPM consumer selects each real witness through the protocol, supplies the same input, and verifies separate return histories and endpoint identities. Swift rejects a String result configured for the Int endpoint. Other overload shapes and the generic operator gate GEN012-B remain open.
