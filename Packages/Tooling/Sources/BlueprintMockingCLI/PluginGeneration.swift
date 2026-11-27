@@ -94,10 +94,12 @@ private struct BuildGenerationRequest {
     let sources: [String: [String]]
     let sourceConditions: [String: [String: Bool]]
     let importedInterface: ImportedInterfaceInput?
+    let sourceFactsDirectory: URL?
 
     init(arguments: ArraySlice<String>, command: String) throws {
         let usage = invalid("usage: blueprint-mocking \(command) --config PATH --output DIRECTORY "
                             + "--input-set-id HEX [--source MODULE FILE]... [--source-condition MODULE FLAG true|false]..."
+                            + (command == "generate" ? " [--source-facts-cache DIRECTORY]" : "")
                             + " or --interface MODULE FILE --importer-context FILE"
                             + (command == "inspect" ? " [--format json]" : ""))
         var arguments = arguments
@@ -112,11 +114,17 @@ private struct BuildGenerationRequest {
         var seen: Set<String> = []
         var interface: (module: String, path: String)?
         var contextPath: String?
+        var cachePath: String?
         var hasFormat = false
         while let option = arguments.popFirst() {
             if command == "inspect", option == "--format" {
                 guard !hasFormat, arguments.popFirst() == "json" else { throw usage }
                 hasFormat = true
+                continue
+            }
+            if option == "--source-facts-cache" {
+                guard command == "generate", cachePath == nil, let path = arguments.popFirst() else { throw usage }
+                cachePath = path
                 continue
             }
             if option == "--source-condition" {
@@ -147,6 +155,14 @@ private struct BuildGenerationRequest {
         self.inputSetID = inputSetID
         self.sources = try interface == nil ? mergeTrackedSources(sources, relativeTo: configuration) : sources
         self.sourceConditions = conditions.values
+        sourceFactsDirectory = cachePath.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if let cache = sourceFactsDirectory {
+            let outputComponents = output.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+            let cacheComponents = cache.resolvingSymlinksInPath().standardizedFileURL.pathComponents
+            guard interface == nil, !cacheComponents.starts(with: outputComponents) else {
+                throw invalid("The source facts cache requires Swift source inputs and a separate cache directory.")
+            }
+        }
         if let interface {
             guard let contextPath, sources.isEmpty, conditions.values.isEmpty else {
                 throw IncompatibleImporterContext(path: interface.path,
@@ -461,7 +477,8 @@ private struct BuildGenerationPlan {
     let selections: [Selection]
     let outputs: [(url: URL, text: String)]
 
-    init(request: BuildGenerationRequest, sourceParseMemo: InvocationSourceParseMemo? = nil) throws {
+    init(request: BuildGenerationRequest, sourceParseMemo: InvocationSourceParseMemo? = nil,
+         sourceFactsCache: SourceFactsCache? = nil) throws {
         let loaded = try loadConfiguration(request.config)
         let sorted = loaded.selections.sorted { ($0.module, $0.type) < ($1.module, $1.type) }
         if let interface = request.importedInterface,
@@ -477,7 +494,8 @@ private struct BuildGenerationPlan {
             inputStamp = try sourceMembershipStamp(request.sources, relativeTo: request.config)
         }
         let sourceIndex = ProtocolSourceIndex(sources: request.sources, conditions: request.sourceConditions,
-                                              importedInterface: request.importedInterface, sourceParseMemo: sourceParseMemo)
+                                              importedInterface: request.importedInterface, sourceParseMemo: sourceParseMemo,
+                                              sourceFactsCache: sourceFactsCache)
         let resolved = try sorted.map { selection in
             let root = try sourceIndex.select(selection.type, in: selection.module, diagnosticFile: request.config.path)
             let mock = try generate(index: sourceIndex, root: root, projections: [],
@@ -644,19 +662,26 @@ func verifyBuildOutputs(arguments: ArraySlice<String>) throws {
 
 func generateBuildOutputs(arguments: ArraySlice<String>) throws {
     let request = try BuildGenerationRequest(arguments: arguments, command: "generate")
+    let sourceFactsCache = try request.sourceFactsDirectory.map { directory in
+        guard let cache = SourceFactsCache(directory: directory) else {
+            throw invalid("The source facts cache requires identified native SwiftParser and SwiftSyntax libraries.")
+        }
+        return cache
+    }
     let firstPublication = !FileManager.default.fileExists(atPath: request.output.path)
     let sourceParseMemo = firstPublication && request.importedInterface == nil ? InvocationSourceParseMemo() : nil
     if firstPublication {
         // A rejected first request must not create its output directory.
-        _ = try BuildGenerationPlan(request: request, sourceParseMemo: sourceParseMemo)
+        _ = try BuildGenerationPlan(request: request, sourceParseMemo: sourceParseMemo, sourceFactsCache: sourceFactsCache)
         publicationCheckpoint("after-preflight")
         try FileManager.default.createDirectory(at: request.output, withIntermediateDirectories: true)
     }
     try withOutputLock(request.output, exclusive: true) {
-        let plan = try BuildGenerationPlan(request: request, sourceParseMemo: sourceParseMemo)
+        let plan = try BuildGenerationPlan(request: request, sourceParseMemo: sourceParseMemo, sourceFactsCache: sourceFactsCache)
         try BuildOutputPublication(directory: request.output).publish(
             shard: Data(plan.outputs[0].text.utf8), index: Data(plan.outputs[1].text.utf8)
         )
         print("Blueprint Mocking: generated \(plan.selections.count) protocol mock(s)")
     }
+    sourceFactsCache?.commit()
 }

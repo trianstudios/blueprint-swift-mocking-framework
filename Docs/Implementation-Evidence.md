@@ -793,3 +793,15 @@ Standalone and configured output agree. Swift rejects a missing await in ordinar
 GEN-026 adds one direct init(seed: Int) async throws(Failure) with a public same-module error enum. A deterministic native metatype fixture suspends setup, checks the pending attempt and releases it. It exercises success, a configured typed failure, a cooperative cancellation that throws the declared error and a cancellation that setup ignores before succeeding. Failure allocates no instance identity. Successful preparation links the initialized instance and verifies a subsequent typed method call.
 
 A detach-active reset during preparation keeps cancellation, admission and completion in the attempt's original epoch. The cancellation request is a separate history record. Swift rejects a foreign setup error and a missing await in both isolation modes. Invalid async failable or untyped throwing requests preserve the prior configured output. Other constructor shapes and cancellation outside the observed preparation remain open.
+
+## Persistent configured source facts
+
+DX-012 now has an opt-in cache for one parsed-file fact. After successful configured generation, the Xcode-linked tool can persist that a source file contributes no indexed declarations. Only ordinary UTF-8 regular files up to 4 MiB with top-level free functions or no declarations are eligible. The tool hashes current source bytes and parser provenance in every process. The private cache stores up to 256 file digests in one bounded 32 KiB record. Its checksum detects damage to locally derived data.
+
+The network-denied fixture compares byte-identical shard and index output from uncached, cold and warm independent processes. Parser traces show a warm helper bypass while the root, inherited protocol and extension still parse. The generated mock then compiles and executes in a separate native consumer. Truncated, oversize, schema, provenance and checksum failures force cold recomputation. The cache path refuses a linked directory. A malformed edit with the same size and modification time reaches the parser and preserves the previous generated pair.
+
+This evidence covers the configured CLI with the Xcode parser libraries. Each process hashes the executable and parser library files, so the traced parser reduction supplies no end-to-end speed measurement. Resolved-graph and emission caches, automatic frontend use, and the full A3.4 monorepo fixture remain open.
+
+## Native Swift Testing suite evidence
+
+A full prototype run exited successfully from the independent consumer suite while its console log omitted three named completion lines. Repeated checks reproduced missing lines under merged, split and serial capture. On Swift 6.4 and later, the verifier now checks the native v0 event stream for successful run completion, matching test starts and completions, and the exact required test identities. It also checks the independent availability receipt on the console. The result log links the event stream by checksum. Earlier compiler profiles retain their existing capture path.

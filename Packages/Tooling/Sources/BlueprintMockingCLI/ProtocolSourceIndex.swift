@@ -125,15 +125,18 @@ final class ProtocolSourceIndex {
     private let importedInterface: ImportedInterfaceInput?
     private let conditions: [String: [String: Bool]]
     private let sourceParseMemo: InvocationSourceParseMemo?
+    private let sourceFactsCache: SourceFactsCache?
     private var filesByRoot: [SyntaxIdentifier: SourceFile] = [:]
     private var modules: [String: ModuleDeclarations] = [:]
 
     init(sources: [String: [String]], conditions: [String: [String: Bool]] = [:],
-         importedInterface: ImportedInterfaceInput? = nil, sourceParseMemo: InvocationSourceParseMemo? = nil) {
+         importedInterface: ImportedInterfaceInput? = nil, sourceParseMemo: InvocationSourceParseMemo? = nil,
+         sourceFactsCache: SourceFactsCache? = nil) {
         self.importedInterface = importedInterface
         pathsByModule = importedInterface.map { [$0.module: [$0.path]] } ?? sources
         self.conditions = conditions
         self.sourceParseMemo = sourceParseMemo
+        self.sourceFactsCache = sourceFactsCache
     }
 
     /// Selects the original syntax nodes in the active clauses of a protocol's member block.
@@ -203,13 +206,16 @@ final class ProtocolSourceIndex {
             let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
             guard seenPaths.insert(standardized).inserted else { continue }
             let swiftText: String
+            var cacheable: SourceFactsCache.Source?
             if let supplied = importedInterface, supplied.path == path, supplied.module == module {
                 swiftText = supplied.text
             } else {
                 guard URL(fileURLWithPath: path).pathExtension != "swiftinterface" else {
                     throw IncompatibleImporterContext(path: path, reason: "Textual module input requires --interface and --importer-context")
                 }
-                swiftText = try String(contentsOfFile: path, encoding: .utf8)
+                cacheable = sourceFactsCache?.readSource(at: path)
+                if let cacheable, sourceFactsCache?.skipsIndexing(cacheable) == true { continue }
+                swiftText = try cacheable?.text ?? String(contentsOfFile: path, encoding: .utf8)
             }
             // Only erase no-op components for source locations. Parent traversal can cross a symbolic link.
             let displayPath = path.split(separator: "/", omittingEmptySubsequences: false)
@@ -222,6 +228,9 @@ final class ProtocolSourceIndex {
                 }
                 let origin = ProtocolSourceOrigin(module: module, path: displayPath, line: 1, column: 1)
                 throw Self.error(at: origin, "Malformed Swift source. Fix parser errors before generation")
+            }
+            if let cacheable, tree.statements.allSatisfy({ $0.item.is(FunctionDeclSyntax.self) }) {
+                sourceFactsCache?.rememberNoIndexableDeclarations(cacheable)
             }
             var file = SourceFile(module: module, path: displayPath, tree: tree,
                                   converter: SourceLocationConverter(fileName: displayPath, tree: tree))

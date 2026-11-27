@@ -239,6 +239,12 @@ Choose an empty evidence directory, either ignored by Git or outside the checkou
 
 The local report shows how the latency samples compare with the published 2 µs target. Release approval requires the declared reference hardware, compatible baseline comparisons and the rest of D4.3, including generation, build, lock-wait and cancellation evidence.
 
+### Optional source facts cache
+
+Configured `generate` can take `--source-facts-cache DIRECTORY` with the tool that links Xcode's bundled parser. Choose a dedicated owner-private directory outside the generated output directory. The cache skips indexing regular UTF-8 Swift source files when the same bytes were previously parsed and found to contain only top-level free functions or no declarations. The generator still opens and hashes the current source and indexes participating declarations normally. A malformed, oversize, or incompatible cache record triggers parsing again. Cache use is optional and does not require a network connection.
+
+The cache keys these limited facts to the exact executable and parser library files from the selected Xcode toolchain. Keep the toolchain installed at the same location and stable while generating. Each process reads the tool and parser identities before it can reuse a fact. [Implementation evidence](Docs/Implementation-Evidence.md#persistent-configured-source-facts)
+
 ### Prepared parser parity
 
 Run this on the prepared macOS host after independently building the bundled generator using `scripts/generate.sh` and the packaged `blueprint-mocking` product using the native SwiftPM debug build system. Use the same authoring revision, selected Xcode `swiftc` and macOS SDK for both. The SwiftPM build comes from `Packages/Tooling` in an exact authoring checkout and resolves the pinned SwiftSyntax 600.0.1 source. Retain its unstripped executable, scratch directory with `checkouts/swift-syntax` and object files, `Package.resolved`, and `blueprint-mocking.product/Objects.LinkFileList` next to the executable.

@@ -36,6 +36,96 @@ def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
     return record_result(name, output, completed.returncode, valid, expected_failure=fails)
 
 
+SUITE_SUMMARY_PATTERN = r"\b[1-9]\d* tests?\b.*\bpassed\b"
+
+
+def swift_testing_suite_proof(path, patterns, console):
+    """Check real per-test completion records and retain checks for other console output."""
+    with path.open("rb") as stream:
+        maximum = 8 * 1024 * 1024
+        data = stream.read(maximum + 1)
+    if len(data) > maximum:
+        raise ValueError("Swift Testing event stream exceeds 8 MiB")
+    started, ended = set(), set()
+    run_started = False
+    summary = None
+    for line in data.splitlines():
+        record = json.loads(line)
+        if type(record["version"]) is not int or record["version"] != 0:
+            raise ValueError("Unsupported Swift Testing event stream version")
+        if record["kind"] == "test":
+            continue
+        if record["kind"] != "event" or summary is not None:
+            raise ValueError("Unexpected Swift Testing event record")
+        event = record["payload"]
+        kind = event["kind"]
+        if kind == "runStarted":
+            if run_started:
+                raise ValueError("Duplicate Swift Testing run start")
+            run_started = True
+        elif not run_started:
+            raise ValueError("Missing Swift Testing run start")
+        elif kind == "testStarted":
+            test = event["testID"]
+            if test in started:
+                raise ValueError("Duplicate native test start")
+            started.add(test)
+        elif kind == "testEnded":
+            test = event["testID"]
+            if test not in started or test in ended:
+                raise ValueError("Unmatched or duplicate native test completion")
+            ended.add(test)
+        elif kind == "issueRecorded" and event["issue"]["isKnown"] is not True:
+            raise ValueError("Swift Testing reported an unexpected issue")
+        elif kind == "runEnded":
+            successful = [message["text"] for message in event["messages"]
+                          if message["symbol"] in {"pass", "passWithKnownIssue"}
+                          and re.search(SUITE_SUMMARY_PATTERN, message["text"])]
+            if len(successful) != 1:
+                raise ValueError("Missing successful native test run summary")
+            summary = successful[0]
+    if summary is None or not started or started != ended:
+        raise ValueError("Incomplete Swift Testing completion records")
+    count = re.search(r"\bTest run with (\d+) tests?\b", summary)
+    if count is None or int(count[1]) != len(ended):
+        raise ValueError("Native test completion count differs from the run summary")
+    names = {test.partition("/")[0] for test in ended}
+    for pattern in patterns:
+        named = re.fullmatch(r"([A-Za-z_]\w*)\\\(\\\) passed", pattern)
+        if named:
+            if f"ConsumerTests.{named[1]}()" not in names:
+                raise ValueError(f"Missing native completion for {named[1]}")
+        elif re.search(pattern, summary if pattern == SUITE_SUMMARY_PATTERN else console) is None:
+            raise ValueError(f"Missing required Swift Testing output: {pattern}")
+    return summary, len(ended), hashlib.sha256(data).hexdigest()
+
+
+def run_consumer_suite(swift, environment, uses_native_events, *, patterns):
+    command = [swift, "test", "--package-path", "Fixtures/ProtocolConsumer"]
+    if not uses_native_events:
+        return run("consumer-tests", command, env=environment, patterns=patterns)
+    events_path = EVIDENCE / "consumer-tests.events.jsonl"
+    events_path.unlink(missing_ok=True)
+    result = subprocess.run(
+        [*map(str, command), "--disable-xctest", "--event-stream-output-path", str(events_path),
+         "--event-stream-version", "0"],
+        cwd=ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180,
+    )
+    output = result.stdout
+    valid = result.returncode == 0
+    if valid:
+        try:
+            summary, count, digest = swift_testing_suite_proof(events_path, patterns, output)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+            valid = False
+            output += f"\nSwift Testing completion evidence failed: {error}\n"
+        else:
+            if summary not in output:
+                output += f"\n{summary}\n"
+            output += f"\nVerified {count} native test completions. {events_path.name} SHA-256 {digest}\n"
+    return record_result("consumer-tests", output, result.returncode, valid, expected_failure=False)
+
+
 def record_result(name, output, returncode, valid, *, expected_failure):
     log = EVIDENCE / (name + ".log")
     log.write_text(output, encoding="utf-8")
@@ -2086,8 +2176,8 @@ def main():
         r"RUN007_namedSendableMatchersDescribeCompositionWithoutPrintingValues\(\) passed",
         r"RUN007_namedMainActorMatchersDescribeActorLocalPredicates\(\) passed",
     ])
-    run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
-        patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
+    run_consumer_suite(swift, swift_environment, release and tuple(map(int, release.groups())) >= (6, 4),
+        patterns=[SUITE_SUMMARY_PATTERN,
                   r"RUN027_RUN029_orderedConsumptionHonorsClaimedBarriersAndKeepsHistory\(\) passed",
                   r"RUN017_safeRecipesReturnTypedNilAndEmptyDictionaryThroughProtocol\(\) passed",
                   r"RUN017_checkedEndpointUsesRegisteredDomainDefaultAfterStubAndForwarding\(\) passed",
@@ -2224,6 +2314,14 @@ def main():
                   r"PASS: GEN016 executable replayed a MainActor async typed callback success and failure"])
     modules = Path(run_swift("consumer-bin-path", [
         "build", "--package-path", "Fixtures/ProtocolConsumer", "--show-bin-path"]).strip())
+    run("configured-persistent-source-facts", [
+        sys.executable, "scripts/verify_source_facts_cache.py", "--fault-tool", publication_fault_tool,
+        "--swiftc", swiftc, "--sdk", sdk, "--runtime-products", modules,
+        "--evidence-dir", EVIDENCE / "source-facts-cache",
+    ], env=swift_environment, timeout=300, patterns=[
+        r"PASS: DX012 persistent source facts bypassed the parser across offline processes",
+        r"EVIDENCE: source-facts-cache-report\.json SHA-256 [0-9a-f]{64}",
+    ])
     run("imported-interface-native-consumer", [
         sys.executable, "scripts/verify_imported_interface.py", "--tool", tool, "--swiftc", swiftc,
         "--sdk", sdk, "--sdk-version", sdk_version, "--runtime-modules", modules,
