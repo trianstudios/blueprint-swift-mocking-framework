@@ -306,6 +306,22 @@ final class ProtocolSourceIndex {
         }
     }
 
+    func requireNoncopyableStruct(named name: String, at reference: some SyntaxProtocol) throws {
+        let site = origin(of: reference)
+        let candidates = try Self.shadows(named: name, in: load(site.module))
+        guard Self.isSimple(name), candidates.count == 1, let candidate = candidates.first,
+              !candidate.isConditional, let value = candidate.declaration.as(StructDeclSyntax.self),
+              value.name.text == name, value.attributes.isEmpty, value.modifiers.map(\.name.text) == ["public"],
+              value.genericParameterClause == nil, value.genericWhereClause == nil,
+              let marker = value.inheritanceClause?.inheritedTypes.lazy.compactMap({
+                  $0.type.as(SuppressedTypeSyntax.self)?.type
+              }).first(where: { ["Copyable", "Swift.Copyable"].contains($0.trimmedDescription) }) else {
+            throw Self.error(at: site, "A consuming input requires one unconditional public nongeneric struct "
+                             + "'\(site.module).\(name)' with an explicit ~Copyable declaration.")
+        }
+        try requireUnshadowedQualifier(marker.trimmedDescription == "Copyable" ? "Copyable" : "Swift", at: marker)
+    }
+
     /// Resolves a lexical nominal used by the restricted availability profile.
     func requireAvailabilityStruct(named name: String, at reference: some SyntaxProtocol) throws -> StructDeclSyntax {
         let site = origin(of: reference)

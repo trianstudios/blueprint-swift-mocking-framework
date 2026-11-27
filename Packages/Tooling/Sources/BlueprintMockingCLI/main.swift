@@ -202,21 +202,24 @@ struct Parameter {
     let isVariadic: Bool
     let isInout: Bool
     let isIsolatedActor: Bool
+    let isConsumingInput: Bool
     let callback: CallbackType?
 
     init(label: String, type: String, isVariadic: Bool = false, isInout: Bool = false,
-         isIsolatedActor: Bool = false, callback: CallbackType? = nil) {
+         isIsolatedActor: Bool = false, isConsumingInput: Bool = false, callback: CallbackType? = nil) {
         self.label = label
         self.type = type
         self.isVariadic = isVariadic
         self.isInout = isInout
         self.isIsolatedActor = isIsolatedActor
+        self.isConsumingInput = isConsumingInput
         self.callback = callback
     }
 
     var witnessType: String {
         if isInout { return "inout \(type)" }
         if isIsolatedActor { return "isolated \(type)" }
+        if isConsumingInput { return "consuming \(type)" }
         return isVariadic ? "\(type)..." : type
     }
     var runtimeType: String { isVariadic ? "[\(type)]" : type }
@@ -296,15 +299,20 @@ struct Member {
     var requiresResultMetatype = false
 
     var usesInout: Bool { parameters.contains(where: \.isInout) }
+    var usesConsumingInput: Bool { parameters.contains(where: \.isConsumingInput) }
     var callback: CallbackType? { parameters.last?.callback }
     var materializedAutoclosure: CallbackType? {
         guard let callback, case .materializedAutoclosure = callback.kind else { return nil }
         return callback
     }
-    var metadataParameters: [Parameter] { callback == nil ? parameters : Array(parameters.dropLast()) }
+    var metadataParameters: [Parameter] {
+        if usesConsumingInput { return [Parameter(label: parameters[0].label, type: "Swift.Int")] }
+        return callback == nil ? parameters : Array(parameters.dropLast())
+    }
     var family: String {
         if let callback { return callback.kind.family }
         if parameters.contains(where: \.isIsolatedActor) { return "IsolatedSync" }
+        if usesConsumingInput { return "BlueprintMocking.ConsumingSync" }
         return (usesInout ? "Inout" : isolation.prefix) + effect.family
     }
     var verificationInputType: String { usesInout ? "InoutValues<\(inputType)>" : inputType }
@@ -335,6 +343,7 @@ struct Member {
             let arguments = "\(inputType), \(callback.input), \(callback.output), \(outputType)"
             return callback.failure.map { "\(arguments), \($0)" } ?? arguments
         }
+        if usesConsumingInput { return "\(parameters[0].type), \(inputType), \(outputType)" }
         let types = "\(inputType), \(outputType)"
         return effect.runtimeFailure.map { "\(types), \($0.type)" } ?? types
     }
@@ -362,6 +371,7 @@ struct Member {
     var invocationInput: String {
         let arguments = invocationArguments
         if usesInout { return "&" + arguments[0] }
+        if usesConsumingInput { return "consume " + arguments[0] }
         let metadata = callback == nil ? arguments[...] : arguments.dropLast()
         let inputs = metadata.count == 1 ? metadata[metadata.startIndex] : "(" + metadata.joined(separator: ", ") + ")"
         if callback != nil, let scoped = arguments.last { return "\(inputs), \(scoped)" }
@@ -722,7 +732,7 @@ func generate(
         }
         let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
         let matcherTypes = parameters.filter { $0.callback == nil }.map {
-            "\($0.label):\($0.isInout ? "Int" : $0.runtimeType)"
+            "\($0.label):\($0.isInout || $0.isConsumingInput ? "Int" : $0.runtimeType)"
         }.joined(separator: ",")
         let specialization: String
         if case .specializedGeneric(_, let type) = kind {
@@ -745,6 +755,9 @@ func generate(
             }
             if parameters.contains(where: \.isInout) || previous.usesInout {
                 try reject(node, "Inout overloads with identical matcher signatures require distinct argument labels" + locations)
+            }
+            if parameters.contains(where: \.isConsumingInput) || previous.usesConsumingInput {
+                try reject(node, "Consuming input overloads with identical metadata matcher signatures require distinct argument labels" + locations)
             }
             if parameters.contains(where: \.isIsolatedActor) || previous.parameters.contains(where: \.isIsolatedActor) {
                 try reject(node, "Isolated actor overloads with identical matcher signatures require distinct argument labels" + locations)
@@ -1300,6 +1313,41 @@ func generate(
             try addMember(name: fn.name.text,
                           parameters: [Parameter(label: label, type: "\(module).\(actor.name.text)", isIsolatedActor: true)],
                           outputType: "Swift.\(scalar)", effect: Effect(isAsync: false, failure: nil), kind: .method, at: fn)
+            continue
+        }
+        let hasConsumingInput = declaredParameters.contains {
+            $0.type.as(AttributedTypeSyntax.self)?.specifiers.contains { $0.trimmedDescription == "consuming" } == true
+        }
+        if hasConsumingInput {
+            let message = "Consuming input stubbing requires a direct synchronous nonthrowing Sendable "
+                + "method with one public same-module noncopyable struct parameter and an Int result"
+            guard declarationID == proto.id, declarations.count == 1, isolation == .sendable,
+                  !hasBindings, !spy, !specializesGenerics, projections.isEmpty, variadicForwarding.isEmpty,
+                  scopedRuleSelectors.isEmpty, rethrowsSelections.isEmpty,
+                  fn.attributes.isEmpty, fn.signature.effectSpecifiers == nil,
+                  declaredParameters.count == 1, let parameter = declaredParameters.first,
+                  parameter.defaultValue == nil, parameter.ellipsis == nil,
+                  parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+                  let attributed = parameter.type.as(AttributedTypeSyntax.self),
+                  attributed.attributes.isEmpty, attributed.specifiers.map(\.trimmedDescription) == ["consuming"],
+                  let input = attributed.baseType.as(IdentifierTypeSyntax.self), input.genericArgumentClause == nil,
+                  let result = fn.signature.returnClause?.type, ["Int", "Swift.Int"].contains(result.trimmedDescription) else {
+                try reject(fn, message)
+            }
+            guard !members.contains(where: \.usesConsumingInput) else {
+                try reject(fn, "Only one consuming input method is supported per protocol")
+            }
+            let label = parameter.firstName.text
+            guard label == "_" || simple(label) else { try reject(parameter, "Use a simple consuming argument label") }
+            try index.requireNoncopyableStruct(named: input.name.text, at: input)
+            try index.requireUnshadowedQualifier(module, at: input)
+            try index.requireUnshadowedQualifier("BlueprintMocking", at: fn)
+            try index.requireUnshadowedQualifier("Swift", at: result)
+            if result.trimmedDescription == "Int" { try index.requireUnshadowedQualifier("Int", at: result) }
+            let parameterType = "\(module).\(input.name.text)"
+            try addMember(name: fn.name.text,
+                          parameters: [Parameter(label: label, type: parameterType, isConsumingInput: true)],
+                          outputType: "Swift.Int", effect: Effect(isAsync: false, failure: nil), kind: .method, at: fn)
             continue
         }
         let returnType = fn.signature.returnClause?.type
@@ -1872,7 +1920,9 @@ func generate(
         } else {
             let after = m.usesInout ? ", after: after" : ""
             let origin = spy ? ", origin: origin" : ""
-            output += "        public func \(m.verificationSignature(includeOrigin: spy)) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.verificationInputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression(describingFields: true))\(after), phase: phase\(origin))\n        }\n"
+            let type = m.usesConsumingInput ? "BlueprintMocking.ConsumingSyncVerification<\(m.inputType)>"
+                : "BlueprintMocking.\(isolation.prefix)Verification<\(m.verificationInputType)>"
+            output += "        public func \(m.verificationSignature(includeOrigin: spy)) -> \(type) {\n            __endpoint\(i).verification(matching: \(m.matcherExpression(describingFields: true))\(after), phase: phase\(origin))\n        }\n"
         }
     }
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
@@ -1926,6 +1976,9 @@ func generate(
         let member = members[i]
         let types = projectionTypes[i]!
         output += "                projection\(i): InvocationProjection<\(member.inputType), \(member.outputType), \(types.argument), \(types.result)>,\n"
+    }
+    if let consuming = members.first(where: \.usesConsumingInput) {
+        output += "                projectingInput: @escaping @Sendable (borrowing \(consuming.parameters[0].type)) -> Swift.Int,\n"
     }
     let defaultConfigure = hasProviderWitness && instanceIndices.isEmpty ? " = { _ in }" : ""
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void\(defaultConfigure)) {\n"
@@ -2009,7 +2062,9 @@ func generate(
         } else if m.outputType == "Void" {
             mapping += ", fallback: { _ in () }"
         }
-        let projection = projectedIndices.contains(i) ? ", projection: projection\(i)" : ""
+        let projection = if m.usesConsumingInput { ", projectingInput: projectingInput" }
+            else if projectedIndices.contains(i) { ", projection: projection\(i)" }
+            else { "" }
         let identity = String(reflecting: m.identity)
         var endpointID = "EndpointID(\(identity))"
         if case .specializedGeneric(let declaration, let type) = m.kind {
