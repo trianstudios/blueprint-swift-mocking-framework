@@ -12,6 +12,7 @@ import ConsumerDoubles
             try verifyThrowingCallback(reporter: reporter)
             try await verifyAsyncThrowingCallback(reporter: reporter)
             try await MainActor.run { try verifyMainActorThrowingCallback(reporter: reporter) }
+            try await verifyMainActorAsyncThrowingCallback(reporter: reporter)
             return
         }
         if CommandLine.arguments.contains("--quiescent-configuration") {
@@ -171,5 +172,36 @@ import ConsumerDoubles
         }
         precondition(mock.verify.register(id: .equal("row"), phase: .returned).wasCalled(.once).passed)
         print("PASS: GEN016 executable replayed a MainActor typed callback success and failure")
+    }
+
+    @MainActor
+    private static func verifyMainActorAsyncThrowingCallback(reporter: FailureReporter) async throws {
+        let session = MockSession()
+        let captor = MainActorAsyncThrowingEscapingCallbackCaptor<Int, String, MainActorAsyncCallbackFixtureError>(
+            session: session
+        )
+        let mock = MainActorAsyncThrowingEscapingCallbackDirectoryMock(failureReporter: reporter, session: session) { stubs in
+            stubs.register(id: .equal("row")).capturingCallback(into: captor).willReturn("registered")
+        }
+        let registration = registerMainActorAsyncThrowingEscapingCallback(mock, id: "row") {
+            input async throws(MainActorAsyncCallbackFixtureError) in
+            await Task.yield()
+            MainActor.preconditionIsolated()
+            guard input >= 0 else { throw .rejected(input) }
+            return "replayed-\(input)"
+        }
+        precondition(registration == "registered")
+        guard let capture = captor.captures.first else { preconditionFailure("No MainActor async callback captured") }
+
+        let success = try await capture.invoke(7, onUnavailable: { .unavailable(7) })
+        precondition(success == "replayed-7")
+        do throws(MainActorAsyncCallbackFixtureError) {
+            _ = try await capture.invoke(-7, onUnavailable: { .unavailable(-7) })
+            preconditionFailure("Expected the MainActor async callback's typed failure")
+        } catch {
+            precondition(error == .rejected(-7))
+        }
+        precondition(mock.verify.register(id: .equal("row"), phase: .returned).wasCalled(.once).passed)
+        print("PASS: GEN016 executable replayed a MainActor async typed callback success and failure")
     }
 }

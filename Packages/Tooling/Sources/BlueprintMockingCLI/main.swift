@@ -131,6 +131,7 @@ struct CallbackType {
         case asyncThrowingEscaping(String)
         case mainActorAsyncEscaping
         case mainActorThrowingEscaping(String)
+        case mainActorAsyncThrowingEscaping(String)
 
         var family: String {
             switch self {
@@ -142,6 +143,7 @@ struct CallbackType {
             case .asyncThrowingEscaping: "SyncAsyncThrowingEscapingCallback"
             case .mainActorAsyncEscaping: "SyncMainActorAsyncEscapingCallback"
             case .mainActorThrowingEscaping: "SyncMainActorThrowingEscapingCallback"
+            case .mainActorAsyncThrowingEscaping: "SyncMainActorAsyncThrowingEscapingCallback"
             }
         }
 
@@ -149,7 +151,9 @@ struct CallbackType {
             switch self {
             case .scoped: ""
             case .escaping, .throwingEscaping, .asyncEscaping, .asyncThrowingEscaping: "@escaping @Sendable "
-            case .mainActorEscaping, .mainActorAsyncEscaping, .mainActorThrowingEscaping: "@escaping @Swift.MainActor @Sendable "
+            case .mainActorEscaping, .mainActorAsyncEscaping,
+                 .mainActorThrowingEscaping, .mainActorAsyncThrowingEscaping:
+                "@escaping @Swift.MainActor @Sendable "
             }
         }
     }
@@ -160,7 +164,8 @@ struct CallbackType {
 
     var failure: String? {
         switch kind {
-        case .throwingEscaping(let failure), .asyncThrowingEscaping(let failure), .mainActorThrowingEscaping(let failure):
+        case .throwingEscaping(let failure), .asyncThrowingEscaping(let failure),
+             .mainActorThrowingEscaping(let failure), .mainActorAsyncThrowingEscaping(let failure):
             failure
         default: nil
         }
@@ -171,7 +176,8 @@ struct CallbackType {
         switch kind {
         case .asyncEscaping, .mainActorAsyncEscaping: effects = " async"
         case .throwingEscaping(let failure), .mainActorThrowingEscaping(let failure): effects = " throws(\(failure))"
-        case .asyncThrowingEscaping(let failure): effects = " async throws(\(failure))"
+        case .asyncThrowingEscaping(let failure), .mainActorAsyncThrowingEscaping(let failure):
+            effects = " async throws(\(failure))"
         default: effects = ""
         }
         return "\(kind.attributes)(\(input))\(effects) -> \(output)"
@@ -628,9 +634,6 @@ func generate(
                     }
                     let isAsync = effects.asyncSpecifier != nil
                     if let clause = effects.throwsClause {
-                        if case .mainActorEscaping = kind, isAsync {
-                            try reject(parameter, "Asynchronous throwing escaping callbacks require a nonisolated @Sendable function")
-                        }
                         guard clause.throwsSpecifier.text == "throws",
                               let failureType = clause.type?.as(IdentifierTypeSyntax.self),
                               failureType.genericArgumentClause == nil, simple(failureType.name.text),
@@ -639,7 +642,7 @@ func generate(
                         }
                         let failure = failureType.name.text
                         if case .mainActorEscaping = kind {
-                            kind = .mainActorThrowingEscaping(failure)
+                            kind = isAsync ? .mainActorAsyncThrowingEscaping(failure) : .mainActorThrowingEscaping(failure)
                         } else {
                             kind = isAsync ? .asyncThrowingEscaping(failure) : .throwingEscaping(failure)
                         }

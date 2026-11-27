@@ -20,6 +20,9 @@ ASYNC_TYPED_CALLBACK = ASYNC_CALLBACK.replace("async ->", "async throws(AsyncCal
 TYPED_CALLBACK = CALLBACK.replace("(Int) ->", "(Int) throws(CallbackFixtureError) ->")
 CANONICAL_ACTOR_CALLBACK = CALLBACK.replace("@Sendable ", "@Swift.MainActor @Sendable ")
 CANONICAL_ACTOR_ASYNC_CALLBACK = CANONICAL_ACTOR_CALLBACK.replace("(Int) ->", "(Int) async ->")
+CANONICAL_ACTOR_ASYNC_TYPED_CALLBACK = CANONICAL_ACTOR_ASYNC_CALLBACK.replace(
+    "async ->", "async throws(MainActorAsyncCallbackFixtureError) ->"
+)
 CANONICAL_ACTOR_TYPED_CALLBACK = CANONICAL_ACTOR_CALLBACK.replace(
     "(Int) ->", "(Int) throws(MainActorCallbackFixtureError) ->"
 )
@@ -33,10 +36,15 @@ ACTOR_ASYNC_SUPPORTED = ASYNC_SUPPORTED.replace("@Sendable ", "@MainActor @Senda
 QUALIFIED_ACTOR_ASYNC_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_ASYNC_CALLBACK)
 QUALIFIED_ACTOR_TYPED_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_TYPED_CALLBACK)
 ACTOR_TYPED_SUPPORTED = QUALIFIED_ACTOR_TYPED_SUPPORTED.replace("@Swift.MainActor ", "@MainActor ")
-ACTOR_ASYNC_TYPED_SUPPORTED = ASYNC_TYPED_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
+QUALIFIED_ACTOR_ASYNC_TYPED_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_ASYNC_TYPED_CALLBACK)
+ACTOR_ASYNC_TYPED_SUPPORTED = QUALIFIED_ACTOR_ASYNC_TYPED_SUPPORTED.replace("@Swift.MainActor ", "@MainActor ")
 TYPED_ENDPOINT = "SyncThrowingEscapingCallbackEndpoint<String, Int, String, String, CallbackFixtureError>"
 ASYNC_ENDPOINT = "SyncAsyncEscapingCallbackEndpoint<String, Int, String, String>"
 ACTOR_ASYNC_ENDPOINT = "SyncMainActorAsyncEscapingCallbackEndpoint<String, Int, String, String>"
+ACTOR_ASYNC_TYPED_ENDPOINT = (
+    "SyncMainActorAsyncThrowingEscapingCallbackEndpoint<String, Int, String, String, "
+    "MainActorAsyncCallbackFixtureError>"
+)
 ACTOR_TYPED_ENDPOINT = (
     "SyncMainActorThrowingEscapingCallbackEndpoint<String, Int, String, String, MainActorCallbackFixtureError>"
 )
@@ -50,22 +58,25 @@ METHOD_DIAGNOSTIC = (
     "Escaping callback capture requires a synchronous nonthrowing Sendable method with one callback "
     "in the final position"
 )
-ACTOR_ASYNC_DIAGNOSTIC = "Asynchronous throwing escaping callbacks require a nonisolated @Sendable function"
 FAILURE_DIAGNOSTIC = "Escaping callback capture requires throws with a named failure type other than Never"
 REJECTIONS = (
     ("bare-escaping", SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
     ("non-sendable-main-actor", ACTOR_SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
     ("other-global-actor", ACTOR_SUPPORTED.replace("@MainActor ", "@WorkerActor "), ATTRIBUTES_DIAGNOSTIC),
     (
-        "effectful-callback",
-        ACTOR_ASYNC_TYPED_SUPPORTED.replace("throws(AsyncCallbackFixtureError)", "throws"),
-        ACTOR_ASYNC_DIAGNOSTIC,
+        "other-global-actor-async-typed-callback",
+        ACTOR_ASYNC_TYPED_SUPPORTED.replace("@MainActor ", "@WorkerActor "),
+        ATTRIBUTES_DIAGNOSTIC,
     ),
-    ("main-actor-async-typed-callback", ACTOR_ASYNC_TYPED_SUPPORTED, ACTOR_ASYNC_DIAGNOSTIC),
+    (
+        "effectful-callback",
+        ACTOR_ASYNC_TYPED_SUPPORTED.replace("throws(MainActorAsyncCallbackFixtureError)", "throws"),
+        FAILURE_DIAGNOSTIC,
+    ),
     (
         "main-actor-async-never-callback",
-        ACTOR_ASYNC_TYPED_SUPPORTED.replace("throws(AsyncCallbackFixtureError)", "throws(Never)"),
-        ACTOR_ASYNC_DIAGNOSTIC,
+        ACTOR_ASYNC_TYPED_SUPPORTED.replace("throws(MainActorAsyncCallbackFixtureError)", "throws(Never)"),
+        FAILURE_DIAGNOSTIC,
     ),
     (
         "async-untyped-throwing-callback",
@@ -110,6 +121,7 @@ def write_source(source, method, declarations=""):
         "public enum CallbackFixtureError: Error, Sendable { case rejected }\n"
         "public enum AsyncCallbackFixtureError: Error, Sendable { case rejected }\n"
         "public enum MainActorCallbackFixtureError: Error, Sendable { case rejected }\n"
+        "public enum MainActorAsyncCallbackFixtureError: Error, Sendable { case rejected }\n"
         f"{declarations}",
         encoding="utf-8",
     )
@@ -250,10 +262,23 @@ def verify(tool, evidence):
         if bare_typed != qualified_typed:
             raise ValueError("Bare and Swift-qualified throwing MainActor spellings produced different owned outputs")
 
+        write_source(source, ACTOR_ASYNC_TYPED_SUPPORTED)
+        bare_async_typed = require_generated(
+            tool, request, evidence, "main-actor-async-typed-throws", checks, staged, output,
+            callback=CANONICAL_ACTOR_ASYNC_TYPED_CALLBACK, endpoint=ACTOR_ASYNC_TYPED_ENDPOINT,
+        )
+        write_source(source, QUALIFIED_ACTOR_ASYNC_TYPED_SUPPORTED)
+        qualified_async_typed = require_generated(
+            tool, request, evidence, "qualified-main-actor-async-typed-throws", checks, staged, output,
+            callback=CANONICAL_ACTOR_ASYNC_TYPED_CALLBACK, endpoint=ACTOR_ASYNC_TYPED_ENDPOINT,
+        )
+        if bare_async_typed != qualified_async_typed:
+            raise ValueError("Bare and Swift-qualified async throwing MainActor spellings produced different outputs")
+
         location = rb"(?m)^.*" + re.escape(source.name.encode("utf-8")) + rb":[1-9]\d*:[1-9]\d*: error: BPM001: "
         for label, method, diagnostic in REJECTIONS:
             declarations = ""
-            if label == "other-global-actor":
+            if label in {"other-global-actor", "other-global-actor-async-typed-callback"}:
                 declarations = "@globalActor public actor WorkerActor { public static let shared = WorkerActor() }\n"
             write_source(source, method, declarations)
             reject_configured(tool, request, evidence, label, checks, staged, location, diagnostic)
