@@ -198,7 +198,7 @@ func RUN010_scheduledOneShotKeepsAcquiredCallbackThroughFinish() async throws {
     #expect(session.snapshot() == finished)
 }
 
-@Test func RUN010_scheduledOneShotRejectsInvalidAndContinuousSchedulingWithoutClaiming() throws {
+@Test func RUN010_scheduledOneShotRejectsNegativeDelayWithoutClaimingOnEitherClock() throws {
     let manual = MockSession(clock: .manual)
     let continuous = MockSession()
     let calls = StoredProperty<[Int]>([])
@@ -209,10 +209,8 @@ func RUN010_scheduledOneShotKeepsAcquiredCallbackThroughFinish() async throws {
     #expect(throws: OneShotCallbackSchedulingError.negativeDelay) {
         try manualFixture.capture.schedule(79, after: .nanoseconds(-1))
     }
-    for delay in [Duration.zero, .seconds(30)] {
-        #expect(throws: OneShotCallbackSchedulingError.requiresManualClock) {
-            try continuousFixture.capture.schedule(83, after: delay)
-        }
+    #expect(throws: OneShotCallbackSchedulingError.negativeDelay) {
+        try continuousFixture.capture.schedule(83, after: .nanoseconds(-1))
     }
     #expect(calls.get().isEmpty)
     #expect(try manualFixture.capture.invoke(89) == "delivered-89")

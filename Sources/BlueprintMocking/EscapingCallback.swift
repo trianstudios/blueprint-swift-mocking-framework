@@ -312,10 +312,10 @@ public struct OneShotEscapingCallbackCapture<Input: Sendable, Output: Sendable>:
         withExtendedLifetime(callback) {}
     }
 
-    /// Queues an attempt on a manual clock. Acquisition competes with direct
+    /// Queues an attempt on the session clock. Acquisition competes with direct
     /// invocation and any other scheduled attempt for this capture.
     /// Zero delay acquires and runs inline. A positive delay leaves the capture
-    /// available until the advance that reaches the deadline.
+    /// available until an advance or timer acquires it at or after its deadline.
     @discardableResult
     public func schedule(
         _ input: Input, after delay: Duration
@@ -354,10 +354,10 @@ public struct OneShotEscapingCallbackCapture<Input: Sendable, Output: Sendable>:
             } catch {
                 throw .delivery(error)
             }
-            guard state.usesManualClock else { throw .requiresManualClock }
             return state.scheduleCallbacks(id: delivery.id, occurrences: [occurrence])
         }
         for action in immediate { action() }
+        session.armNextContinuousCallback(id: delivery.id)
         return delivery
     }
 }

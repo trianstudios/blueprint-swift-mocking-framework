@@ -59,6 +59,7 @@ public final class ScheduledCallbackDelivery<Output: Sendable>: Sendable {
 /// An error raised before a one-shot callback attempt has been scheduled.
 public enum OneShotCallbackSchedulingError: Error, Equatable, Sendable {
     case negativeDelay
+    /// Retained for source compatibility with the manual-only scheduling profile.
     case requiresManualClock
     case delivery(OneShotCallbackDeliveryError)
 }

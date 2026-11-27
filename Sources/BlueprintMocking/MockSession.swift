@@ -382,9 +382,6 @@ public final class MockSession: Sendable {
 
         var isFinished: Bool { finishedElapsed != nil }
 
-        var usesManualClock: Bool {
-            if case .manual = clock { true } else { false }
-        }
         private var nextMockNumber: UInt64 = 0
         private var nextInvocationNumber: UInt64 = 0
         private var lastEventOrdinal: UInt64 = 0
