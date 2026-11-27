@@ -17,6 +17,7 @@ DOMAIN = "ConditionalDomain"
 FLAG = "BLUEPRINT_DOMAIN_INT"
 TEST = "GEN004_domainTargetSelectsConditionalWitness"
 MARKER = "BLUEPRINT_CONDITIONAL_DOMAIN "
+NEGATED_MARKER = "BLUEPRINT_NEGATED_CONDITIONAL_DOMAIN "
 DEFINED_TARGET = f'.target(name: "{DOMAIN}", swiftSettings: [.define("{FLAG}")])'
 UNDEFINED_TARGET = f'.target(name: "{DOMAIN}")'
 MISSING_CONDITION = (
@@ -67,38 +68,40 @@ def verify(repository, swift, tool, evidence, jobs):
                       "--protocol", "ConditionalDirectory", "--output", output]
         records = {}
 
-        def run(step, arguments, *, failure=None, marker=None):
+        def run(step, arguments, *, failure=None, markers=()):
             log = evidence / f"conditional-domain-{step}.log"
             result = subprocess.run(arguments, cwd=fixture, stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, timeout=240, check=False)
             log.write_bytes(result.stdout)
             text = result.stdout.decode("utf-8", errors="replace")
             status_valid = (result.returncode != 0) if failure else (result.returncode == 0)
-            if not status_valid or (failure and (not re.search(failure, text) or MARKER in text)):
+            observed = tuple(line for line in text.splitlines() if line.startswith((MARKER, NEGATED_MARKER)))
+            if not status_valid or (failure and (not re.search(failure, text) or observed)):
                 raise ValueError(f"{step}: unexpected command result, see {log}")
-            if marker and ([line for line in text.splitlines() if line.startswith(MARKER)] != [marker]
-                           or not re.search(rf"{TEST}\(\) passed", text)):
-                raise ValueError(f"{step}: expected passing native test with {marker}, see {log}")
+            if markers and (observed != markers or not re.search(rf"{TEST}\(\) passed", text)):
+                raise ValueError(f"{step}: expected passing native test with {markers}, see {log}")
             if authored_swift(fixture, output) != handwritten:
                 raise ValueError(f"{step}: authored Swift changed")
             records[step] = {"exit": result.returncode, "log": log.name, "logSHA256": sha256(result.stdout)}
             print(f"PASS: conditional domain {step}", flush=True)
 
-        def generate(branch, defined, output_type):
+        def generate(branch, defined, output_type, negated_type):
             step = f"{branch}-generation"
             run(step, [*generation, "--source-condition", DOMAIN, FLAG, defined])
             generated = output.read_bytes()
             swift_source = generated.decode("utf-8")
-            witnesses = re.findall(r"(?m)^    public func value\(\) -> (?:Swift\.)?(\w+) \{", swift_source)
-            if witnesses != [output_type] or re.search(r"(?m)^\s*#(?:if|elseif|else|endif)\b", swift_source):
-                raise ValueError(f"{step}: expected just the resolved {output_type} witness")
+            witnesses = re.findall(r"(?m)^    public func (value|inverted)\(\) -> (?:Swift\.)?(\w+) \{", swift_source)
+            if (sorted(witnesses) != [("inverted", negated_type), ("value", output_type)]
+                    or re.search(r"(?m)^\s*#(?:if|elseif|else|endif)\b", swift_source)):
+                raise ValueError(f"{step}: expected resolved {output_type} and {negated_type} witnesses")
             copy = evidence / f"conditional-domain-{branch}.swift"
             copy.write_bytes(generated)
             records[step]["generated"] = {"path": copy.name, "sha256": sha256(generated)}
             return generated
 
-        int_output = generate("int", "true", "Int")
-        run("int-consumer", command, marker=f"{MARKER}Swift.Int 17")
+        int_output = generate("int", "true", "Int", "String")
+        run("int-consumer", command,
+            markers=(f"{MARKER}Swift.Int 17", f"{NEGATED_MARKER}Swift.String selected by domain"))
 
         updated_manifest = original_manifest.replace(DEFINED_TARGET, UNDEFINED_TARGET, 1)
         manifest.write_text(updated_manifest, encoding="utf-8")
@@ -108,10 +111,11 @@ def verify(repository, swift, tool, evidence, jobs):
         if (output.read_bytes(), output.stat().st_mtime_ns) != stale_state or stale_state[0] != int_output:
             raise ValueError("The native stale-witness control changed the prior output")
 
-        string_output = generate("string", "false", "String")
+        string_output = generate("string", "false", "String", "Bool")
         if string_output == int_output:
             raise ValueError("Changing the domain flag did not change generated witness bytes")
-        run("string-consumer", command, marker=f"{MARKER}Swift.String selected by domain")
+        run("string-consumer", command,
+            markers=(f"{MARKER}Swift.String selected by domain", f"{NEGATED_MARKER}Swift.Bool true"))
 
         state = (output.read_bytes(), output.stat().st_mtime_ns)
         for step, module, flag in (("missing-with-probe-context", "ConditionalProbe", FLAG),
@@ -119,6 +123,28 @@ def verify(repository, swift, tool, evidence, jobs):
             run(step, [*generation, "--source-condition", module, flag, "true"], failure=MISSING_CONDITION)
             if (output.read_bytes(), output.stat().st_mtime_ns) != state:
                 raise ValueError(f"{step}: missing domain context replaced the valid witness")
+        negated_source = checkout / "ConditionalNegatedOnly.swift"
+        authored_negation = (
+            f"public protocol ConditionalDirectory: Swift.Sendable {{\n#if !{FLAG}\n"
+            "    func inverted() -> Bool\n#else\n    func inverted() -> String\n#endif\n}\n"
+        )
+        negated_source.write_text(authored_negation, encoding="utf-8")
+        negated_generation = [*generation[:2], negated_source, *generation[3:]]
+        run("missing-negated-with-probe-context",
+            [*negated_generation, "--source-condition", "ConditionalProbe", FLAG, "true"],
+            failure=r"ConditionalNegatedOnly\.swift:2:6: error: " + MISSING_CONDITION)
+        if (output.read_bytes(), output.stat().st_mtime_ns) != state:
+            raise ValueError("Missing negated source context replaced the valid witness")
+        compound = authored_negation.replace(f"!{FLAG}", f"!{FLAG} && BLUEPRINT_EXTRA")
+        negated_source.write_text(compound, encoding="utf-8")
+        run("reject-negated-compound", [
+            *negated_generation, "--source-condition", DOMAIN, FLAG, "true",
+            "--source-condition", DOMAIN, "BLUEPRINT_EXTRA", "true",
+        ], failure=(r"ConditionalNegatedOnly\.swift:2:5: error: BPM001: Unsupported compilation condition\. "
+                    r"Use one bare custom identifier in #if, optionally prefixed with !\."))
+        if (output.read_bytes(), output.stat().st_mtime_ns) != state:
+            raise ValueError("A rejected negated condition replaced the valid witness")
+
         if manifest.read_text(encoding="utf-8") != updated_manifest:
             raise ValueError("The manifest changed beyond the intended domain target setting")
 

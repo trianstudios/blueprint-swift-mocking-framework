@@ -160,19 +160,22 @@ final class ProtocolSourceIndex {
                     throw Self.error(at: origin(of: directive), "Unsupported conditional compilation directive. "
                                      + "Use #if with an optional #else.")
                 }
-                guard let expression = first.condition,
-                      let reference = expression.as(DeclReferenceExprSyntax.self),
+                let negation = first.condition?.as(PrefixOperatorExprSyntax.self)
+                guard let expression = first.condition, negation == nil || negation?.operator.text == "!",
+                      let reference = (negation?.expression ?? expression).as(DeclReferenceExprSyntax.self),
                       reference.argumentNames == nil,
                       case .identifier(let flag) = reference.baseName.tokenKind,
                       Self.isConditionIdentifier(flag) else {
                     let site = first.condition.map { origin(of: $0) } ?? origin(of: first.poundKeyword)
-                    throw Self.error(at: site, "Unsupported compilation condition. Use one bare custom identifier in #if.")
+                    throw Self.error(at: site, "Unsupported compilation condition. "
+                                     + "Use one bare custom identifier in #if, optionally prefixed with !.")
                 }
                 guard let enabled = conditions[module]?[flag] else {
-                    throw Self.error(at: origin(of: expression), "Missing compilation condition '\(flag)' for source module "
+                    throw Self.error(at: origin(of: reference), "Missing compilation condition '\(flag)' for source module "
                                      + "'\(module)'. Supply --source-condition \(module) \(flag) true or false.")
                 }
-                let selected = enabled ? first : clauses.dropFirst().first
+                let selectsFirst = negation == nil ? enabled : !enabled
+                let selected = selectsFirst ? first : clauses.dropFirst().first
                 guard let branch = selected, let payload = branch.elements else { continue }
                 guard case .decls(let nested) = payload else {
                     throw Self.error(at: origin(of: branch), "Expected a protocol member block in the selected clause.")

@@ -763,3 +763,9 @@ Two isolated checked-release artifacts used the same runtime source except for t
 DX-012 reuses syntax trees within one configured first publication. Preflight and the locked plan still open the authored paths and rebuild their source index. A parser hit requires the same module, authored path and exact UTF-8 parser input. Inspect, verify and subsequent generations use their existing paths.
 
 The instrumented control counted six parses for three files before the change and three after it. A paused source edit that preserves size and mtime reparses and produces the correct changed witness. The configured output matches the uncached generator, and a symlink-and-parent-traversal fixture verifies authored path semantics. Publication and read-only inspection checks still pass. Persistent caching remains open.
+
+## Explicit negated source conditions
+
+GEN-004 accepts one leading exclamation mark on a custom source-module define. The native SwiftPM consumer switches the domain target's define and exercises an ordinary and a negated requirement through the generated mock. The two builds receive the correct Int and String or String and Bool witnesses. Standalone and configured generation agree. A stale witness fails the mismatched native build.
+
+Missing source-module context and a compound condition still produce source-located diagnostics and preserve the generated pair. Automatic flag discovery, built-in compiler tests and broader expressions remain open.
