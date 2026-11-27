@@ -98,11 +98,22 @@ public struct SessionEvent: Equatable, Sendable {
     public let origin: CallOrigin?
 }
 
+/// A cancellation request observed while an async-throwing invocation was active.
+public struct SessionCancellationRequest: Equatable, Sendable {
+    public let ordinal: UInt64
+    public let elapsed: Duration
+    public let admission: SessionEvent
+}
+
 /// A copy of one epoch's metadata as of a session-wide event watermark.
 public struct SessionSnapshot: Equatable, Sendable {
     public let sessionID: SessionID
     public let epoch: SessionEpoch
     public let events: [SessionEvent]
+    /// Requests are separate from admissions and terminal events.
+    public let cancellationRequests: [SessionCancellationRequest]
+    /// Highest request ordinal removed from this epoch, or nil when none were removed.
+    public let cancellationRequestsPrunedThrough: UInt64?
     public let activeInvocationCount: Int
     public let watermark: UInt64
     /// Highest event ordinal removed from this epoch, or nil when none were removed.
@@ -314,6 +325,8 @@ public final class MockSession: Sendable {
     struct State: Sendable {
         private struct EpochHistory: Sendable {
             var events: [SessionEvent] = []
+            var cancellationRequests: [SessionCancellationRequest] = []
+            var cancellationRequestsPrunedThrough: UInt64?
             var activeInvocationCount = 0
             var prunedThrough: UInt64?
         }
@@ -330,6 +343,7 @@ public final class MockSession: Sendable {
         private var histories: [SessionEpoch: EpochHistory]
         private var claimsByScope: [String: SessionConsumptionClaims] = [:]
         private var active: [SessionInvocationID: SessionEvent] = [:]
+        private var activeCancellationRequests: Set<SessionInvocationID> = []
         var activeInvocationCountAcrossEpochs: Int { active.count }
         private var journals: [WeakSessionJournal] = []
         private var nextQuiescenceWaiter: UInt64 = 0
@@ -360,8 +374,10 @@ public final class MockSession: Sendable {
             guard let history = histories[epoch] else { return nil }
             return SessionSnapshot(
                 sessionID: epoch.sessionID, epoch: epoch,
-                events: history.events, activeInvocationCount: history.activeInvocationCount,
-                watermark: lastEventOrdinal, prunedThrough: history.prunedThrough, isFinished: isFinished
+                events: history.events, cancellationRequests: history.cancellationRequests,
+                cancellationRequestsPrunedThrough: history.cancellationRequestsPrunedThrough,
+                activeInvocationCount: history.activeInvocationCount, watermark: lastEventOrdinal,
+                prunedThrough: history.prunedThrough, isFinished: isFinished
             )
         }
 
@@ -460,13 +476,18 @@ public final class MockSession: Sendable {
             guard !isFinished else { throw .finishedSession }
             let events = histories[epoch]!.events
             let firstRetained = events.firstEventIndex(after: checkpoint.watermark)
-            guard firstRetained > events.startIndex else { return false }
-
-            // A checkpoint watermark is session-wide and may refer to an archived epoch.
-            // The last event actually removed is the only evidence of lost history.
-            histories[epoch]!.prunedThrough = events[firstRetained - 1].ordinal
-            histories[epoch]!.events = Array(events[firstRetained...])
-            return true
+            let eventsRemoved = firstRetained > events.startIndex
+            if eventsRemoved {
+                // The last call event actually removed bounds gaps in call replay.
+                histories[epoch]!.prunedThrough = events[firstRetained - 1].ordinal
+                histories[epoch]!.events = Array(events[firstRetained...])
+            }
+            if let removed = histories[epoch]!.cancellationRequests.last(where: { $0.ordinal <= checkpoint.watermark }) {
+                histories[epoch]!.cancellationRequestsPrunedThrough = removed.ordinal
+                histories[epoch]!.cancellationRequests.removeAll { $0.ordinal <= checkpoint.watermark }
+                return true
+            }
+            return eventsRemoved
         }
 
         func captureConsumption(in scope: SessionConsumptionScope) throws(SessionConsumptionError)
@@ -602,6 +623,17 @@ public final class MockSession: Sendable {
             return deliveries
         }
 
+        mutating func recordCancellationRequest(for invocationID: SessionInvocationID) -> SessionObservationDelivery? {
+            guard let admission = active[invocationID], activeCancellationRequests.insert(invocationID).inserted else {
+                return nil
+            }
+            lastEventOrdinal += 1
+            histories[admission.epoch]!.cancellationRequests.append(SessionCancellationRequest(
+                ordinal: lastEventOrdinal, elapsed: clock.elapsed, admission: admission
+            ))
+            return observationWake()
+        }
+
         mutating func complete(
             _ invocationID: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil
         ) -> (event: SessionEvent, delivery: SessionQuiescenceDelivery?) {
@@ -609,6 +641,7 @@ public final class MockSession: Sendable {
             guard let admission = active.removeValue(forKey: invocationID) else {
                 preconditionFailure("No active invocation matches this completion")
             }
+            activeCancellationRequests.remove(invocationID)
             lastEventOrdinal += 1
             let event = SessionEvent(
                 ordinal: lastEventOrdinal, elapsed: clock.elapsed, epoch: admission.epoch, mockID: admission.mockID,

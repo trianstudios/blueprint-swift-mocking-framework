@@ -332,6 +332,11 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         return (revision, retired)
     }
 
+    func recordCancellationRequest(for admission: JournalAdmission) {
+        let wake = scope.session.withLock { $0.recordCancellationRequest(for: admission.event.invocationID) }
+        wake?.publish()
+    }
+
     func update(_ admission: JournalAdmission, replacing input: Input) {
         let (retired, wake) = scope.session.withLock { session -> (Input?, SessionObservationDelivery?) in
             guard admission.event.epoch == session.epoch else { return (nil, nil) }
@@ -980,6 +985,25 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
             if let failureMapping { throw failureMapping(issue) }
             fatalError(issue.message)
         }
+        let result = await withTaskCancellationHandler {
+            await invokeAdmitted(
+                input, admission: admission, configuration: configuration,
+                initialHistory: initialHistory, source: source, forwardingPath: forwardingPath,
+                argumentProjection: argumentProjection, completionProjection: completionProjection
+            )
+        } onCancel: {
+            journal.recordCancellationRequest(for: admission)
+        }
+        return try result.get()
+    }
+
+    private func invokeAdmitted(
+        _ input: Input, admission: JournalAdmission,
+        configuration: PublishedAsyncThrowingConfiguration<Input, Output, Failure>,
+        initialHistory: History, source: SourceLocation, forwardingPath: [AsyncForwardingInstance],
+        argumentProjection: @Sendable (Input) -> History?,
+        completionProjection: @Sendable (History, Output?) -> History?
+    ) async -> Result<Output, Failure> {
         defer { withExtendedLifetime(configuration) {} }
 
         // User projections, rule matching, answer execution, and error mapping all run
@@ -1010,16 +1034,16 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
             journal.complete(
                 admission, phase: .returned, origin: origin, replacing: completionProjection(history, .some(output))
             )
-            return output
+            return .success(output)
         case .answered(.failure(let error), let origin):
             journal.complete(admission, phase: .threw, origin: origin, replacing: completionProjection(history, nil))
-            throw error
+            return .failure(error)
         case .unanswered(let reason):
             if let failureMapping {
                 let issue = journal.reportUnansweredCall(admission, source: source, reason: reason)
                 let error = failureMapping(issue)
                 journal.complete(admission, phase: .threw, replacing: completionProjection(history, nil))
-                throw error
+                return .failure(error)
             }
             journal.complete(admission, phase: .terminated, replacing: completionProjection(history, nil))
             let issue = journal.reportUnansweredCall(admission, source: source, reason: reason)

@@ -1201,6 +1201,8 @@ def main():
                   r"BLUEPRINT_AVAILABILITY_GUARDED_RECEIPT Swift\.Int 47",
                   r"RUN011_generatedOrdinaryMockInvokesCallbackWithinWitness\(\) passed",
                   r"GEN012_returnOnlyOverloadsUseSeparateTypedEndpoints\(\) passed",
+                  r"RUN025_cancellationRequestKeepsGeneratedAnswerActiveUntilReturn\(\) passed",
+                  r"RUN025_detachedCancellationRequestStaysWithTypedThrowingAdmission\(\) passed",
                   r"GEN016_escapingCallbackCapturesOnlyTheLatestWinningRule\(\) passed",
                   r"GEN016_escapingCallbackLifetimeFollowsCaptureSelectionAndSessionEpoch\(\) passed",
                   r"GEN016_actorEscapingCallbackReplaysOnMainActorAfterDetachedRegistration\(\) passed",

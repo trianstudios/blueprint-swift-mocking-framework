@@ -76,6 +76,12 @@ GEN-007 now checks the runtime marker from the imported `BlueprintMocking` modul
 
 The independent SwiftPM consumer proves that typed async-throwing setup and synchronous count verification leave the session snapshot and answer count unchanged. Calling the witness then produces one answer and one admission/return pair. These checks cover GEN007-A and GEN007-B for the tested generator profile. The configured Swift index serves as the compact manifest. Its typed IR and runtime-contract versions share the generator’s constants for endpoint identities and the public marker. A standalone consumer compiles and reads both versions from an empty generated pair. Editing the runtime version is detected as index-only drift, and an independent generation reproduces the original pair. Class generation, dynamic descriptor compatibility and release-profile qualification remain open.
 
+## Cooperative cancellation of typed answers
+
+RUN-025 records one cancellation request while a Sendable async-throwing invocation is active. The record links to the original admission in its epoch and shares the session’s ordinal and clock. The answer runs in the original task and publishes its actual return or typed throw. A request has its own retention watermark, so pruning one does not change the completeness of call-event replay.
+
+The independent generated consumer suspends inside a checked continuation, requests cancellation twice, and observes one request while the answer remains active. Releasing the continuation produces either a normal return or the configured domain error. The detached case verifies archived attribution and unchanged current counts. Other async endpoint families and release-profile qualification remain open.
+
 ## Sequence cursors across epoch resets
 
 RUN-034 now keeps installed async-throwing rule cursors local to each epoch. A reset takes the same session lock as sequence reservation and copies the reserved position into the new epoch without changing the rule revision. An invocation admitted before reset still uses the old cursor. Matchers and answers run outside the session lock.
