@@ -1765,6 +1765,7 @@ def main():
                   r"RUN015_closedOverlayRejectsPendingCompletionOnItsPinnedScenario\(\) passed",
                   r"RUN015_detachedCompletionAndReusablePlanPreserveIndependentCursors\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
+                  r"SYS006_concurrentRepositoryRetryComposesProjectionRevisionCancellationAndDeadlines\(\) passed",
                   r"GEN040_explicitByteBufferAdapterCopiesOnlyTheBoundedPrefix\(\) passed",
                   r"GEN021_generatedPackProviderPreservesTypedArgumentsAndIdentity\(\) passed",
                   r"GEN034_generatedSendingWitnessTransfersBothDirectionsAndRetainsOnlySnapshots\(\) passed",

@@ -605,3 +605,9 @@ The selected Swift compiler rejects an attempted deferred raw address capture in
 ## Explicit primitive and empty-container default recipes
 
 RUN-017 adds an opt-in preset for `Bool`, `Int` and `String` and exact typed recipes for nil optionals and empty arrays, dictionaries and sets. Each recipe uses the existing immutable registry, so replacement affects only the returned registry. A recipe for a container leaves its element or value type unregistered. Registry tests verify exact lookups, prior copies and explicit overrides. The independent SwiftPM consumer checks a stub hit, an empty dictionary, a typed nil and an unregistered underlying domain model. The existing fatal unregistered and cyclic lookups still exercise the consumer executable. Recursive generated child identity and broader native qualification remain open.
+
+## A3.4 concurrent repository retry
+
+The SYS-006 fixture exercises the concurrent repository retry scenario through an independent SwiftPM consumer. A retrying client receives a typed temporary failure, then reserves the success step of a finite sequence. While that answer is held, a replacement revision serves an independent request. Cooperative cancellation records one request under the old invocation. The held answer completes under the original revision, and its projected metadata remains separate from the newer call. An immutable earlier snapshot still shows the pending result.
+
+The fixture checks a passing `stable` window and a negative `eventually` deadline. A test-first control bypasses the retry and fails at the expected gate. Seven A3.4 scenarios remain open for dedicated fixtures and native qualification.
