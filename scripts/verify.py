@@ -43,7 +43,7 @@ def record_result(name, output, returncode, valid, *, expected_failure):
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
              module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=(),
-             associated_bindings=(), method_specializations=(), generic_providers=()):
+             associated_bindings=(), method_specializations=(), generic_providers=(), rethrows_providers=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -56,6 +56,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--specialize-method", specialization])
     for provider in generic_providers:
         arguments.extend(["--generic-provider", provider])
+    for provider in rethrows_providers:
+        arguments.extend(["--rethrows-provider", provider])
     if spy:
         arguments.append("--spy")
     for source_module, path in sources:
@@ -493,6 +495,38 @@ def main():
             fails=True, patterns=[r"error: BPM001: " + diagnostic])
         if (provider_rejected.read_bytes(), provider_rejected.stat().st_mtime_ns) != provider_baseline:
             raise ValueError("Rejected generic provider settings changed the existing output")
+    rethrows_source = source.with_name("RethrowingDirectory.swift")
+    rethrows_generated = generated.with_name("RethrowingDirectoryMock.swift")
+    rethrows_selector = ("apply(_:)",)
+    run("rethrows-provider-generation", generate(
+        tool, rethrows_source, rethrows_generated, "RethrowingDirectory", rethrows_providers=rethrows_selector))
+    rejected_rethrows = temp / "RejectedRethrowsProvider.swift"
+    rejected_rethrows.write_bytes(b"// preserve valid rethrows output\n")
+    rethrows_baseline = (rejected_rethrows.read_bytes(), rejected_rethrows.stat().st_mtime_ns)
+    rethrows_cases = [
+        ("missing", rethrows_source, (), r"Use --rethrows-provider"),
+        ("unknown", rethrows_source, rethrows_selector + ("label(for:)",), r"Unknown rethrows provider selector"),
+        ("duplicate", rethrows_source, rethrows_selector * 2, r"Duplicate rethrows provider selector"),
+    ]
+    authored_rethrows = rethrows_source.read_text(encoding="utf-8")
+    for label, signature, selectors in (
+        ("async", "func apply(_ callback: (Int) async throws -> String) async rethrows -> String", rethrows_selector),
+        ("multiple", "func apply(_ callback: (Int) throws -> String, _ second: (Int) throws -> String) rethrows -> String",
+         ("apply(_:_:)",)),
+    ):
+        variant = temp / f"Rethrows-{label}.swift"
+        variant.write_text(authored_rethrows.replace(
+            "func apply(_ callback: (Int) throws -> String) rethrows -> String", signature,
+        ), encoding="utf-8")
+        run("rethrows-provider-native-shape-" + label, [swiftc, "-swift-version", "6", "-sdk", sdk, "-typecheck", variant],
+            env=swift_environment)
+        rethrows_cases.append((label, variant, selectors, r"Rethrows requires a callback-derived error from one unary"))
+    for label, authored, selectors, diagnostic in rethrows_cases:
+        run("rethrows-provider-reject-" + label, generate(
+            tool, authored, rejected_rethrows, "RethrowingDirectory", rethrows_providers=selectors),
+            fails=True, patterns=[r"error: BPM001:[^\n]*" + diagnostic])
+        if (rejected_rethrows.read_bytes(), rejected_rethrows.stat().st_mtime_ns) != rethrows_baseline:
+            raise ValueError("Rejected rethrows provider settings changed the existing output")
     generic_subscript_source = source.with_name("GenericSubscriptDirectory.swift")
     generic_subscript_generated = generated.with_name("GenericSubscriptDirectoryMock.swift")
     generic_subscript_specializations = ("get_subscript(_:)=Int", "get_subscript(_:)=String",
@@ -1326,6 +1360,8 @@ def main():
                   r"GEN019_generatedOrdinaryInoutWitnessWritesBackBeforeReturnAndThrow\(\) passed",
                   r"GEN010_genericMethodSeparatesIntAndStringSpecializations\(\) passed",
                   r"GEN011_polymorphicProviderKeepsUnseenValuesTypedAndRecordsSessionMetadata\(\) passed",
+                  r"GEN015_RUN005_generatedRethrowsProviderPreservesNonescapingCallbackAndError\(\) passed",
+                  r"GEN015_RUN005_constantRethrowsProviderCanSkipCallerCallback\(\) passed",
                   r"RUN010_oneShotCaptureRejectsDuplicateWhileAcquiredAndFinishes\(\) passed",
                   r"RUN010_oneShotCancellationRetiresOnlyItsPendingCapture\(\) passed",
                   r"RUN010_oneShotCaptureResetInvalidatesEarlierEpoch\(\) passed",
@@ -1471,6 +1507,8 @@ def main():
         "GenericMethodWrongConstraint": r"requires that 'UnhashableGenericMethodValue' conform to 'Hashable'",
         "GenericMethodWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericProviderExtraConstraint": r"type 'OverconstrainedIdentityProvider' does not conform to protocol 'GenericProviderDirectoryMockBehavior'",
+        "RethrowingProviderUnrelatedThrow": r"may only throw if its parameter does",
+        "RethrowingProviderNoThrowsStub": r"'RethrowingDirectoryMock.Stubs' has no member 'apply'",
         "GenericSubscriptWrongConstraint": r"requires that 'UnhashableKey' conform to 'Hashable'",
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
@@ -1684,6 +1722,10 @@ def main():
         r"Cannot call schema1\|ConsumerDomain\.GenericProviderDirectory\|transform<.*\[Swift.Int\] in a finished mock session$"
     )
     run_fatal("generic-provider-closed-terminates", "--closed-generic-provider", closed_provider)
+    closed_rethrows = (
+        r"Cannot call schema1\|ConsumerDomain\.RethrowingDirectory\|apply\(.* rethrows->String\|Sendable in a finished mock session$"
+    )
+    run_fatal("rethrows-provider-closed-terminates", "--closed-rethrows-provider", closed_rethrows)
     type_scope = r"Missing type-level mock scope for schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:"
     run_fatal("type-subscript-detached-reject", "--type-subscript-detached",
               type_scope + r".*\.get->Int\|Sendable$",

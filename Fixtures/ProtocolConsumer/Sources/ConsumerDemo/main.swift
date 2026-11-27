@@ -33,6 +33,10 @@ import ConsumerDoubles
             let service = GenericSubscriptClient(directory: mock)
             _ = service.read(true)
         }
+        if CommandLine.arguments.contains("--closed-rethrows-provider") {
+            try verifyClosedRethrowsProvider()
+            return
+        }
         if CommandLine.arguments.contains("--closed-generic-provider") {
             try verifyClosedGenericProvider()
             return

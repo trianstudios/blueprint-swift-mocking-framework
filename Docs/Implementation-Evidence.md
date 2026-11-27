@@ -91,6 +91,12 @@ GEN-011 supports a standalone provider for a direct synchronous, nonthrowing Sen
 
 The independent SwiftPM consumer uses a new Hashable and Sendable type and Int through the protocol. The provider reads the active admission reentrantly, both results arrive with one paired return each, and a separate ordinary rule still matches. Swift rejects a provider that adds Comparable. A bounded child on the local Mac verifies that a finished session rejects a typed invocation before calling the provider, with the final snapshot preserved. Conflicting standalone mode selections are rejected before output publication. Configured provider selection, additional signature families and native profile certification remain open.
 
+## Synchronous rethrows providers
+
+GEN-015 and RUN-005 cover a direct synchronous Sendable requirement with one unary, nonescaping throwing callback, selected explicitly with `--rethrows-provider`. The companion protocol and generated witness retain `rethrows`. The witness passes the original callback to the provider during the call and records one admission with one returned or thrown terminal event. Session history keeps metadata for the provider call. Other ordinary members use the usual typed rules.
+
+The independent SwiftPM tests call through the production protocol, omit `try` for a nonthrowing callback, preserve the original error object in a pass-through provider, and observe release of a caller-local payload. A constant provider can skip either callback form. Swift rejects an independent throw from the provider and an arbitrary throwing stub for the generated witness. The bounded child verifies a finished session reports before either provider or callback executes. Async and multiple-callback requirements currently receive targeted generator diagnostics before publication. Configured provider selection and native profile qualification remain open.
+
 ## Return-only overloads
 
 GEN012-A supports a pair of synchronous nonthrowing methods on an ordinary Sendable protocol with the same arguments and distinct `Int` and `String` results. Both descriptors take an explicit result metatype. The independent SwiftPM consumer selects each real witness through the protocol, supplies the same input, and verifies separate return histories and endpoint identities. Swift rejects a String result configured for the Int endpoint. Other overload shapes and the generic operator gate GEN012-B remain open.

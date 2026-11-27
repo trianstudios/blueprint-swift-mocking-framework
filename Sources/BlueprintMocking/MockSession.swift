@@ -74,7 +74,7 @@ public struct MockScope: Sendable {
         wake?.publish()
         let message = rejection?.message(for: endpoint)
             ?? "No configured specialization for \(endpoint.diagnosticName)"
-        terminateGenericCall(endpoint, message: message, reporter: reporter, source: source,
+        terminateRejectedValueCall(endpoint, message: message, reporter: reporter, source: source,
                              watermark: admission?.ordinal ?? 0, closedEpoch: closedEpoch)
     }
 
@@ -88,7 +88,21 @@ public struct MockScope: Sendable {
         of declaration: String, for type: Argument.Type, reporter: FailureReporter, source: SourceLocation,
         _ answer: () -> Argument
     ) -> Argument {
-        let endpoint = EndpointID(declaration, specializedFor: type)
+        invokeProvider(EndpointID(declaration, specializedFor: type), reporter: reporter, source: source, answer)
+    }
+
+    /// Executes a nonescaping rethrows provider and records the terminal outcome.
+    public func invokeRethrowsProvider<Output: Sendable>(
+        of declaration: String, reporter: FailureReporter, source: SourceLocation,
+        _ answer: () throws -> Output
+    ) rethrows -> Output {
+        try invokeProvider(EndpointID(declaration), reporter: reporter, source: source, answer)
+    }
+
+    private func invokeProvider<Output: Sendable>(
+        _ endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation,
+        _ answer: () throws -> Output
+    ) rethrows -> Output {
         let claim = session.withLock { state -> ProviderAdmission in
             if let rejection = admissionRejection(in: state) {
                 return .rejected(rejection, closedEpoch: state.isFinished ? state.epoch : nil)
@@ -99,22 +113,26 @@ public struct MockScope: Sendable {
         }
         switch claim {
         case .rejected(let rejection, let closedEpoch):
-            terminateGenericCall(endpoint, message: rejection.message(for: endpoint), reporter: reporter,
-                                 source: source, watermark: 0, closedEpoch: closedEpoch)
+            terminateRejectedValueCall(endpoint, message: rejection.message(for: endpoint), reporter: reporter,
+                                       source: source, watermark: 0, closedEpoch: closedEpoch)
         case .accepted(let admission, let wake):
             wake?.publish()
-            let result = answer()
-            let (delivery, wake) = session.withLock { state in
-                let (_, delivery) = state.complete(admission.invocationID, phase: .returned)
-                return (delivery, state.observationWake())
+            var phase = CallPhase.threw
+            defer {
+                let (delivery, wake) = session.withLock { state in
+                    let (_, delivery) = state.complete(admission.invocationID, phase: phase)
+                    return (delivery, state.observationWake())
+                }
+                delivery?.publish()
+                wake?.publish()
             }
-            delivery?.publish()
-            wake?.publish()
+            let result = try answer()
+            phase = .returned
             return result
         }
     }
 
-    private func terminateGenericCall(
+    private func terminateRejectedValueCall(
         _ endpoint: EndpointID, message: String, reporter: FailureReporter, source: SourceLocation,
         watermark: UInt64, closedEpoch: SessionEpoch?
     ) -> Never {
