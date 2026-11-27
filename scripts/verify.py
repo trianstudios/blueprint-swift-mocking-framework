@@ -289,6 +289,10 @@ def main():
     run("declaration-inspection", [sys.executable, ROOT / "scripts/verify_inspection.py",
                                   "--tool", tool, "--evidence-dir", EVIDENCE],
         patterns=[r"PASS: DX003 read-only inspection", r"PASS: DX011 verify-generated drift checks"])
+    run("endpoint-inspection", [sys.executable, ROOT / "scripts/verify_endpoint_inspection.py",
+                               "--tool", tool, "--evidence-dir", EVIDENCE],
+        patterns=[r"PASS: SYS007 configured inspection reports stable and effect-sensitive endpoint IDs",
+                  r"EVIDENCE: endpoint-inspection-report\.json SHA-256 [0-9a-f]{64}"])
     baseline = generated.read_bytes()
     inherited_source = source.with_name("InheritedDirectory.swift")
     inherited_generated = generated.with_name("InheritedDirectoryMock.swift")
@@ -1267,6 +1271,7 @@ def main():
                   r"RUN034_quiescentSequenceRestartRewindsExhaustedRules\(\) passed",
                   r"GEN007_typedAsyncDescriptorSetupAndVerificationDoNotInvokeWitness\(\) passed",
                   r"RUN009_generatedWinningRulesCaptureOnceThroughReentryAndConcurrency\(\) passed",
+                  r"SYS007_concurrentGeneratedCallsKeepUniqueSessionInvocationIDs\(\) passed",
                   r"SYS005_checkoutServiceUsesLiveDependencyAdapters\(\) passed",
                   r"SYS005_generatedAdapterMocksOnlyRecordCallsThroughProtocols\(\) passed",
                   r"GEN002_diamondBranchesShareOneTypedWitnessAndEndpoint\(\) passed",

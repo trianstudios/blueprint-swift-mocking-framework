@@ -127,7 +127,7 @@ bash scripts/generate.sh inspect \
   --format json
 ```
 
-The report includes the resolved selections and declaration locations, supplied sources, planned output files and supported analysis. Paths under the configuration directory appear relative to it. The command runs generation validation and leaves the project sources and generation output directory untouched.
+The report includes the resolved selections, supplied sources, planned output files and supported analysis. Each selected declaration lists the generated endpoint IDs and the module, file, line and column of each requirement, including requirements inherited from indexed sources. Paths under the configuration directory appear relative to it. The command runs generation validation and leaves the project sources and generation output directory untouched.
 
 Use `verify-generated` with the configuration, output directory, input-set ID and source arguments to check the existing shard and index. Exit 0 confirms both files match the plan. Exit 3 reports each missing or changed path with `BPM003`. The check preserves existing files and leaves missing paths absent. A retained recovery journal exits 1 with `BPM004`. Rerun configured generation with valid inputs to recover the pair.
 

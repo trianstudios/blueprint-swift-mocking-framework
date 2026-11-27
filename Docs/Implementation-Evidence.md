@@ -259,6 +259,8 @@ DX-003 adds `inspect` for the explicit source inputs and schema-1 configuration 
 
 The CLI fixture compares the JSON before generation and after both files exist, with reordered sources and unchanged sources and outputs. Invalid configuration and unresolved inheritance fail with the same diagnostic families as generation. Full compiler context, includes, configured roots and native plugin profile qualification remain open.
 
+For SYS-007, inspection reports the endpoint IDs emitted into the generated Swift shard and the authored locations of local and inherited requirements. Reordering supplied files preserves the report bytes. Moving a requirement with whitespace changes its location and preserves its ID. Changing its effect from sync to async changes its ID. An independent SwiftPM test holds four overlapping calls across two mock instances in one session and completes them in reverse admission order. Each distinct session invocation ID has one matched admission and one return or typed throw. This verifies the identity acceptance cases on the local Xcode-linked generator and macOS arm64 toolchain. The packaged parser and remaining native profiles still require qualification.
+
 
 ## Generated-file drift verification
 

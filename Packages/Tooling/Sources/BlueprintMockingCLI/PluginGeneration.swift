@@ -344,6 +344,14 @@ private struct BuildInspection: Encodable {
         let sourceConditions: [String: [String: Bool]]?
     }
 
+    struct Endpoint: Encodable {
+        let id: String
+        let module: String
+        let file: String
+        let line: Int
+        let column: Int
+    }
+
     struct Declaration: Encodable {
         let module: String
         let type: String
@@ -351,6 +359,7 @@ private struct BuildInspection: Encodable {
         let file: String
         let line: Int
         let generatedType: String
+        let endpoints: [Endpoint]
     }
 
     struct Ownership: Encodable {
@@ -389,9 +398,15 @@ private struct BuildInspection: Encodable {
         inputs = Inputs(configuration: reportPath(config), sources: sources,
                         sourceConditions: request.sourceConditions.isEmpty ? nil : request.sourceConditions)
         declarations = plan.selections.map { selection in
-            Declaration(module: selection.selected.module, type: selection.selected.type,
-                        kind: selection.selected.kind, file: reportPath(URL(fileURLWithPath: selection.origin.path)),
-                        line: selection.origin.line, generatedType: selection.mock.typeName)
+            let endpoints = selection.mock.endpointOrigins.map { id, origin in
+                Endpoint(id: id, module: origin.module, file: reportPath(URL(fileURLWithPath: origin.path)),
+                         line: origin.line, column: origin.column)
+            }
+            return Declaration(module: selection.selected.module, type: selection.selected.type,
+                               kind: selection.selected.kind,
+                               file: reportPath(URL(fileURLWithPath: selection.origin.path)),
+                               line: selection.origin.line, generatedType: selection.mock.typeName,
+                               endpoints: endpoints)
         }
         outputOwnership = Ownership(owner: "BlueprintMockingBuildPlugin",
                                     files: plan.outputs.map { reportPath($0.url) })

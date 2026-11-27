@@ -94,6 +94,32 @@ def expected_plan(configuration, output, sources):
         {"module": MODULE, "type": name, "kind": "protocol"} for name in (ROOT_PROTOCOL, BASE_PROTOCOL)
     ]
     declaration_lines = (1, 5)
+    inherited = [
+        ("fetch(id:Int) async throws(InheritedDirectoryFailure)->String", BASE_PROTOCOL, 7),
+        ("label(for:String)->String", BASE_PROTOCOL, 6),
+        ("mark(_:String)->Void", BASE_PROTOCOL, 8),
+    ]
+    endpoint_specs = {
+        ROOT_PROTOCOL: inherited + [
+            ("identify()->String", ROOT_PROTOCOL, 2),
+            ("property:revision.get->Int", BRANCHES[0], 2),
+            ("rename(to:String)->String", BRANCHES[1], 2),
+        ],
+        BASE_PROTOCOL: inherited,
+    }
+
+    def endpoints(name):
+        return [
+            {
+                "id": f"schema1|{MODULE}.{name}|{signature}|Sendable",
+                "module": MODULE,
+                "file": reporting_path(sources[declared_on]),
+                "line": line,
+                "column": 25 if signature.startswith("property:") else 5,
+            }
+            for signature, declared_on, line in sorted(endpoint_specs[name])
+        ]
+
     return {
         "schemaVersion": 1,
         "configuration": {"schemaVersion": 1, "selections": selected},
@@ -107,6 +133,7 @@ def expected_plan(configuration, output, sources):
         "declarations": [
             entry | {
                 "file": reporting_path(sources[entry["type"]]), "line": line, "generatedType": entry["type"] + "Mock",
+                "endpoints": endpoints(entry["type"]),
             } for entry, line in zip(selected, declaration_lines, strict=True)
         ],
         "outputOwnership": {

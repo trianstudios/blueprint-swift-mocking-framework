@@ -391,6 +391,7 @@ struct GeneratedProtocolMock {
     let typeName: String
     let source: String
     let associatedTypeBindings: [AssociatedTypeBinding]
+    let endpointOrigins: [(id: String, origin: ProtocolSourceOrigin)]
 }
 
 func generate(
@@ -1669,7 +1670,10 @@ func generate(
             continue
         }
     }
-    return GeneratedProtocolMock(typeName: name, source: output + "}\n", associatedTypeBindings: resolvedBindings)
+    return GeneratedProtocolMock(
+        typeName: name, source: output + "}\n", associatedTypeBindings: resolvedBindings,
+        endpointOrigins: members.map { (id: $0.identity, origin: $0.origin) }
+    )
 }
 
 private func run(_ arguments: [String]) throws {
