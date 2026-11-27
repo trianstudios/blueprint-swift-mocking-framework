@@ -314,6 +314,8 @@ Count verification failures and composed matcher descriptions are limited to 4,0
 
 Call `try session.snapshot().exportTraceJSON(maximumRecords: 128)` to export a versioned metadata trace. The limit accepts 0 through 256 records. Invocations and cancellation requests share the budget, ordered by recorded session ordinal. Runtime pruning and export omissions have separate boundaries. The trace includes developer-supplied endpoint labels clipped to 96 UTF-8 bytes and marks specializations with a Boolean. Payloads are omitted. The encoded size is bounded by 1,024 bytes plus 1,024 per exported record.
 
+A direct checked Sendable protocol method can take one `isolated` parameter of a public concrete actor declared in the same module. The synchronous typed `willAnswer` closure receives the original actor with isolation preserved. Setup and verification use ordinary Sendable matchers, including actor identity. Use `await` from outside the actor. This slice supports nonthrowing methods returning `Int`, `Bool`, or `String`.
+
 An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
 
 ```swift

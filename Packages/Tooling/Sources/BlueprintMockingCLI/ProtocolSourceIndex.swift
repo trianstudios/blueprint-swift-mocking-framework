@@ -267,6 +267,18 @@ final class ProtocolSourceIndex {
             + Self.candidateLocations(competitors)
     }
 
+    func requireConcreteActor(named name: String, at reference: some SyntaxProtocol) throws {
+        let site = origin(of: reference)
+        let candidates = try Self.shadows(named: name, in: load(site.module))
+        guard Self.isSimple(name), candidates.count == 1, let candidate = candidates.first,
+              !candidate.isConditional, let actor = candidate.declaration.as(ActorDeclSyntax.self),
+              actor.name.text == name, actor.attributes.isEmpty, actor.modifiers.map(\.name.text) == ["public"],
+              actor.genericParameterClause == nil, actor.genericWhereClause == nil else {
+            throw Self.error(at: site, "An isolated parameter requires one unconditional public nongeneric actor "
+                             + "'\(site.module).\(name)' declared in the supplied module.")
+        }
+    }
+
     /// Resolves a lexical nominal used by the restricted availability profile.
     func requireAvailabilityStruct(named name: String, at reference: some SyntaxProtocol) throws -> StructDeclSyntax {
         let site = origin(of: reference)

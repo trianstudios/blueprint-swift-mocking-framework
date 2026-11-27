@@ -201,19 +201,22 @@ struct Parameter {
     let type: String
     let isVariadic: Bool
     let isInout: Bool
+    let isIsolatedActor: Bool
     let callback: CallbackType?
 
     init(label: String, type: String, isVariadic: Bool = false, isInout: Bool = false,
-         callback: CallbackType? = nil) {
+         isIsolatedActor: Bool = false, callback: CallbackType? = nil) {
         self.label = label
         self.type = type
         self.isVariadic = isVariadic
         self.isInout = isInout
+        self.isIsolatedActor = isIsolatedActor
         self.callback = callback
     }
 
     var witnessType: String {
         if isInout { return "inout \(type)" }
+        if isIsolatedActor { return "isolated \(type)" }
         return isVariadic ? "\(type)..." : type
     }
     var runtimeType: String { isVariadic ? "[\(type)]" : type }
@@ -301,6 +304,7 @@ struct Member {
     var metadataParameters: [Parameter] { callback == nil ? parameters : Array(parameters.dropLast()) }
     var family: String {
         if let callback { return callback.kind.family }
+        if parameters.contains(where: \.isIsolatedActor) { return "IsolatedSync" }
         return (usesInout ? "Inout" : isolation.prefix) + effect.family
     }
     var verificationInputType: String { usesInout ? "InoutValues<\(inputType)>" : inputType }
@@ -724,6 +728,9 @@ func generate(
             }
             if parameters.contains(where: \.isInout) || previous.usesInout {
                 try reject(node, "Inout overloads with identical matcher signatures require distinct argument labels" + locations)
+            }
+            if parameters.contains(where: \.isIsolatedActor) || previous.parameters.contains(where: \.isIsolatedActor) {
+                try reject(node, "Isolated actor overloads with identical matcher signatures require distinct argument labels" + locations)
             }
             if parameters.contains(where: { $0.callback != nil }) || previous.callback != nil {
                 try reject(node, "Callback overloads with identical ordinary-argument matcher signatures require distinct argument labels" + locations)
@@ -1234,6 +1241,39 @@ func generate(
                 try reject(fn, "Concrete associated-type bindings do not yet support typed throws")
             }
         }
+        let declaredParameters = fn.signature.parameterClause.parameters
+        let hasIsolatedActor = declaredParameters.contains {
+            $0.type.as(AttributedTypeSyntax.self)?.specifiers.contains { $0.trimmedDescription == "isolated" } == true
+        }
+        if hasIsolatedActor {
+            let message = "Isolated actor stubbing requires a direct synchronous nonthrowing Sendable method "
+                + "with one public same-module concrete actor parameter and an Int, Bool or String result"
+            guard declarationID == proto.id, declarations.count == 1, isolation == .sendable,
+                  !hasBindings, !spy, !specializesGenerics, projections.isEmpty, variadicForwarding.isEmpty,
+                  fn.attributes.isEmpty, fn.signature.effectSpecifiers == nil,
+                  declaredParameters.count == 1, let parameter = declaredParameters.first,
+                  parameter.defaultValue == nil, parameter.ellipsis == nil,
+                  parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+                  let attributed = parameter.type.as(AttributedTypeSyntax.self),
+                  attributed.attributes.isEmpty, attributed.specifiers.map(\.trimmedDescription) == ["isolated"],
+                  let actor = attributed.baseType.as(IdentifierTypeSyntax.self), actor.genericArgumentClause == nil,
+                  let resultType = fn.signature.returnClause?.type else {
+                try reject(fn, message)
+            }
+            let label = parameter.firstName.text
+            guard label == "_" || simple(label) else { try reject(parameter, "Use a simple isolated actor argument label") }
+            let spelling = resultType.trimmedDescription
+            let scalar = spelling.hasPrefix("Swift.") ? String(spelling.dropFirst("Swift.".count)) : spelling
+            guard ["Int", "Bool", "String"].contains(scalar) else { try reject(resultType, message) }
+            try index.requireConcreteActor(named: actor.name.text, at: actor)
+            try index.requireUnshadowedQualifier(module, at: actor)
+            try index.requireUnshadowedQualifier("Swift", at: resultType)
+            if spelling == scalar { try index.requireUnshadowedQualifier(scalar, at: resultType) }
+            try addMember(name: fn.name.text,
+                          parameters: [Parameter(label: label, type: "\(module).\(actor.name.text)", isIsolatedActor: true)],
+                          outputType: "Swift.\(scalar)", effect: Effect(isAsync: false, failure: nil), kind: .method, at: fn)
+            continue
+        }
         let returnType = fn.signature.returnClause?.type
         let returnsBareSelf = returnType?.trimmedDescription == "Self"
         if let returnType, returnsBareSelf {
@@ -1300,7 +1340,6 @@ func generate(
             }
             outputType = resolved
         }
-        let declaredParameters = fn.signature.parameterClause.parameters
         let selector = "\(fn.name.text)(" + declaredParameters.map { "\($0.firstName.text):" }.joined() + ")"
         let materializedSelected = materializedAutoclosureSelections.contains(selector)
         let lazySelected = lazyAutoclosureSelections.contains(selector)
