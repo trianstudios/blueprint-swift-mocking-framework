@@ -122,19 +122,33 @@ struct Effect {
     }
 }
 struct CallbackType {
+    enum Kind {
+        case scoped
+        case escaping
+        case mainActorEscaping
+
+        var family: String {
+            switch self {
+            case .scoped: "SyncCallback"
+            case .escaping: "SyncEscapingCallback"
+            case .mainActorEscaping: "SyncMainActorEscapingCallback"
+            }
+        }
+
+        var attributes: String {
+            switch self {
+            case .scoped: ""
+            case .escaping: "@escaping @Sendable "
+            case .mainActorEscaping: "@escaping @Swift.MainActor @Sendable "
+            }
+        }
+    }
+
     let input: String
     let output: String
-    let escapes: Bool
+    let kind: Kind
 
-    init(input: String, output: String, escapes: Bool = false) {
-        self.input = input
-        self.output = output
-        self.escapes = escapes
-    }
-
-    var declaration: String {
-        (escapes ? "@escaping @Sendable " : "") + "(\(input)) -> \(output)"
-    }
+    var declaration: String { kind.attributes + "(\(input)) -> \(output)" }
 }
 
 struct Parameter {
@@ -204,7 +218,7 @@ struct Member {
     var callback: CallbackType? { parameters.last?.callback }
     var metadataParameters: [Parameter] { callback == nil ? parameters : Array(parameters.dropLast()) }
     var family: String {
-        if let callback { return callback.escapes ? "SyncEscapingCallback" : "SyncCallback" }
+        if let callback { return callback.kind.family }
         return (usesInout ? "Inout" : isolation.prefix) + effect.family
     }
     var verificationInputType: String { usesInout ? "InoutValues<\(inputType)>" : inputType }
@@ -539,28 +553,47 @@ func generate(
                           let output = supportedResult(function.returnClause.type) else {
                         try reject(parameter, "Direct spy callbacks require one unannotated, nonescaping, synchronous nonthrowing function argument of supported value types")
                     }
-                    let callback = CallbackType(input: input, output: output)
+                    let callback = CallbackType(input: input, output: output, kind: .scoped)
                     return Parameter(label: label, type: callback.declaration, callback: callback)
                 }
             }
             if tokens.contains("->") {
                 guard isolation == .sendable, !imported, !hasBindings, !forSubscript, !isVariadic, unmodified,
                       let attributed = parameter.type.as(AttributedTypeSyntax.self), attributed.specifiers.isEmpty,
-                      attributed.attributes.count == 2,
-                      Set(attributed.attributes.compactMap({ element -> String? in
-                          guard let attribute = element.as(AttributeSyntax.self),
-                                attribute.leftParen == nil, attribute.arguments == nil else { return nil }
-                          return attribute.attributeName.trimmedDescription
-                      })) == ["escaping", "Sendable"],
                       let function = attributed.baseType.as(FunctionTypeSyntax.self),
                       function.effectSpecifiers == nil, function.parameters.count == 1,
                       let argument = function.parameters.first, argument.inoutKeyword == nil,
                       argument.firstName == nil, argument.ellipsis == nil,
                       let input = supportedType(argument.type),
                       let output = supportedResult(function.returnClause.type) else {
-                    try reject(parameter, "Escaping callback capture requires one @escaping @Sendable synchronous nonthrowing function argument of supported value types")
+                    try reject(parameter, "Escaping callback capture requires one synchronous nonthrowing function argument of supported value types")
                 }
-                let callback = CallbackType(input: input, output: output, escapes: true)
+                let attributes = attributed.attributes.compactMap { element -> AttributeSyntax? in
+                    guard let attribute = element.as(AttributeSyntax.self),
+                          attribute.leftParen == nil, attribute.arguments == nil else { return nil }
+                    return attribute
+                }
+                let names = Set(attributes.map { $0.attributeName.trimmedDescription })
+                let kind: CallbackType.Kind
+                switch names {
+                case ["escaping", "Sendable"] where attributed.attributes.count == 2:
+                    kind = .escaping
+                case ["escaping", "Sendable", "MainActor"], ["escaping", "Sendable", "Swift.MainActor"]:
+                    guard attributed.attributes.count == 3,
+                          let actor = attributes.first(where: {
+                              ["MainActor", "Swift.MainActor"].contains($0.attributeName.trimmedDescription)
+                          }) else {
+                        try reject(parameter, "Escaping callback capture requires exactly @escaping and @Sendable, optionally with @MainActor")
+                    }
+                    if actor.attributeName.trimmedDescription == "MainActor" {
+                        try index.requireUnshadowedQualifier("MainActor", at: actor)
+                    }
+                    try index.requireUnshadowedQualifier("Swift", at: actor)
+                    kind = .mainActorEscaping
+                default:
+                    try reject(parameter, "Escaping callback capture requires exactly @escaping and @Sendable, optionally with @MainActor")
+                }
+                let callback = CallbackType(input: input, output: output, kind: kind)
                 return Parameter(label: label, type: callback.declaration, callback: callback)
             }
             if imported {

@@ -3,60 +3,44 @@ public enum CallbackDeliveryError: Error, Equatable, Sendable {
     case unavailable
 }
 
-/// A typed handle for a callback captured by a winning stub. It does not own the callback.
-public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendable {
-    public let invocation: SessionEvent
-    fileprivate weak var captor: EscapingCallbackCaptor<Input, Output>?
+private typealias NonisolatedCallback<Input, Output> = @Sendable (Input) -> Output
+private typealias MainActorCallback<Input, Output> = @MainActor @Sendable (Input) -> Output
 
-    /// Delivers synchronously on the caller. Reset and finish prevent new deliveries.
-    /// A delivery already admitted before either operation can finish.
-    public func invoke(_ input: Input) throws(CallbackDeliveryError) -> Output {
-        guard let callback = captor?.callback(for: invocation) else { throw .unavailable }
-        return callback(input)
-    }
-}
-
-/// Keeps explicitly captured, nonisolated Sendable callbacks until reset, finish, or deallocation.
-public final class EscapingCallbackCaptor<Input: Sendable, Output: Sendable>: Sendable {
-    fileprivate typealias Callback = @Sendable (Input) -> Output
-
+/// Retains the original function type, including any global actor, across session operations.
+private final class CallbackCaptureStorage<Callback: Sendable>: SessionJournalRegistration {
     private struct Entry: Sendable {
         let invocation: SessionEvent
         let callback: Callback
     }
 
-    fileprivate let session: MockSession
+    let session: MockSession
     private let storage = CriticalState<[SessionInvocationID: Entry]>([:])
 
-    public init(session: MockSession) {
+    init(session: MockSession) {
         self.session = session
         session.register(self)
     }
 
-    /// Returns handles ordered by the originating mock call's admission.
-    public var captures: [EscapingCallbackCapture<Input, Output>] {
+    var admissions: [SessionEvent] {
         let invocations = session.withLock { _ in storage.withLock { $0.values.map(\.invocation) } }
         return invocations.sorted { $0.ordinal < $1.ordinal }
-            .map { EscapingCallbackCapture(invocation: $0, captor: self) }
     }
 
-    fileprivate func callback(for invocation: SessionEvent) -> Callback? {
+    func callback(for invocation: SessionEvent) -> Callback? {
         session.withLock { state -> Callback? in
             guard !state.isFinished, state.epoch == invocation.epoch else { return nil }
             return storage.withLock { $0[invocation.invocationID]?.callback }
         }
     }
 
-    fileprivate func publish(_ callback: @escaping Callback, recording invocation: SessionEvent) {
+    func publish(_ callback: Callback, recording invocation: SessionEvent) {
         session.withLock { state in
             guard !state.isFinished, state.epoch == invocation.epoch else { return }
             storage.withLock { $0[invocation.invocationID] = Entry(invocation: invocation, callback: callback) }
         }
         withExtendedLifetime(callback) {}
     }
-}
 
-extension EscapingCallbackCaptor: SessionJournalRegistration {
     func discardHistory() -> any Sendable {
         storage.withLock {
             let retired = $0
@@ -70,30 +54,102 @@ extension EscapingCallbackCaptor: SessionJournalRegistration {
     }
 }
 
-private struct EscapingCallbackBehavior<
-    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
->: Sendable {
-    let captor: EscapingCallbackCaptor<CallbackInput, CallbackResult>?
+private protocol CallbackCapturing<Callback>: AnyObject, Sendable {
+    associatedtype Callback: Sendable
+    var storage: CallbackCaptureStorage<Callback> { get }
+}
+
+private struct EscapingCallbackBehavior<Input: Sendable, Callback: Sendable, Output: Sendable>: Sendable {
+    let captor: (any CallbackCapturing<Callback>)?
     let answer: @Sendable (Input) -> Output
+}
+
+private typealias EscapingCallbackRule<Input: Sendable, Callback: Sendable, Output: Sendable> =
+    Rule<Input, EscapingCallbackBehavior<Input, Callback, Output>>
+
+/// Selects a rule, publishes its capture, and keeps only ordinary arguments in the call journal.
+private struct EscapingCallbackDispatch<Input: Sendable, Callback: Sendable, Output: Sendable>: Sendable {
+    private let rules: [EscapingCallbackRule<Input, Callback, Output>]
+    private let journal: Journal<Input>
+    private let fallback: (@Sendable (MockIssue) -> Output)?
+
+    init(
+        id: EndpointID, rules: [EscapingCallbackRule<Input, Callback, Output>], failureReporter: FailureReporter,
+        scope: MockScope, fallback: (@Sendable (MockIssue) -> Output)?
+    ) {
+        precondition(rules.allSatisfy {
+            $0.answer.captor.map { $0.storage.session.id == scope.session.id } ?? true
+        }, "Callback captor belongs to a different mock session")
+        self.rules = rules
+        self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
+        self.fallback = fallback
+    }
+
+    func invoke(_ input: Input, _ callback: Callback, source: SourceLocation) -> Output {
+        guard let admission = journal.begin(input) else {
+            return journal.resolveFinishedNonthrowingCall(source: source, fallback: fallback)
+        }
+        guard let winner = rules.reversed().first(where: { $0.matcher.matches(input) }) else {
+            return journal.resolveMissingNonthrowingCall(admission, source: source, fallback: fallback)
+        }
+        winner.answer.captor?.storage.publish(callback, recording: admission.event)
+        let result = winner.answer.answer(input)
+        journal.complete(admission, phase: .returned)
+        return result
+    }
+
+    func verification(matching matcher: Matcher<Input>, phase: CallPhase) -> Verification<Input> {
+        journal.verification(matching: matcher, phase: phase)
+    }
+}
+
+/// A typed handle for a nonisolated Sendable callback captured by a winning stub.
+/// The handle does not own the callback.
+public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendable {
+    public let invocation: SessionEvent
+    fileprivate weak var storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>?
+
+    /// Delivers synchronously on the caller. Reset and finish prevent new deliveries.
+    /// A delivery that already acquired its closure can finish.
+    public func invoke(_ input: Input) throws(CallbackDeliveryError) -> Output {
+        guard let callback = storage?.callback(for: invocation) else { throw .unavailable }
+        return callback(input)
+    }
+}
+
+/// Keeps explicitly captured nonisolated Sendable callbacks until reset, finish, or deallocation.
+public final class EscapingCallbackCaptor<Input: Sendable, Output: Sendable>: Sendable, CallbackCapturing {
+    fileprivate let storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>
+
+    public init(session: MockSession) {
+        storage = CallbackCaptureStorage(session: session)
+    }
+
+    /// Returns handles ordered by the originating mock call's admission.
+    public var captures: [EscapingCallbackCapture<Input, Output>] {
+        storage.admissions.map { EscapingCallbackCapture(invocation: $0, storage: storage) }
+    }
 }
 
 public struct SyncEscapingCallbackConfiguration<
     Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
 >: Sendable {
-    fileprivate let rules: [Rule<Input, EscapingCallbackBehavior<Input, CallbackInput, CallbackResult, Output>>]
+    fileprivate typealias Callback = NonisolatedCallback<CallbackInput, CallbackResult>
+    fileprivate let rules: [EscapingCallbackRule<Input, Callback, Output>]
 }
 
-/// Builds immutable rules for a synchronous method with an escaping Sendable callback.
+/// Builds immutable rules for a synchronous method with a nonisolated Sendable callback.
 public final class SyncEscapingCallbackStubbing<
     Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
 > {
-    fileprivate let builder = EffectRulesBuilder<
-        Input, EscapingCallbackBehavior<Input, CallbackInput, CallbackResult, Output>
-    >()
+    fileprivate typealias Callback = NonisolatedCallback<CallbackInput, CallbackResult>
+    fileprivate let builder = EffectRulesBuilder<Input, EscapingCallbackBehavior<Input, Callback, Output>>()
 
     public init() {}
 
-    public func matching(_ matcher: Matcher<Input>) -> SyncEscapingCallbackStub<Input, CallbackInput, CallbackResult, Output> {
+    public func matching(
+        _ matcher: Matcher<Input>
+    ) -> SyncEscapingCallbackStub<Input, CallbackInput, CallbackResult, Output> {
         SyncEscapingCallbackStub(owner: self, matcher: matcher, captor: nil)
     }
 
@@ -121,44 +177,133 @@ public struct SyncEscapingCallbackStub<
     }
 }
 
-/// Journals ordinary arguments. Only an explicitly selected captor can retain the callback.
+/// Journals ordinary arguments and retains callbacks only for an explicitly selected captor.
 public final class SyncEscapingCallbackEndpoint<
     Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
 >: Sendable {
-    private let configuration: SyncEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output>
-    private let journal: Journal<Input>
-    private let fallback: (@Sendable (MockIssue) -> Output)?
+    private typealias Callback = NonisolatedCallback<CallbackInput, CallbackResult>
+    private let dispatch: EscapingCallbackDispatch<Input, Callback, Output>
 
     public init(
         id: EndpointID, configuration: SyncEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output>,
         failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
         fallback: (@Sendable (MockIssue) -> Output)? = nil
     ) {
-        precondition(configuration.rules.allSatisfy {
-            $0.answer.captor.map { $0.session.id == scope.session.id } ?? true
-        }, "Callback captor belongs to a different mock session")
-        self.configuration = configuration
-        self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
-        self.fallback = fallback
+        dispatch = EscapingCallbackDispatch(id: id, rules: configuration.rules, failureReporter: failureReporter,
+                                            scope: scope, fallback: fallback)
     }
 
     public func invoke(
         _ input: Input, _ callback: @escaping @Sendable (CallbackInput) -> CallbackResult,
         source: SourceLocation = SourceLocation()
     ) -> Output {
-        guard let admission = journal.begin(input) else {
-            return journal.resolveFinishedNonthrowingCall(source: source, fallback: fallback)
-        }
-        guard let winner = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) else {
-            return journal.resolveMissingNonthrowingCall(admission, source: source, fallback: fallback)
-        }
-        winner.answer.captor?.publish(callback, recording: admission.event)
-        let result = winner.answer.answer(input)
-        journal.complete(admission, phase: .returned)
-        return result
+        dispatch.invoke(input, callback, source: source)
     }
 
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
-        journal.verification(matching: matcher, phase: phase)
+        dispatch.verification(matching: matcher, phase: phase)
+    }
+}
+
+/// A typed handle for a MainActor-isolated Sendable callback captured by a winning stub.
+/// The handle does not own the callback.
+public struct MainActorEscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendable {
+    public let invocation: SessionEvent
+    fileprivate weak var storage: CallbackCaptureStorage<MainActorCallback<Input, Output>>?
+
+    /// Delivers synchronously on MainActor. Reset and finish prevent new deliveries.
+    /// A delivery that already acquired its closure can finish.
+    @MainActor
+    public func invoke(_ input: Input) throws(CallbackDeliveryError) -> Output {
+        guard let callback = storage?.callback(for: invocation) else { throw .unavailable }
+        return callback(input)
+    }
+}
+
+/// Keeps explicitly captured MainActor-isolated Sendable callbacks until reset, finish, or deallocation.
+public final class MainActorEscapingCallbackCaptor<Input: Sendable, Output: Sendable>: Sendable, CallbackCapturing {
+    fileprivate let storage: CallbackCaptureStorage<MainActorCallback<Input, Output>>
+
+    public init(session: MockSession) {
+        storage = CallbackCaptureStorage(session: session)
+    }
+
+    /// Returns handles ordered by the originating mock call's admission.
+    public var captures: [MainActorEscapingCallbackCapture<Input, Output>] {
+        storage.admissions.map { MainActorEscapingCallbackCapture(invocation: $0, storage: storage) }
+    }
+}
+
+public struct SyncMainActorEscapingCallbackConfiguration<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+>: Sendable {
+    fileprivate typealias Callback = MainActorCallback<CallbackInput, CallbackResult>
+    fileprivate let rules: [EscapingCallbackRule<Input, Callback, Output>]
+}
+
+/// Builds immutable rules for a synchronous method with a MainActor-isolated Sendable callback.
+public final class SyncMainActorEscapingCallbackStubbing<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+> {
+    fileprivate typealias Callback = MainActorCallback<CallbackInput, CallbackResult>
+    fileprivate let builder = EffectRulesBuilder<Input, EscapingCallbackBehavior<Input, Callback, Output>>()
+
+    public init() {}
+
+    public func matching(
+        _ matcher: Matcher<Input>
+    ) -> SyncMainActorEscapingCallbackStub<Input, CallbackInput, CallbackResult, Output> {
+        SyncMainActorEscapingCallbackStub(owner: self, matcher: matcher, captor: nil)
+    }
+
+    public func finish() -> SyncMainActorEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output> {
+        SyncMainActorEscapingCallbackConfiguration(rules: builder.finish())
+    }
+}
+
+public struct SyncMainActorEscapingCallbackStub<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+> {
+    fileprivate let owner: SyncMainActorEscapingCallbackStubbing<Input, CallbackInput, CallbackResult, Output>
+    fileprivate let matcher: Matcher<Input>
+    fileprivate let captor: MainActorEscapingCallbackCaptor<CallbackInput, CallbackResult>?
+
+    /// Captures only when this rule wins. The mock and captor must share a session.
+    public func capturingCallback(into captor: MainActorEscapingCallbackCaptor<CallbackInput, CallbackResult>) -> Self {
+        Self(owner: owner, matcher: matcher, captor: captor)
+    }
+
+    public func willReturn(_ output: Output) { willAnswer { _ in output } }
+
+    public func willAnswer(_ answer: @escaping @Sendable (Input) -> Output) {
+        owner.builder.add(matcher, EscapingCallbackBehavior(captor: captor, answer: answer))
+    }
+}
+
+/// Journals ordinary arguments and retains callbacks only for an explicitly selected captor.
+public final class SyncMainActorEscapingCallbackEndpoint<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+>: Sendable {
+    private typealias Callback = MainActorCallback<CallbackInput, CallbackResult>
+    private let dispatch: EscapingCallbackDispatch<Input, Callback, Output>
+
+    public init(
+        id: EndpointID, configuration: SyncMainActorEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output>,
+        failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+        fallback: (@Sendable (MockIssue) -> Output)? = nil
+    ) {
+        dispatch = EscapingCallbackDispatch(id: id, rules: configuration.rules, failureReporter: failureReporter,
+                                            scope: scope, fallback: fallback)
+    }
+
+    public func invoke(
+        _ input: Input, _ callback: @escaping @MainActor @Sendable (CallbackInput) -> CallbackResult,
+        source: SourceLocation = SourceLocation()
+    ) -> Output {
+        dispatch.invoke(input, callback, source: source)
+    }
+
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
+        dispatch.verification(matching: matcher, phase: phase)
     }
 }

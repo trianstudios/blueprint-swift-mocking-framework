@@ -362,10 +362,15 @@ def main():
     run("escaping-callback-generation", generate(
         tool, source.with_name("EscapingCallbackDirectory.swift"),
         generated.with_name("EscapingCallbackDirectoryMock.swift"), "EscapingCallbackDirectory"))
+    run("actor-escaping-callback-generation", generate(
+        tool, source.with_name("ActorEscapingCallbackDirectory.swift"),
+        generated.with_name("ActorEscapingCallbackDirectoryMock.swift"), "ActorEscapingCallbackDirectory"))
     run("escaping-callback-configured-rejection", [
         sys.executable, "scripts/verify_escaping_callback_generation.py", "--tool", tool, "--evidence-dir", EVIDENCE,
     ], env=swift_environment, timeout=60,
         patterns=[r"PASS: GEN016 configured generation creates both owned outputs",
+                  r"PASS: GEN016 main-actor creates two verified owned outputs",
+                  r"PASS: GEN016 qualified-main-actor creates two verified owned outputs",
                   r"EVIDENCE: escaping-callback-generation-report\.json SHA-256 [0-9a-f]{64}"])
     type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
@@ -1057,7 +1062,9 @@ def main():
                   r"GEN004B_guardedMockKeepsReceiptStorageAndSurfacesAvailable\(\) passed",
                   r"BLUEPRINT_AVAILABILITY_GUARDED_RECEIPT Swift\.Int 47",
                   r"GEN016_escapingCallbackCapturesOnlyTheLatestWinningRule\(\) passed",
-                  r"GEN016_escapingCallbackLifetimeFollowsCaptureSelectionAndSessionEpoch\(\) passed"])
+                  r"GEN016_escapingCallbackLifetimeFollowsCaptureSelectionAndSessionEpoch\(\) passed",
+                  r"GEN016_actorEscapingCallbackReplaysOnMainActorAfterDetachedRegistration\(\) passed",
+                  r"GEN016_actorEscapingCallbackReleasesPayloadAcrossResetAndFinish\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     modules = Path(run_swift("consumer-bin-path", [
@@ -1137,6 +1144,10 @@ def main():
             r"EscapingCallbackWrongReplayInput\.swift:\d+:\d+: error: "
             r"cannot convert value of type 'String' to expected argument type 'Int'"
         ),
+        "MainActorEscapingCallbackNonisolatedReplay": (
+            r"MainActorEscapingCallbackNonisolatedReplay\.swift:\d+:\d+: error: "
+            r"call to main actor-isolated.*'invoke'.*synchronous nonisolated context"
+        ),
         "CallbackSpyDeferredCapture": r"passing non-escaping parameter 'callback'.*'@escaping'",
         "CallbackSpyDetachedCapture": r"escaping closure captures non-escaping value",
         "InoutSpyRetainsAccess": r"escaping closure captures 'inout' parameter 'value'",
@@ -1174,7 +1185,7 @@ def main():
             fails=True, patterns=diagnostic_patterns)
         if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess", "MainActorVerificationAccess",
                             "MainActorSpyWitnessAccess", "MainActorSpyAsyncTransport", "CallbackSpyDetachedCapture",
-                            "EscapingCallbackMainActorConversion"}:
+                            "EscapingCallbackMainActorConversion", "MainActorEscapingCallbackNonisolatedReplay"}:
             run(check_name + "-DefaultIsolation",
                 [*compiler_command, "-default-isolation", "MainActor", fixture],
                 env=swift_environment, fails=True, patterns=diagnostic_patterns)

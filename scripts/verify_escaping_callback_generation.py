@@ -15,16 +15,22 @@ from verify_inspection import OUTPUT_NAMES, require_unchanged, sha256, snapshot
 MODULE = "ConsumerDomain"
 PROTOCOL = "EscapingCallbackDirectory"
 SUPPORTED = "func register(id: String, using callback: @escaping @Sendable (Int) -> String) -> String"
+ACTOR_SUPPORTED = SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
+QUALIFIED_ACTOR_SUPPORTED = ACTOR_SUPPORTED.replace("@MainActor ", "@Swift.MainActor ")
 SHAPE_DIAGNOSTIC = (
-    "Escaping callback capture requires one @escaping @Sendable synchronous nonthrowing function argument"
+    "Escaping callback capture requires one synchronous nonthrowing function argument of supported value types"
+)
+ATTRIBUTES_DIAGNOSTIC = (
+    "Escaping callback capture requires exactly @escaping and @Sendable, optionally with @MainActor"
 )
 METHOD_DIAGNOSTIC = (
     "Escaping callback capture requires a synchronous nonthrowing Sendable method with one callback "
     "in the final position"
 )
 REJECTIONS = (
-    ("bare-escaping", SUPPORTED.replace("@Sendable ", ""), SHAPE_DIAGNOSTIC),
-    ("actor-isolated", SUPPORTED.replace("@Sendable ", "@MainActor @Sendable "), SHAPE_DIAGNOSTIC),
+    ("bare-escaping", SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
+    ("non-sendable-main-actor", ACTOR_SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
+    ("other-global-actor", ACTOR_SUPPORTED.replace("@MainActor ", "@WorkerActor "), ATTRIBUTES_DIAGNOSTIC),
     ("effectful-callback", SUPPORTED.replace("(Int) ->", "(Int) async ->"), SHAPE_DIAGNOSTIC),
     (
         "non-final-callback",
@@ -40,8 +46,8 @@ REJECTIONS = (
 REPORT_NAME = "escaping-callback-generation-report.json"
 
 
-def write_source(source, method):
-    source.write_text(f"public protocol {PROTOCOL}: Sendable {{\n    {method}\n}}\n", encoding="utf-8")
+def write_source(source, method, declarations=""):
+    source.write_text(f"public protocol {PROTOCOL}: Sendable {{\n    {method}\n}}\n{declarations}", encoding="utf-8")
 
 
 def invoke(tool, request, evidence, label, checks):
@@ -65,6 +71,46 @@ def require_rejection(result, location, diagnostic, label):
         raise ValueError(f"{label}: expected a source-located BPM001 (exit {result.returncode}): {actual}")
 
 
+def require_generated(tool, request, evidence, label, checks, staged, output, *, main_actor=False):
+    generated = invoke(tool, request, evidence, label, checks)
+    if generated.returncode != 0 or generated.stderr:
+        diagnostic = generated.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"{label}: supported configured generation exited {generated.returncode}: {diagnostic}")
+    if {path.name for path in output.iterdir()} != set(OUTPUT_NAMES):
+        raise ValueError(f"{label}: configured generation did not write the two owned Swift files")
+    files = tuple((output / name).read_bytes() for name in OUTPUT_NAMES)
+    shard = files[0].decode("utf-8")
+    if f"class {PROTOCOL}Mock" not in shard:
+        raise ValueError(f"{label}: the configured protocol mock is absent from the generated shard")
+    if main_actor and not re.search(
+        r"(?m)^    public func register\(.*using \w+: @escaping @Swift\.MainActor @Sendable \(Int\) -> String\)",
+        shard,
+    ):
+        raise ValueError(f"{label}: the emitted witness does not use canonical @Swift.MainActor")
+
+    before = snapshot(staged)
+    verified = invoke(tool, ["verify-generated", *request[1:]], evidence, f"{label}-verified", checks)
+    require_unchanged(staged, before, f"{label}-verified")
+    if (verified.returncode, verified.stdout, verified.stderr) != (
+        0, b"Blueprint Mocking: verified 2 generated file(s)\n", b""
+    ):
+        diagnostic = verified.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"{label}: configured output verification exited {verified.returncode}: {diagnostic}")
+    if label == "prepare":
+        print("PASS: GEN016 configured generation creates both owned outputs", flush=True)
+    else:
+        print(f"PASS: GEN016 {label} creates two verified owned outputs", flush=True)
+    return files
+
+
+def reject_configured(tool, request, evidence, label, checks, staged, location, diagnostic):
+    before = snapshot(staged)
+    rejected = invoke(tool, request, evidence, label, checks)
+    require_unchanged(staged, before, label)
+    require_rejection(rejected, location, diagnostic, label)
+    print(f"PASS: GEN016 {label} rejected with both owned outputs preserved", flush=True)
+
+
 def verify(tool, evidence):
     checks = {}
     with tempfile.TemporaryDirectory(prefix="Configured Escaping Callback ", dir=evidence) as temporary:
@@ -81,25 +127,44 @@ def verify(tool, evidence):
             "generate", "--config", str(configuration), "--output", str(output), "--input-set-id", "a016",
             "--source", MODULE, str(source),
         ]
-        generated = invoke(tool, request, evidence, "prepare", checks)
-        if generated.returncode != 0 or generated.stderr:
-            diagnostic = generated.stderr.decode("utf-8", errors="replace").strip()
-            raise ValueError(f"prepare: supported configured generation exited {generated.returncode}: {diagnostic}")
-        if {path.name for path in output.iterdir()} != set(OUTPUT_NAMES):
-            raise ValueError("prepare: configured generation did not write the two owned Swift files")
-        shard = (output / OUTPUT_NAMES[0]).read_text(encoding="utf-8")
-        if f"class {PROTOCOL}Mock" not in shard:
-            raise ValueError("prepare: the configured protocol mock is absent from the generated shard")
-        print("PASS: GEN016 configured generation creates both owned outputs", flush=True)
+        require_generated(tool, request, evidence, "prepare", checks, staged, output)
+
+        write_source(source, ACTOR_SUPPORTED)
+        bare = require_generated(tool, request, evidence, "main-actor", checks, staged, output, main_actor=True)
+        write_source(source, QUALIFIED_ACTOR_SUPPORTED)
+        qualified = require_generated(
+            tool, request, evidence, "qualified-main-actor", checks, staged, output, main_actor=True
+        )
+        if bare != qualified:
+            raise ValueError("Bare and Swift-qualified MainActor spellings produced different owned outputs")
 
         location = rb"(?m)^.*" + re.escape(source.name.encode("utf-8")) + rb":[1-9]\d*:[1-9]\d*: error: BPM001: "
         for label, method, diagnostic in REJECTIONS:
+            declarations = ""
+            if label == "other-global-actor":
+                declarations = "@globalActor public actor WorkerActor { public static let shared = WorkerActor() }\n"
+            write_source(source, method, declarations)
+            reject_configured(tool, request, evidence, label, checks, staged, location, diagnostic)
+
+        shadow = staged / "ShadowedCallbackActors.swift"
+        for actor_name, method, declaration in (
+            (
+                "MainActor", ACTOR_SUPPORTED,
+                "@globalActor public actor MainActor { public static let shared = MainActor() }\n",
+            ),
+            (
+                "Swift", QUALIFIED_ACTOR_SUPPORTED,
+                "public enum Swift {\n"
+                "    @globalActor public actor MainActor { public static let shared = MainActor() }\n"
+                "}\n",
+            ),
+        ):
             write_source(source, method)
-            before = snapshot(staged)
-            rejected = invoke(tool, request, evidence, label, checks)
-            require_unchanged(staged, before, label)
-            require_rejection(rejected, location, diagnostic, label)
-            print(f"PASS: GEN016 {label} rejected with both owned outputs preserved", flush=True)
+            shadow.write_text(declaration, encoding="utf-8")
+            reject_configured(
+                tool, [*request, "--source", MODULE, str(shadow)], evidence, f"shadowed-{actor_name.lower()}",
+                checks, staged, location, f"'{actor_name}' is shadowed by a local declaration",
+            )
 
         standalone = staged / "EscapingCallbackDirectoryMock.swift"
         standalone.write_bytes((output / OUTPUT_NAMES[0]).read_bytes())
