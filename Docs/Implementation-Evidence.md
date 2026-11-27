@@ -811,3 +811,9 @@ A full prototype run exited successfully from the independent consumer suite whi
 GEN-026 now records cooperative cancellation requests during nonthrowing async setup using the same session recorder as the typed-throwing lane. The independent consumer holds setup, requests cancellation and observes one request while the attempt remains active. Setup then resumes, observes the task cancellation and initializes the instance. Tests compare an uncancelled attempt, cancellation in the current epoch and cancellation after detach-active reset. The trace retains the admitted, cancellation-requested and returned records in the original epoch and links the actual instance on return.
 
 The generated endpoint identity and the existing missing-await and scope checks are retained. This evidence covers cancellation during configured preparation on the selected native toolchain.
+
+## Synchronous typed-throwing sequences
+
+RUN-012 now uses the shared sequence reservation path for checked synchronous typed-throwing selectors. An independent consumer runs finite immediate return, throw and answer steps through the generated spy protocol. A winning finite sequence reports one exhaustion before typed failure mapping and keeps its precedence over earlier matches and the injected real dependency. Explicit repeat-last and cycle policies preserve their configured order.
+
+The consumer holds an already reserved answer, invokes two peers and then cancels the held task. Its answer throws the declared error without rolling back the reserved step. A separate matcher pauses before reservation across both inherited-position and restarting detach-active resets. Each epoch retains its own cursor and typed history. Other effect families and native release qualification remain open.

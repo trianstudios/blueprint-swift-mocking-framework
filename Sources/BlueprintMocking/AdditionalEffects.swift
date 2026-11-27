@@ -29,12 +29,48 @@ final class EffectRulesBuilder<Input: Sendable, Answer: Sendable> {
 private typealias SyncThrowingAnswer<Input, Output, Failure: Error> =
     @Sendable (Input) -> Result<Output, Failure>
 
+/// One immediate, typed result or computation in a synchronous throwing sequence.
+public struct SyncThrowingSequenceStep<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    fileprivate let answer: SyncThrowingAnswer<Input, Output, Failure>
+
+    public static func returning(_ output: Output) -> Self {
+        Self(answer: { _ in .success(output) })
+    }
+
+    public static func throwing(_ failure: Failure) -> Self {
+        Self(answer: { _ in .failure(failure) })
+    }
+
+    public static func answering(_ body: @escaping @Sendable (Input) throws(Failure) -> Output) -> Self {
+        Self(answer: { input in
+            do throws(Failure) { return .success(try body(input)) }
+            catch { return .failure(error) }
+        })
+    }
+}
+
 public struct SyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    fileprivate let rules: [Rule<Input, SyncThrowingAnswer<Input, Output, Failure>>]
+    fileprivate let rules: [Rule<Input, PlannedAnswer<SyncThrowingAnswer<Input, Output, Failure>>>]
+
+    fileprivate func publish() -> PublishedSyncThrowingConfiguration<Input, Output, Failure> {
+        PublishedSyncThrowingConfiguration(rules: rules.map { rule in
+            Rule(matcher: rule.matcher, answer: rule.answer.publish())
+        })
+    }
+}
+
+private struct PublishedSyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    let rules: [Rule<Input, PublishedAnswer<SyncThrowingAnswer<Input, Output, Failure>>>]
+
+    func forkSequences(restarting: Bool) -> Self {
+        Self(rules: rules.map { rule in
+            Rule(matcher: rule.matcher, answer: rule.answer.forkSequence(restarting: restarting))
+        })
+    }
 }
 
 public final class SyncThrowingStubbing<Input: Sendable, Output: Sendable, Failure: Error> {
-    fileprivate let builder = EffectRulesBuilder<Input, SyncThrowingAnswer<Input, Output, Failure>>()
+    fileprivate let builder = EffectRulesBuilder<Input, PlannedAnswer<SyncThrowingAnswer<Input, Output, Failure>>>()
 
     public init() {}
 
@@ -52,18 +88,24 @@ public struct SyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Error
     fileprivate let matcher: Matcher<Input>
 
     public func willReturn(_ output: Output) {
-        owner.builder.add(matcher) { _ in .success(output) }
+        owner.builder.add(matcher, .single(SyncThrowingSequenceStep<Input, Output, Failure>.returning(output).answer))
     }
 
     public func willThrow(_ error: Failure) {
-        owner.builder.add(matcher) { _ in .failure(error) }
+        owner.builder.add(matcher, .single(SyncThrowingSequenceStep<Input, Output, Failure>.throwing(error).answer))
     }
 
     public func willAnswer(_ answer: @escaping @Sendable (Input) throws(Failure) -> Output) {
-        owner.builder.add(matcher) { input in
-            do throws(Failure) { return .success(try answer(input)) }
-            catch { return .failure(error) }
-        }
+        owner.builder.add(matcher, .single(SyncThrowingSequenceStep<Input, Output, Failure>.answering(answer).answer))
+    }
+
+    /// Reserves one step per matching call. An exhausted winner reports a failure.
+    public func willSequence(
+        _ first: SyncThrowingSequenceStep<Input, Output, Failure>,
+        _ remaining: SyncThrowingSequenceStep<Input, Output, Failure>...,
+        policy: StubSequencePolicy = .finite
+    ) {
+        owner.builder.add(matcher, .sequence([first.answer] + remaining.map(\.answer), policy))
     }
 }
 
@@ -80,8 +122,8 @@ public struct SyncThrowingForwarding<Input: Sendable, Output: Sendable, Failure:
 }
 
 public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    private let configuration: SyncThrowingConfiguration<Input, Output, Failure>
-    private let journal: Journal<Input>
+    private let session: MockSession
+    private let journal: ConfiguredJournal<Input, PublishedSyncThrowingConfiguration<Input, Output, Failure>>
     private let forwarding: SyncThrowingForwarding<Input, Output, Failure>?
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
 
@@ -100,37 +142,60 @@ public final class SyncThrowingEndpoint<Input: Sendable, Output: Sendable, Failu
                 scope: MockScope = MockSession().makeMock(),
                 forwarding: SyncThrowingForwarding<Input, Output, Failure>?,
                 failureMapping: (@Sendable (MockIssue) -> Failure)? = nil) {
-        self.configuration = configuration
-        self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
+        self.session = scope.session
+        self.journal = ConfiguredJournal(
+            endpoint: id, reporter: failureReporter, scope: scope, configuration: configuration.publish(),
+            forkConfigurationOnReset: { $0.forkSequences(restarting: $1) }
+        )
         self.forwarding = forwarding
         self.failureMapping = failureMapping
     }
 
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) throws(Failure) -> Output {
-        guard let admission = journal.begin(input) else {
+        guard let (admission, configuration) = journal.admit(input) else {
             let issue = journal.reportFinishedCall(source: source, terminating: failureMapping == nil)
             if let failureMapping { throw failureMapping(issue) }
             fatalError(issue.message)
         }
-        let rule = configuration.rules.reversed().first { $0.matcher.matches(input) }
-        if let answer = rule?.answer ?? forwarding?.answer {
-            let origin: CallOrigin? = rule == nil ? .forwarded : nil
-            switch answer(input) {
-            case .success(let result):
-                journal.complete(admission, phase: .returned, origin: origin)
-                return result
-            case .failure(let error):
-                journal.complete(admission, phase: .threw, origin: origin)
-                throw error
+        defer { withExtendedLifetime(configuration) {} }
+
+        let outcome: Result<Output, Failure>
+        let origin: CallOrigin?
+        if let rule = configuration.rules.reversed().first(where: { $0.matcher.matches(input) }) {
+            guard let answer = rule.answer.reserve(in: session) else {
+                return try resolveUnanswered(admission, source: source, exhaustedSequence: true)
             }
+            origin = nil
+            outcome = answer(input)
+        } else if let forwarding {
+            origin = .forwarded
+            outcome = forwarding.answer(input)
+        } else {
+            return try resolveUnanswered(admission, source: source, exhaustedSequence: false)
         }
+
+        switch outcome {
+        case .success(let result):
+            journal.complete(admission, phase: .returned, origin: origin)
+            return result
+        case .failure(let error):
+            journal.complete(admission, phase: .threw, origin: origin)
+            throw error
+        }
+    }
+
+    private func resolveUnanswered(
+        _ admission: JournalAdmission, source: SourceLocation, exhaustedSequence: Bool
+    ) throws(Failure) -> Output {
+        let phase: CallPhase? = failureMapping == nil ? .terminated : nil
+        let issue = exhaustedSequence
+            ? journal.reportExhaustedSequence(admission, phase: phase, source: source)
+            : journal.reportMissingCall(admission, phase: phase, source: source)
         if let failureMapping {
-            let issue = journal.reportMissingCall(admission, source: source)
             let error = failureMapping(issue)
             journal.complete(admission, phase: .threw)
             throw error
         }
-        let issue = journal.reportMissingCall(admission, phase: .terminated, source: source)
         fatalError(issue.message)
     }
 

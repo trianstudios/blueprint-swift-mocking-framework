@@ -689,6 +689,12 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         reportUnansweredCall(admission, phase: phase, source: source, reason: .noMatchingStub)
     }
 
+    func reportExhaustedSequence(
+        _ admission: JournalAdmission, phase: CallPhase? = nil, source: SourceLocation
+    ) -> MockIssue {
+        reportUnansweredCall(admission, phase: phase, source: source, reason: .exhaustedSequence)
+    }
+
     fileprivate func reportUnansweredCall(
         _ admission: JournalAdmission, phase: CallPhase? = nil,
         source: SourceLocation, reason: UnansweredCallReason
