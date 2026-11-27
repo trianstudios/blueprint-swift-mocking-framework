@@ -306,6 +306,8 @@ For a synchronous, nonthrowing Sendable protocol method with one final nonescapi
 
 Use `--materialized-autoclosure 'choose(id:fallback:)'` when a matcher needs the fallback value. For supported `Bool`, `Int` and `String` autoclosures, this mode evaluates once after admission and passes the cached value to every candidate matcher, the selected answer and verification. Select the fallback matcher with `fallback: .equal(value)`. An answer receives both `input` and `value`. Value-sensitive verification during evaluation reports incomplete history. A call rejected before admission skips evaluation.
 
+Direct Sendable methods can declare a bare `Self` result on synchronous, nonthrowing requirements with ordinary value inputs. Use the generated final mock type in `willReturn` or a typed `willAnswer` factory. Calls through both generic and existential dependencies verify against the mock that received the call. A protocol constrained to one supplied final class receives an adapter diagnostic.
+
 An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
 
 ```swift

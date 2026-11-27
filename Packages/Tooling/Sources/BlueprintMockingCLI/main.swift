@@ -509,6 +509,7 @@ func generate(
         !name.isEmpty && name.first!.isLetter &&
         name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
     }
+    try index.requireReplaceableSelf(of: root)
     guard simple(module), simple(selected), proto.genericWhereClause == nil, proto.modifiers.map({ $0.name.text }) == ["public"] else {
         try reject(proto, "Select a top-level, non-generic public protocol")
     }
@@ -689,7 +690,7 @@ func generate(
 
     func addMember(
         name: String, parameters: [Parameter], outputType: String,
-        effect: Effect, kind: WitnessKind, at node: some SyntaxProtocol
+        effect: Effect, kind: WitnessKind, declaredResult: String? = nil, at node: some SyntaxProtocol
     ) throws {
         let source = index.origin(of: node)
         let witness = witnessName(name, kind: kind)
@@ -742,7 +743,7 @@ func generate(
             requiresResultMetatype = true
         }
         let endpoint: String
-        var resultIdentity = outputType
+        var resultIdentity = declaredResult ?? outputType
         switch kind {
         case .method: endpoint = "\(name)(\(parameterTypes))"
         case .getter(let property): endpoint = "property:\(property).get"
@@ -1234,6 +1235,14 @@ func generate(
             }
         }
         let returnType = fn.signature.returnClause?.type
+        let returnsBareSelf = returnType?.trimmedDescription == "Self"
+        if let returnType, returnsBareSelf {
+            guard declarationID == proto.id, declarations.count == 1, isolation == .sendable,
+                  !hasBindings, !spy, !specializesGenerics, projections.isEmpty, variadicForwarding.isEmpty,
+                  fn.attributes.isEmpty, fn.signature.effectSpecifiers == nil else {
+                try reject(returnType, "A fluent Self result requires a direct synchronous nonthrowing Sendable method without bindings, forwarding or projections")
+            }
+        }
         if !fn.attributes.isEmpty {
             let hasAvailability = fn.attributes.contains {
                 $0.as(AttributeSyntax.self)?.attributeName.trimmedDescription == "available"
@@ -1282,6 +1291,9 @@ func generate(
             } else {
                 outputType = "Void"
             }
+        } else if returnsBareSelf {
+            // The generated mock is final. Swift accepts this exact nominal type as its Self result.
+            outputType = selected + "Mock"
         } else {
             guard let resolved = supportedResult(returnType) else {
                 try reject(fn, "Use a supported result type and a non-generic requirement without attributes or modifiers")
@@ -1310,6 +1322,9 @@ func generate(
                 : "Ordinary inout stubbing requires a synchronous method")
         }
         let callbacks = parameters.compactMap(\.callback)
+        if returnsBareSelf, !callbacks.isEmpty || parameters.contains(where: { $0.isInout || $0.isVariadic }) {
+            try reject(fn, "A fluent Self result requires ordinary non-variadic value parameters")
+        }
         if autoclosureMode != nil {
             let profile = materializedSelected ? "Materialized" : "Lazy"
             guard callbacks.count == 1, parameters.last?.callback?.isAutoclosure == true,
@@ -1334,7 +1349,7 @@ func generate(
             try reject(fn, message)
         }
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
-                      effect: effect, kind: .method, at: fn)
+                      effect: effect, kind: .method, declaredResult: returnsBareSelf ? "Self" : nil, at: fn)
     }
     if let selector = lazyAutoclosureSelections.subtracting(usedAutoclosureSelections).sorted().first {
         try reject(proto, "Unknown lazy autoclosure selector '\(selector)'")

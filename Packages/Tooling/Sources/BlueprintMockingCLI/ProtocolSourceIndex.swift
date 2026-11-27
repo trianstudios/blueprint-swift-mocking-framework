@@ -202,6 +202,25 @@ final class ProtocolSourceIndex {
         return IndexedProtocol(declaration: declaration, origin: candidate.origin)
     }
 
+    /// Diagnoses when a supplied, unconditional final superclass fixes Self to one class.
+    func requireReplaceableSelf(of protocolType: IndexedProtocol) throws {
+        guard let clause = protocolType.declaration.genericWhereClause else { return }
+        let module = protocolType.origin.module
+        let declarations = try load(module)
+        for requirement in clause.requirements {
+            guard case .conformanceRequirement(let bound) = requirement.requirement,
+                  bound.leftType.trimmedDescription == "Self",
+                  let name = Self.simpleName(bound.rightType) else { continue }
+            let candidates = Self.shadows(named: name, in: declarations)
+            guard candidates.count == 1, let candidate = candidates.first, !candidate.isConditional,
+                  let concrete = candidate.declaration.as(ClassDeclSyntax.self),
+                  concrete.modifiers.contains(where: { $0.name.text == "final" }),
+                  concrete.genericParameterClause == nil else { continue }
+            throw Self.error(at: origin(of: bound), "Self is fixed to final class '\(module).\(name)'. "
+                             + "Use a protocol or closure adapter at the consuming boundary.")
+        }
+    }
+
     func origin(of node: some SyntaxProtocol) -> ProtocolSourceOrigin {
         file(containing: node).origin(of: node)
     }
@@ -344,6 +363,9 @@ final class ProtocolSourceIndex {
             guard visited.insert(identity).inserted else { return }
 
             let declaration = current.declaration
+            if declaration.id != root.declaration.id {
+                try requireReplaceableSelf(of: current)
+            }
             guard declaration.modifiers.map(\.name.text) == ["public"],
                   declaration.attributes.isEmpty, declaration.genericWhereClause == nil else {
                 throw Self.error(at: current.origin, "Protocol \(module).\(current.name) must be public, non-generic "

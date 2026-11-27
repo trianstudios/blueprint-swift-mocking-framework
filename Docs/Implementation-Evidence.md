@@ -529,3 +529,9 @@ The independent consumer holds a winning call through an exclusive conflict and 
 RUN-017 adds immutable factory tables and checked synchronous opt-in. Lookups resolve the exact requested type and carry a bounded ancestry through factory dependencies. The direct registry tests verify independent copies, unregistered domain types, cycle paths, and a depth limit that prevents entering the next factory. The independent SwiftPM consumer uses a protocol adapter and confirms stub and forwarding precedence, a successful registered default without an issue, and safe reentry into session history from the factory.
 
 Two bounded consumer subprocesses exercise unregistered and cyclic default resolution. Each checks the admitted call was recorded as terminated before reporting one precise issue, then verifies process termination with the matching diagnostic. Built-in recipes, recursive generated child identity and broader native qualification remain open.
+
+## Typed fluent Self witnesses
+
+GEN-009 emits a final mock whose bare `Self` witness returns the concrete final mock type. Ordinary setup uses a typed factory or explicit return, and the journal retains `Self` in the semantic declaration ID. The independent SwiftPM fixture uses both generic and existential callers and verifies each terminal event on the mock that received the call. Swift rejects an unrelated return conformer and an illegal existential Self-operand call.
+
+Standalone and configured generation use the same implementation. A compiler-valid protocol bound to a supplied final superclass receives a source-located adapter diagnostic. Rejected fixed and effectful cases preserve both configured output files. Recursive witness graphs, other Self positions and effects, generated adapters and broader native qualification remain open.

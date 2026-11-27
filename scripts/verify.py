@@ -80,6 +80,45 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--bind-associated-type", binding])
     return arguments
 
+def verify_fluent_self_generation(tool, source, generated, fixed, scratch):
+    run("fluent-self-generation", generate(tool, source, generated, "FluentDirectory"))
+    with tempfile.TemporaryDirectory(prefix="FluentSelf-", dir=scratch) as directory:
+        configured = Path(directory)
+        authored = configured / "FluentDirectory.swift"
+        authored.write_bytes(source.read_bytes())
+        configuration = configured / "blueprint-mocking.json"
+        configuration.write_text(json.dumps({"schemaVersion": 1, "selections": [
+            {"module": "ConsumerDomain", "type": "FluentDirectory", "kind": "protocol"},
+        ]}), encoding="utf-8")
+        output = configured / "Generated Swift"
+        request = ["--config", configuration, "--output", output, "--input-set-id", "a009",
+                   "--source", "ConsumerDomain", authored]
+        run("fluent-self-configured-generation", [tool, "generate", *request])
+        def snapshot():
+            files = {}
+            for file in sorted(output.iterdir()):
+                stat = file.stat()
+                files[file.name] = (stat.st_ino, stat.st_mode, stat.st_mtime_ns, file.read_bytes())
+            return files
+
+        before = snapshot()
+        assert set(before) == {"BlueprintMocks.generated.swift", "BlueprintMockingIndex.generated.swift"}
+        run("fluent-self-configured-verification", [tool, "verify-generated", *request])
+        if snapshot() != before:
+            raise ValueError("Verifying fluent Self generation changed owned outputs")
+        async_variant = source.read_text(encoding="utf-8").replace("-> Self", "async -> Self", 1)
+        for label, text, diagnostic in (
+            ("fixed", fixed.read_text(encoding="utf-8").replace("FixedSelfDirectory", "FluentDirectory"),
+             r"Self is fixed to final class 'ConsumerDomain\.FixedDirectory'"),
+            ("effect", async_variant, r"A fluent Self result requires a direct synchronous nonthrowing Sendable method"),
+        ):
+            authored.write_text(text, encoding="utf-8")
+            run("fluent-self-configured-reject-" + label, [tool, "generate", *request],
+                fails=True, patterns=[r"FluentDirectory\.swift:\d+:\d+: error: BPM001: " + diagnostic])
+            if snapshot() != before:
+                raise ValueError("Rejected fluent Self generation changed existing owned outputs")
+
+
 def verify_lazy_autoclosure_generation(tool, source, generated, scratch):
     selection = ("choose(id:fallback:)",)
     run("lazy-autoclosure-generation", generate(
@@ -613,6 +652,12 @@ def main():
             fails=True, patterns=[r"error: BPM001:[^\n]*" + diagnostic])
         if (rejected_rethrows.read_bytes(), rejected_rethrows.stat().st_mtime_ns) != rethrows_baseline:
             raise ValueError("Rejected rethrows provider settings changed the existing output")
+    fixed_self = ROOT / "Fixtures/GeneratorRejections/FixedSelfDirectory.swift"
+    run("fixed-self-native-shape", [swiftc, "-swift-version", "6", "-sdk", sdk, "-typecheck", fixed_self],
+        env=swift_environment)
+    verify_fluent_self_generation(
+        tool, source.with_name("FluentDirectory.swift"), generated.with_name("FluentDirectoryMock.swift"),
+        fixed_self, temp)
     verify_lazy_autoclosure_generation(
         tool, source.with_name("LazyChoiceDirectory.swift"), generated.with_name("LazyChoiceDirectoryMock.swift"), temp)
     verify_materialized_autoclosure_generation(
@@ -1213,6 +1258,7 @@ def main():
     assert "@escaping @Sendable ([Int]) -> String" in disambiguated_forward.read_text()
     assert "@escaping @Sendable ([String]) -> String" not in disambiguated_forward.read_text()
     expected_rejections = {
+        "FixedSelfDirectory": r"Self is fixed to final class 'ConsumerDomain\.FixedDirectory'",
         "AvailabilityDeprecatedRequirement": availability_syntax,
         "AvailabilityMultiplePlatforms": availability_syntax,
         "AvailabilityUnresolvedReceipt": r"Use an unconditional public, nongeneric struct declared in this module",
@@ -1471,6 +1517,7 @@ def main():
                   r"RUN015_closedOverlayRejectsPendingCompletionOnItsPinnedScenario\(\) passed",
                   r"RUN015_detachedCompletionAndReusablePlanPreserveIndependentCursors\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
+                  r"GEN009_fluentSelfUsesTypedFactoryAndVerifiesOnInvokedMock\(\) passed",
                   r"GEN018_lazyAutoclosureEvaluatesOnlyOnExplicitAnswerRequests\(\) passed",
                   r"GEN018_materializedMatcherAndAnswerReuseOneValue\(\) passed",
                   r"GEN018_finishedMaterializedEndpointDoesNotEvaluate\(\) passed",
@@ -1632,6 +1679,10 @@ def main():
         "MainActorStubbingAccess": r"main actor-isolated.*'display",
         "MainActorVerificationAccess": r"main actor-isolated.*'display",
         "MainActorWitnessAccess": r"main actor-isolated.*'display",
+        "FluentSelfWrongResult": (
+            r"cannot convert value of type 'OtherDirectory' to expected argument type 'FluentDirectoryMock'"
+        ),
+        "FluentSelfExistentialInput": r"member 'accepts' cannot be used on value of type 'any SelfOperand'",
         "WrongResult": r"cannot convert value of type 'Int'",
         "ReturnOnlyOverloadWrongResult": (
             r"ReturnOnlyOverloadWrongResult\.swift:\d+:\d+: error: "
