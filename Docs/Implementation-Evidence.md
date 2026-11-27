@@ -751,3 +751,9 @@ Source diagnostics drop redundant dot path components and order ambiguous candid
 GEN-026 also accepts one direct synchronous init(seed: Int) throws(Failure) with a public same-module error enum. The active attempt belongs to the construction scope while setup runs. Failure records a thrown terminal and preserves the exact declared error and payload through the protocol metatype. No instance identity is allocated on failure. Success publishes an explicit link to the constructed instance on the attempt's terminal record. The optional link is part of metadata-only session trace.
 
 The separate consumer verifies the original attempt ID, distinct successful instance identities, no allocation on failure, and archived failure after a detached reset. Both isolation modes reject a setup closure with a different error type. Unsupported shapes preserve prior output, and ordinary generation and lifecycle checks still pass. Failable, async and broader typed initializer profiles remain open.
+
+## Typed journal indexing after reset
+
+The configured journal now locates a retained invocation from its ID and the last reset watermark. The implementation retains the existing epoch guard and lock order. The regression checks out-of-order completion, projected input update after a later admission, public event pruning, detached old-epoch completion and repeated history resets.
+
+Two isolated checked-release artifacts used the same runtime source except for this indexing change. The selected Mac's median sample p50 was 3.75 µs before and 3.50 µs after, with a 6.15% median paired reduction. All ten pairs improved at p50, p95 and p99. Each eight-worker sample preserved 100,000 paired invocations and all retained values were released in retirement samples. The 2 µs absolute target and wider qualification remain open.

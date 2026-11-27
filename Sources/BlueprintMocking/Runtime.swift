@@ -327,6 +327,8 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         var configuration: Configuration
         var revision = RuleRevision(rawValue: 0)
         var nextID: UInt64 = 0
+        // Typed history only appends between epoch resets. IDs continue across resets.
+        var discardedCallWatermark: UInt64 = 0
         var calls: [Invocation<Input>] = []
         var projectionEvents: [ProjectionJournalEvent<Input>] = []
         var issues: [MockIssue] = []
@@ -526,7 +528,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         let (retired, wake) = scope.session.withLock { session -> (Input?, SessionObservationDelivery?) in
             guard admission.event.epoch == session.epoch else { return (nil, nil) }
             let retired = state.withLock { history in
-                let index = Self.retainedIndex(of: admission, in: history.calls)
+                let index = Int(admission.id - history.discardedCallWatermark - 1)
                 precondition(history.calls[index].phase == .admitted, "Cannot update a completed invocation")
                 let previous = history.calls[index].input
                 history.calls[index].input = input
@@ -568,7 +570,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
             var retired: Input? = nil
             if admission.event.epoch == session.epoch {
                 retired = state.withLock { history -> Input? in
-                    let index = Self.retainedIndex(of: admission, in: history.calls)
+                    let index = Int(admission.id - history.discardedCallWatermark - 1)
                     history.calls[index].phase = phase
                     history.calls[index].origin = origin
                     if tracksProjectionTimeline.contains(.result) {
@@ -589,13 +591,6 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         wake?.publish()
         // A projected payload's destructor may reenter the session.
         withExtendedLifetime(retired) {}
-    }
-
-    private static func retainedIndex(of admission: JournalAdmission, in calls: [Invocation<Input>]) -> Int {
-        guard let first = calls.first else {
-            preconditionFailure("Current-epoch admission is missing from its endpoint")
-        }
-        return Int(admission.id - first.id)
     }
 
     func snapshot(validating expectedEpoch: SessionEpoch? = nil) -> JournalSnapshot<Input> {
@@ -640,6 +635,7 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     func discardHistory(restartingSequences: Bool) -> any Sendable {
         state.withLock { state in
             let retiredHistory = (state.calls, state.projectionEvents)
+            state.discardedCallWatermark = state.nextID
             state.calls = []
             state.projectionEvents = []
             var retiredConfiguration: Configuration?
