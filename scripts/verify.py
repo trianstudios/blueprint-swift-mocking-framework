@@ -43,7 +43,7 @@ def record_result(name, output, returncode, valid, *, expected_failure):
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
              module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=(),
-             associated_bindings=(), method_specializations=()):
+             associated_bindings=(), method_specializations=(), generic_providers=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -54,6 +54,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--specialize-subscript", specialization])
     for specialization in method_specializations:
         arguments.extend(["--specialize-method", specialization])
+    for provider in generic_providers:
+        arguments.extend(["--generic-provider", provider])
     if spy:
         arguments.append("--spy")
     for source_module, path in sources:
@@ -472,6 +474,25 @@ def main():
     run("generic-method-generation", generate(
         tool, generic_method_source, generic_method_generated, "GenericMethodDirectory",
         method_specializations=method_specializations))
+    provider_source = source.with_name("GenericProviderDirectory.swift")
+    provider_generated = generated.with_name("GenericProviderDirectoryMock.swift")
+    provider = ("transform(_:)",)
+    run("generic-provider-generation", generate(
+        tool, provider_source, provider_generated, "GenericProviderDirectory", generic_providers=provider))
+    provider_rejected = temp / "RejectedGenericProvider.swift"
+    provider_rejected.write_bytes(b"// preserve existing provider output\n")
+    provider_baseline = (provider_rejected.read_bytes(), provider_rejected.stat().st_mtime_ns)
+    for label, selectors, types, diagnostic in (
+        ("conflict", provider, ("transform(_:)=Int",), "A generic provider and finite specializations cannot both select"),
+        ("unknown", ("label(for:)",), (), "Unknown generic provider selector"),
+        ("duplicate", provider * 2, (), "Duplicate generic provider selector"),
+    ):
+        run("generic-provider-reject-" + label, generate(
+            tool, provider_source, provider_rejected, "GenericProviderDirectory",
+            generic_providers=selectors, method_specializations=types),
+            fails=True, patterns=[r"error: BPM001: " + diagnostic])
+        if (provider_rejected.read_bytes(), provider_rejected.stat().st_mtime_ns) != provider_baseline:
+            raise ValueError("Rejected generic provider settings changed the existing output")
     generic_subscript_source = source.with_name("GenericSubscriptDirectory.swift")
     generic_subscript_generated = generated.with_name("GenericSubscriptDirectoryMock.swift")
     generic_subscript_specializations = ("get_subscript(_:)=Int", "get_subscript(_:)=String",
@@ -1304,6 +1325,7 @@ def main():
                   r"RUN011_generatedOrdinaryMockInvokesCallbackWithinWitness\(\) passed",
                   r"GEN019_generatedOrdinaryInoutWitnessWritesBackBeforeReturnAndThrow\(\) passed",
                   r"GEN010_genericMethodSeparatesIntAndStringSpecializations\(\) passed",
+                  r"GEN011_polymorphicProviderKeepsUnseenValuesTypedAndRecordsSessionMetadata\(\) passed",
                   r"GEN012_returnOnlyOverloadsUseSeparateTypedEndpoints\(\) passed",
                   r"RUN025_cancellationRequestKeepsGeneratedAnswerActiveUntilReturn\(\) passed",
                   r"RUN025_detachedCancellationRequestStaysWithTypedThrowingAdmission\(\) passed",
@@ -1435,6 +1457,7 @@ def main():
         "AsyncAnswerForSyncThrowing": r"to parameter expecting synchronous function type",
         "GenericMethodWrongConstraint": r"requires that 'UnhashableGenericMethodValue' conform to 'Hashable'",
         "GenericMethodWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
+        "GenericProviderExtraConstraint": r"type 'OverconstrainedIdentityProvider' does not conform to protocol 'GenericProviderDirectoryMockBehavior'",
         "GenericSubscriptWrongConstraint": r"requires that 'UnhashableKey' conform to 'Hashable'",
         "GenericSubscriptWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericSubscriptUnsupportedSpecialization": r"no exact matches in call to instance method 'get_subscript'",
@@ -1644,6 +1667,10 @@ def main():
     run_fatal("generic-subscript-missing-terminates", "--missing-generic-specialization", unlisted)
     unlisted_method = r"No configured specialization for schema1\|ConsumerDomain\.GenericMethodDirectory\|transform<.*\[Swift.Bool\]$"
     run_fatal("generic-method-missing-terminates", "--missing-generic-method-specialization", unlisted_method)
+    closed_provider = (
+        r"Cannot call schema1\|ConsumerDomain\.GenericProviderDirectory\|transform<.*\[Swift.Int\] in a finished mock session$"
+    )
+    run_fatal("generic-provider-closed-terminates", "--closed-generic-provider", closed_provider)
     type_scope = r"Missing type-level mock scope for schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:"
     run_fatal("type-subscript-detached-reject", "--type-subscript-detached",
               type_scope + r".*\.get->Int\|Sendable$",

@@ -33,6 +33,10 @@ import ConsumerDoubles
             let service = GenericSubscriptClient(directory: mock)
             _ = service.read(true)
         }
+        if CommandLine.arguments.contains("--closed-generic-provider") {
+            try verifyClosedGenericProvider()
+            return
+        }
         if CommandLine.arguments.contains("--missing-generic-method-specialization") {
             let session = MockSession()
             let reporter = FailureReporter { issue in

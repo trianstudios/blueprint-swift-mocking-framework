@@ -74,8 +74,52 @@ public struct MockScope: Sendable {
         wake?.publish()
         let message = rejection?.message(for: endpoint)
             ?? "No configured specialization for \(endpoint.diagnosticName)"
+        terminateGenericCall(endpoint, message: message, reporter: reporter, source: source,
+                             watermark: admission?.ordinal ?? 0, closedEpoch: closedEpoch)
+    }
+
+    private enum ProviderAdmission: Sendable {
+        case accepted(SessionEvent, SessionObservationDelivery?)
+        case rejected(ScopeAdmissionRejection, closedEpoch: SessionEpoch?)
+    }
+
+    /// Records an immediate generic provider call without retaining its values.
+    public func invokeGenericProvider<Argument: Sendable>(
+        of declaration: String, for type: Argument.Type, reporter: FailureReporter, source: SourceLocation,
+        _ answer: () -> Argument
+    ) -> Argument {
+        let endpoint = EndpointID(declaration, specializedFor: type)
+        let claim = session.withLock { state -> ProviderAdmission in
+            if let rejection = admissionRejection(in: state) {
+                return .rejected(rejection, closedEpoch: state.isFinished ? state.epoch : nil)
+            }
+            let admission = state.admit(mockID: id, endpoint: endpoint,
+                                        configurationRevision: RuleRevision(rawValue: 0))
+            return .accepted(admission, state.observationWake())
+        }
+        switch claim {
+        case .rejected(let rejection, let closedEpoch):
+            terminateGenericCall(endpoint, message: rejection.message(for: endpoint), reporter: reporter,
+                                 source: source, watermark: 0, closedEpoch: closedEpoch)
+        case .accepted(let admission, let wake):
+            wake?.publish()
+            let result = answer()
+            let (delivery, wake) = session.withLock { state in
+                let (_, delivery) = state.complete(admission.invocationID, phase: .returned)
+                return (delivery, state.observationWake())
+            }
+            delivery?.publish()
+            wake?.publish()
+            return result
+        }
+    }
+
+    private func terminateGenericCall(
+        _ endpoint: EndpointID, message: String, reporter: FailureReporter, source: SourceLocation,
+        watermark: UInt64, closedEpoch: SessionEpoch?
+    ) -> Never {
         let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint, message: message,
-                              source: source, watermark: admission?.ordinal ?? 0)
+                              source: source, watermark: watermark)
         if !bufferOrphan(issue, closedEpoch: closedEpoch, terminating: true) {
             reporter.report(issue)
         }

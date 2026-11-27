@@ -85,6 +85,12 @@ Generation rejects missing, duplicate, and unsupported options before publishing
 
 The configured path accepts the same specializations through `genericMethodSpecializations`. Inspection reports canonical configured types and distinguishes endpoint rows by specialization. The independent SwiftPM fixture runs the production build-tool plugin with a local artifact bundle containing the Xcode-linked generator. The probe runs both typed descriptors through the protocol before and after a configuration-only edit to a second method. The fixture checks that regeneration updates both outputs at the same paths, unchanged builds retain them, and invalid configurations fail before the consumer runs or the last valid output pair is replaced. Other generic method shapes, packaged parser parity and applicable profile certification remain open.
 
+## Generic behavior providers
+
+GEN-011 supports a standalone provider for a direct synchronous, nonthrowing Sendable `T -> T` method with inline Hashable and Sendable constraints. Generation emits a companion protocol with that generic signature. The witness calls its provider at the original type and records the concrete specialization as session metadata. The provider runs outside the session lock and only session metadata is retained.
+
+The independent SwiftPM consumer uses a new Hashable and Sendable type and Int through the protocol. The provider reads the active admission reentrantly, both results arrive with one paired return each, and a separate ordinary rule still matches. Swift rejects a provider that adds Comparable. A bounded child on the local Mac verifies that a finished session rejects a typed invocation before calling the provider, with the final snapshot preserved. Conflicting standalone mode selections are rejected before output publication. Configured provider selection, additional signature families and native profile certification remain open.
+
 ## Return-only overloads
 
 GEN012-A supports a pair of synchronous nonthrowing methods on an ordinary Sendable protocol with the same arguments and distinct `Int` and `String` results. Both descriptors take an explicit result metatype. The independent SwiftPM consumer selects each real witness through the protocol, supplies the same input, and verifies separate return histories and endpoint identities. Swift rejects a String result configured for the Int endpoint. Other overload shapes and the generic operator gate GEN012-B remain open.

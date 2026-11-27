@@ -403,7 +403,7 @@ struct GeneratedProtocolMock {
 func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
     subscriptSpecializations: [String], methodSpecializations: [GenericMethodSpecialization] = [],
-    spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
+    genericProviderSelectors: [String] = [], spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
 ) throws -> GeneratedProtocolMock {
     let input = root.origin.path
     let module = root.origin.module
@@ -437,7 +437,8 @@ func generate(
         try reject(proto, "Use a public Sendable protocol without attributes or a public @MainActor protocol without inheritance")
     }
 
-    let specializesGenerics = !subscriptSpecializations.isEmpty || !methodSpecializations.isEmpty
+    let specializesGenerics = !subscriptSpecializations.isEmpty || !methodSpecializations.isEmpty ||
+        !genericProviderSelectors.isEmpty
     if spy {
         guard projections.isEmpty, variadicForwarding.isEmpty, !specializesGenerics else {
             try reject(proto, "Direct spy forwarding cannot be combined with projections, variadic adapters or generic specializations")
@@ -540,6 +541,10 @@ func generate(
         default: nil
         }
     }
+    func endpointIdentity(_ endpoint: String, effect: Effect, result: String) -> String {
+        "schema\(GeneratedContract.irSchemaVersion)|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(result)|\(isolation.identity)"
+    }
+
     func addMember(
         name: String, parameters: [Parameter], outputType: String,
         effect: Effect, kind: WitnessKind, at node: some SyntaxProtocol
@@ -608,7 +613,7 @@ func generate(
             endpoint = declaration.endpoint
             resultIdentity = declaration.resultIdentity
         }
-        let identity = "schema\(GeneratedContract.irSchemaVersion)|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(resultIdentity)|\(isolation.identity)"
+        let identity = endpointIdentity(endpoint, effect: effect, result: resultIdentity)
         let member = Member(name: name, parameters: parameters, outputType: outputType,
                             effect: effect, identity: identity, origin: source,
                             isolation: isolation, kind: kind, requiresResultMetatype: requiresResultMetatype)
@@ -1120,9 +1125,30 @@ func generate(
             try reject(entry.node, "Duplicate generic method specialization '\(type)' for '\(selector)'")
         }
     }
+    var providerSelectors: Set<String> = []
+    for option in genericProviderSelectors {
+        let selector = option.trimmingCharacters(in: .whitespaces)
+        let candidates = genericMethods.filter { $0.declaration.selector == selector }
+        guard let entry = candidates.first else {
+            try reject(proto, "Unknown generic provider selector '\(selector)'")
+        }
+        guard candidates.count == 1 else {
+            try reject(entry.node, "Ambiguous generic provider selector '\(selector)'. Use distinct argument labels.")
+        }
+        guard providerSelectors.insert(selector).inserted else {
+            try reject(entry.node, "Duplicate generic provider selector '\(selector)'")
+        }
+        guard methodTypes[selector] == nil else {
+            try reject(entry.node, "A generic provider and finite specializations cannot both select '\(selector)'")
+        }
+    }
+    let providerMethods = genericMethods.map(\.declaration)
+        .filter { providerSelectors.contains($0.selector) }
+        .sorted { $0.selector < $1.selector }
     for (declaration, node) in genericMethods {
+        if providerSelectors.contains(declaration.selector) { continue }
         guard let types = methodTypes[declaration.selector] else {
-            try reject(node, "Generic methods require explicit specialization for '\(declaration.selector)' using --specialize-method or genericMethodSpecializations")
+            try reject(node, "Generic methods require explicit specialization for '\(declaration.selector)' using --specialize-method or genericMethodSpecializations, or a --generic-provider")
         }
         for type in types.sorted() {
             try addMember(name: declaration.descriptorName, parameters: [Parameter(label: declaration.label, type: type)],
@@ -1130,7 +1156,9 @@ func generate(
                           kind: .specializedGeneric(declaration, type), at: node)
         }
     }
-    guard !members.isEmpty else { try reject(proto, "The selected protocol has no supported requirements") }
+    guard !members.isEmpty || !providerMethods.isEmpty else {
+        try reject(proto, "The selected protocol has no supported requirements")
+    }
     members.sort { ($0.identity, $0.inputType) < ($1.identity, $1.inputType) }
     let typeIndices = members.indices.filter { members[$0].isTypeLevel }
     let instanceIndices = members.indices.filter { !members[$0].isTypeLevel }
@@ -1267,6 +1295,12 @@ func generate(
         }
         return "\(endpointFamily(index))Endpoint<\(arguments)>"
     }
+    let behaviorName = name + "Behavior"
+    var behaviorDeclaration = ""
+    if !providerMethods.isEmpty {
+        let requirements = providerMethods.map { "    " + $0.signature }.joined(separator: "\n")
+        behaviorDeclaration = "public protocol \(behaviorName): Swift.Sendable {\n\(requirements)\n}\n\n"
+    }
     var output = """
     // Generated by the Blueprint Mocking prototype. Schema \(GeneratedContract.irSchemaVersion). Do not edit.
     // Source: \(URL(fileURLWithPath: input).lastPathComponent), protocol \(selected).
@@ -1274,7 +1308,7 @@ func generate(
     import BlueprintMocking
     import \(module)
 
-    \(mockAvailability?.annotation ?? "")\(isolation.annotation)public final class \(declaration): \(selected) {
+    \(behaviorDeclaration)\(mockAvailability?.annotation ?? "")\(isolation.annotation)public final class \(declaration): \(selected) {
         private let __schema: \(GeneratedContract.runtimeMarker).Type = \(GeneratedContract.runtimeMarker).self
 
     """
@@ -1288,8 +1322,12 @@ func generate(
         if case .specializedGeneric = members[$0].kind { return true }
         return false
     }, by: { members[$0].identity })
-    if !specializedEndpoints.isEmpty {
+    let needsGenericScope = !specializedEndpoints.isEmpty || !providerMethods.isEmpty
+    if needsGenericScope {
         output += "    private let __scope: MockScope\n    private let __failureReporter: FailureReporter\n"
+    }
+    if !providerMethods.isEmpty {
+        output += "    private let __genericBehavior: any \(behaviorName)\n"
     }
     for i in instanceIndices {
         output += "    private let __endpoint\(i): \(endpointType(i))\n"
@@ -1429,6 +1467,9 @@ func generate(
     output += "    public init(failureReporter: FailureReporter,\n"
     if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
     if spy { output += "                forwardingTo: (any \(selected))? = nil,\n" }
+    if !providerMethods.isEmpty {
+        output += "                genericBehavior: any \(behaviorName),\n"
+    }
     if !linkedIndices.isEmpty {
         output += "                maximumAsyncThrowingForwardingDepth: Int? = nil,\n"
         output += "                forwardingLinks: ForwardingLinks,\n"
@@ -1444,12 +1485,16 @@ func generate(
         let types = projectionTypes[i]!
         output += "                projection\(i): InvocationProjection<\(member.inputType), \(member.outputType), \(types.argument), \(types.result)>,\n"
     }
-    output += "                _ configure: \(isolation.annotation)(Stubs) -> Void) {\n"
-    if isolation == .sendable && !instanceIndices.isEmpty {
+    let defaultConfigure = !providerMethods.isEmpty && instanceIndices.isEmpty ? " = { _ in }" : ""
+    output += "                _ configure: \(isolation.annotation)(Stubs) -> Void\(defaultConfigure)) {\n"
+    if isolation == .sendable && (!instanceIndices.isEmpty || needsGenericScope) {
         output += "        let scope = session.makeMock()\n"
     }
-    if !specializedEndpoints.isEmpty {
+    if needsGenericScope {
         output += "        self.__scope = scope\n        self.__failureReporter = failureReporter\n"
+    }
+    if !providerMethods.isEmpty {
+        output += "        self.__genericBehavior = genericBehavior\n"
     }
     for i in instanceIndices {
         let m = members[i]
@@ -1672,6 +1717,16 @@ func generate(
             continue
         }
     }
+    for provider in providerMethods {
+        let effect = Effect(isAsync: false, failure: nil)
+        let identity = endpointIdentity(provider.endpoint, effect: effect, result: provider.resultIdentity)
+        let label = provider.label == "_" ? "" : provider.label + ": "
+        output += "\n    public \(provider.signature) {\n"
+        output += "        __scope.invokeGenericProvider(of: \(String(reflecting: identity)), for: __BlueprintKey.self,\n"
+        output += "                                      reporter: __failureReporter, source: \(location(provider.origin))) {\n"
+        output += "            __genericBehavior.\(provider.descriptorName)(\(label)input)\n"
+        output += "        }\n    }\n"
+    }
     let resolvedMethods = methodTypes.sorted { $0.key < $1.key }.flatMap { selector, types in
         types.sorted().map { GenericMethodSpecialization(selector: selector, type: $0) }
     }
@@ -1703,7 +1758,7 @@ private func run(_ arguments: [String]) throws {
         return
     }
     let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
-    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--specialize-method 'method(label:)=Type']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
+    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--specialize-method 'method(label:)=Type']... [--generic-provider 'method(label:)']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
     guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
           arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
     var options = arguments.dropFirst(8)
@@ -1711,6 +1766,7 @@ private func run(_ arguments: [String]) throws {
     var variadicForwarding: [String] = []
     var subscriptSpecializations: [String] = []
     var methodSpecializations: [String] = []
+    var genericProviderSelectors: [String] = []
     var bindingArguments: [String] = []
     var spy = false
     var sourcePaths: [String: [String]] = [:]
@@ -1737,6 +1793,9 @@ private func run(_ arguments: [String]) throws {
         case "--specialize-method":
             guard let specialization = options.popFirst() else { throw usage }
             methodSpecializations.append(specialization)
+        case "--generic-provider":
+            guard let selector = options.popFirst() else { throw usage }
+            genericProviderSelectors.append(selector)
         case "--bind-associated-type":
             guard let binding = options.popFirst() else { throw usage }
             bindingArguments.append(binding)
@@ -1767,7 +1826,8 @@ private func run(_ arguments: [String]) throws {
     let output = try generate(index: index, root: root, projections: projections,
                               variadicForwarding: variadicForwarding,
                               subscriptSpecializations: subscriptSpecializations,
-                              methodSpecializations: methods, spy: spy,
+                              methodSpecializations: methods,
+                              genericProviderSelectors: genericProviderSelectors, spy: spy,
                               associatedTypeBindings: associatedTypeBindings)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.source.write(toFile: arguments[7], atomically: true, encoding: .utf8)
