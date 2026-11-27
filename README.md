@@ -40,6 +40,10 @@ Select `CatalogPricing`, `BasketDiscount`, and `SKUFormatting` when regenerating
 swift test --package-path Fixtures/ProtocolConsumer --filter SYS005
 ```
 
+### Selecting a return-only overload
+
+For a pair of ordinary Sendable synchronous nonthrowing methods with the same arguments and `Int` and `String` results, select the result type in the generated setup and verification. For example, use `stubs.lookup(id: .equal("sku"), returning: Int.self).willReturn(42)` and `mock.verify.lookup(id: .equal("sku"), returning: Int.self).wasCalled(.once)`. Calls through the protocol select a witness using the result type in the caller. [Consumer fixture](Fixtures/ProtocolConsumer/Tests/ConsumerTests/ReturnOnlyOverloadTests.swift)
+
 ### SwiftPM build-tool generation
 
 To build mocks from source in a SwiftPM test or test-support target, add the runtime and tooling packages from a local checkout of this repository. Set the target’s dependencies to include the protocol’s Swift source target and the runtime product. Attach `BlueprintMockingBuildPlugin` from the tooling package.

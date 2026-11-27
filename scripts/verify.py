@@ -472,6 +472,10 @@ def main():
         projections=("sample(_:)",), forwarding=("sample(_:)",)))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
+    result_source = source.with_name("ResultOverloadDirectory.swift")
+    result_mock = generated.with_name("ResultOverloadDirectoryMock.swift")
+    run("return-only-overload-generation", generate(
+        tool, result_source, result_mock, "ResultOverloadDirectory"))
     immediate_source = source.with_name("CallbackSpyDirectory.swift")
     immediate_generated = generated.with_name("ImmediateCallbackDirectoryMock.swift")
     run("immediate-callback-generation", generate(
@@ -1196,6 +1200,7 @@ def main():
                   r"GEN004B_guardedMockKeepsReceiptStorageAndSurfacesAvailable\(\) passed",
                   r"BLUEPRINT_AVAILABILITY_GUARDED_RECEIPT Swift\.Int 47",
                   r"RUN011_generatedOrdinaryMockInvokesCallbackWithinWitness\(\) passed",
+                  r"GEN012_returnOnlyOverloadsUseSeparateTypedEndpoints\(\) passed",
                   r"GEN016_escapingCallbackCapturesOnlyTheLatestWinningRule\(\) passed",
                   r"GEN016_escapingCallbackLifetimeFollowsCaptureSelectionAndSessionEpoch\(\) passed",
                   r"GEN016_actorEscapingCallbackReplaysOnMainActorAfterDetachedRegistration\(\) passed",
@@ -1293,6 +1298,10 @@ def main():
         "MainActorVerificationAccess": r"main actor-isolated.*'display",
         "MainActorWitnessAccess": r"main actor-isolated.*'display",
         "WrongResult": r"cannot convert value of type 'Int'",
+        "ReturnOnlyOverloadWrongResult": (
+            r"ReturnOnlyOverloadWrongResult\.swift:\d+:\d+: error: "
+            r"cannot convert value of type 'String' to expected argument type 'Int'"
+        ),
         "AssociatedBindingWrongResult": r"cannot convert value of type 'Int' to expected argument type 'String'",
         "WrongError": r"cannot convert value of type 'Other'",
         "GeneratedWrongError": r"cannot convert value of type 'UnrelatedError'",

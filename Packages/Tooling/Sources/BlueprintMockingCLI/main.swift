@@ -246,6 +246,7 @@ struct Member {
     let origin: ProtocolSourceOrigin
     let isolation: Isolation
     let kind: WitnessKind
+    var requiresResultMetatype = false
 
     var usesInout: Bool { parameters.contains(where: \.isInout) }
     var callback: CallbackType? { parameters.last?.callback }
@@ -318,6 +319,9 @@ struct Member {
         }
         if case .specializedSubscriptGetter(_, let type) = kind {
             declarations.append("as _: (\(type)).Type")
+        }
+        if requiresResultMetatype {
+            declarations.append("returning _: (\(outputType)).Type")
         }
         return declarations
     }
@@ -483,7 +487,7 @@ func generate(
 
     var members: [Member] = []
     var mockAvailability: MacOSIntroduction?
-    var descriptors: [String: Member] = [:]
+    var descriptors: [String: Int] = [:]
     var witnessesByName: [String: Member] = [:]
     var boundSelectors: [String: Member] = [:]
     func witnessName(_ name: String, kind: WitnessKind) -> String? {
@@ -520,7 +524,9 @@ func generate(
         default: namespace = ""
         }
         let descriptor = "\(namespace)\(name)(\(matcherTypes)\(specialization))"
-        if let previous = descriptors[descriptor] {
+        var requiresResultMetatype = false
+        if let previousIndex = descriptors[descriptor] {
+            let previous = members[previousIndex]
             let locations = " (previous requirement at \(previous.origin))"
             if parameters.contains(where: \.isVariadic) || previous.parameters.contains(where: \.isVariadic) {
                 try reject(node, "Variadic overloads with identical lowered matcher signatures require distinct argument labels" + locations)
@@ -531,7 +537,19 @@ func generate(
             if parameters.contains(where: { $0.callback != nil }) || previous.callback != nil {
                 try reject(node, "Callback overloads with identical ordinary-argument matcher signatures require distinct argument labels" + locations)
             }
-            try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names" + locations)
+            guard case .method = kind, case .method = previous.kind,
+                  declarations.count == 1, isolation == .sendable, !hasBindings, !spy,
+                  projections.isEmpty, variadicForwarding.isEmpty, subscriptSpecializations.isEmpty,
+                  !effect.isAsync, effect.failure == nil, !previous.effect.isAsync, previous.effect.failure == nil,
+                  !previous.requiresResultMetatype,
+                  Set([outputType, previous.outputType]) == ["Int", "String"],
+                  index.isUnshadowed("Int", in: module), index.isUnshadowed("String", in: module) else {
+                try reject(node, "Overloads that differ only by effects or result type, or methods that collide with accessor descriptors, require separate descriptor names" + locations)
+            }
+            try index.requireUnshadowedQualifier("Int", at: node)
+            try index.requireUnshadowedQualifier("String", at: node)
+            members[previousIndex].requiresResultMetatype = true
+            requiresResultMetatype = true
         }
         let endpoint: String
         var resultIdentity = outputType
@@ -550,7 +568,7 @@ func generate(
         let identity = "schema\(GeneratedContract.irSchemaVersion)|\(module).\(selected)|\(endpoint)\(effect.declaration)->\(resultIdentity)|\(isolation.identity)"
         let member = Member(name: name, parameters: parameters, outputType: outputType,
                             effect: effect, identity: identity, origin: source,
-                            isolation: isolation, kind: kind)
+                            isolation: isolation, kind: kind, requiresResultMetatype: requiresResultMetatype)
         if hasBindings {
             // Distinct type spellings can become the same Swift type after binding.
             let selector = member.selector
@@ -561,7 +579,7 @@ func generate(
             boundSelectors[selector] = member
         }
         if let witness { witnessesByName[witness] = member }
-        descriptors[descriptor] = member
+        descriptors[descriptor] = members.count
         members.append(member)
     }
 
