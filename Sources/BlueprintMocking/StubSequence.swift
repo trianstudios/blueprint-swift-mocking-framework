@@ -25,10 +25,19 @@ enum PublishedAnswer<Answer: Sendable>: Sendable {
     case single(Answer)
     case sequence(AnswerSequence<Answer>)
 
-    func reserve() -> Answer? {
+    func reserve(in session: MockSession) -> Answer? {
         switch self {
         case .single(let answer): answer
-        case .sequence(let sequence): sequence.reserve()
+        case .sequence(let sequence):
+            // The reset cut and each cursor reservation use the same session gate.
+            session.withLock { _ in sequence.reserve() }
+        }
+    }
+
+    func forkSequence() -> Self {
+        switch self {
+        case .single: self
+        case .sequence(let sequence): .sequence(sequence.fork())
         }
     }
 }
@@ -37,12 +46,18 @@ enum PublishedAnswer<Answer: Sendable>: Sendable {
 final class AnswerSequence<Answer: Sendable>: Sendable {
     private let steps: [Answer]
     private let policy: StubSequencePolicy
-    private let nextIndex = CriticalState(0)
+    private let nextIndex: CriticalState<Int>
 
-    init(_ steps: [Answer], policy: StubSequencePolicy) {
+    init(_ steps: [Answer], policy: StubSequencePolicy, position: Int = 0) {
         precondition(!steps.isEmpty, "An answer sequence needs at least one step")
         self.steps = steps
         self.policy = policy
+        self.nextIndex = CriticalState(position)
+    }
+
+    func fork() -> AnswerSequence {
+        let position = nextIndex.withLock { $0 }
+        return AnswerSequence(steps, policy: policy, position: position)
     }
 
     func reserve() -> Answer? {

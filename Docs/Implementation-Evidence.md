@@ -66,6 +66,12 @@ The focused command `python3 scripts/verify.py --release-checks-only` runs those
 
 The release checker requires every profile artifact for a completed contract to bind to the same full candidate revision and to that artifact’s declared profile. A two-profile fixture certifies its synthetic contract with distinct matching results. Stale or substituted results and duplicate profile tuples fail. The [candidate release profile plan](Release-Profile-Plan.md) lists the proposed SYS-008 evaluator, the remaining native runs, and evidence requirements for review.
 
+## Sequence cursors across epoch resets
+
+RUN-034 now keeps installed async-throwing rule cursors local to each epoch. A reset takes the same session lock as sequence reservation and copies the reserved position into the new epoch without changing the rule revision. An invocation admitted before reset still uses the old cursor. Matchers and answers run outside the session lock.
+
+An independent generated `UserRepository` consumer holds an admitted call inside its matcher before it can reserve. The test verifies that quiescent reset refuses the active call, then detaches it and exercises both cursors. The archived completion pairs with its original admission while current counts and the next sequence result hold. Dedicated options for resetting configured state and release-profile qualification remain open.
+
 ## Public SwiftPM installation
 
 `python3 scripts/verify_remote_install.py <commit>` runs committed fixtures in fresh scratch using the public GitHub URL and a fresh SwiftPM cache shared within that run. It builds and runs the runtime-only product and runs actual Swift Testing and XCTest test targets. Each lockfile must record the repository identity and exact commit. All three fixtures passed at `8937eb9`, `568502a`, and `44ba673` on the tested macOS toolchain. The runtime package's product name is `BluepringMockingFramework` and its module is `BlueprintMocking`.

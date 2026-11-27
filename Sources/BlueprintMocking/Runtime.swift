@@ -237,13 +237,16 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     private let state: CriticalState<State>
     private let scope: MockScope
     private let tracksProjectionTimeline: ProjectionTimelineFields
+    private let forkConfigurationOnReset: (@Sendable (Configuration) -> Configuration)?
     let endpoint: EndpointID
     private let reporter: FailureReporter
 
     init(endpoint: EndpointID, reporter: FailureReporter, scope: MockScope,
-         configuration: Configuration, tracksProjectionTimeline: ProjectionTimelineFields = []) {
+         configuration: Configuration, tracksProjectionTimeline: ProjectionTimelineFields = [],
+         forkConfigurationOnReset: (@Sendable (Configuration) -> Configuration)? = nil) {
         self.state = CriticalState(State(configuration: configuration))
         self.tracksProjectionTimeline = tracksProjectionTimeline
+        self.forkConfigurationOnReset = forkConfigurationOnReset
         self.scope = scope
         self.endpoint = endpoint
         self.reporter = reporter
@@ -430,11 +433,18 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     // Called by the session under its lock, in the same order as admission.
     // The session keeps the returned copy alive until both locks have been released.
     func discardHistory() -> any Sendable {
-        state.withLock {
-            let retired = ($0.calls, $0.projectionEvents)
-            $0.calls = []
-            $0.projectionEvents = []
-            return retired
+        state.withLock { state in
+            let retiredHistory = (state.calls, state.projectionEvents)
+            state.calls = []
+            state.projectionEvents = []
+            var retiredConfiguration: Configuration?
+            if let forkConfigurationOnReset {
+                // Detached admissions can still reserve answers from their saved plan.
+                let previous = state.configuration
+                state.configuration = forkConfigurationOnReset(previous)
+                retiredConfiguration = previous
+            }
+            return (retiredHistory, retiredConfiguration)
         }
     }
 
@@ -827,6 +837,13 @@ public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Fail
 
 private struct PublishedAsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
     let rules: [Rule<Input, AsyncRuleBehavior<Input, PublishedAnswer<AsyncAnswer<Input, Output, Failure>>>>]
+
+    func forkSequences() -> Self {
+        Self(rules: rules.map { rule in
+            Rule(matcher: rule.matcher, answer: AsyncRuleBehavior(
+                plan: rule.answer.plan.forkSequence(), capture: rule.answer.capture))
+        })
+    }
 }
 
 public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Failure: Error> {
@@ -894,34 +911,35 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
     private let failureMapping: (@Sendable (MockIssue) -> Failure)?
     private let forwarding: AsyncThrowingForwarding<Input, Output, Failure>?
     private let forwardingInstance: AsyncForwardingInstance
-    private let sessionID: SessionID
+    private let session: MockSession
 
     init(id: EndpointID, configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
          failureReporter: FailureReporter, scope: MockScope,
          forwarding: AsyncThrowingForwarding<Input, Output, Failure>? = nil,
          failureMapping: (@Sendable (MockIssue) -> Failure)?, tracksProjectionTimeline: ProjectionTimelineFields = []) {
-        self.sessionID = scope.session.id
+        self.session = scope.session
         self.forwarding = forwarding
         self.forwardingInstance = AsyncForwardingInstance(id: id)
         self.failureMapping = failureMapping
         journal = ConfiguredJournal(endpoint: id, reporter: failureReporter, scope: scope,
-                                    configuration: configuration.publish(for: sessionID),
-                                    tracksProjectionTimeline: tracksProjectionTimeline)
+                                    configuration: configuration.publish(for: scope.session.id),
+                                    tracksProjectionTimeline: tracksProjectionTimeline,
+                                    forkConfigurationOnReset: { $0.forkSequences() })
     }
 
     func replaceConfiguration(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>) -> RuleRevision {
-        journal.replaceConfiguration(configuration.publish(for: sessionID))
+        journal.replaceConfiguration(configuration.publish(for: session.id))
     }
 
     func replaceConfigurationIfQuiescent(_ configuration: AsyncThrowingConfiguration<Input, Output, Failure>)
         throws(QuiescentConfigurationError) -> RuleRevision {
-        try journal.replaceConfigurationIfQuiescent(configuration.publish(for: sessionID))
+        try journal.replaceConfigurationIfQuiescent(configuration.publish(for: session.id))
     }
 
     func replaceConfigurationWhenQuiescent(
         _ configuration: AsyncThrowingConfiguration<Input, Output, Failure>, within timeout: Duration
     ) async throws -> RuleRevision {
-        try await journal.replaceConfigurationWhenQuiescent(configuration.publish(for: sessionID), within: timeout)
+        try await journal.replaceConfigurationWhenQuiescent(configuration.publish(for: session.id), within: timeout)
     }
 
     func snapshot() -> JournalSnapshot<History> { journal.snapshot() }
@@ -973,7 +991,7 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         let winningRule = configuration.rules.reversed().first { $0.matcher.matches(input) }
         let outcome: AsyncDispatchOutcome<Output, Failure>
         if let winningRule {
-            if let answer = winningRule.answer.plan.reserve() {
+            if let answer = winningRule.answer.plan.reserve(in: session) {
                 winningRule.answer.capture?.publish(input, admission.event)
                 outcome = .answered(await answer(input), origin: nil)
             } else {

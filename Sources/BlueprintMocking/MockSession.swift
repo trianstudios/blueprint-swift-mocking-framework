@@ -251,8 +251,9 @@ public final class MockSession: Sendable {
         state.withLock { $0.snapshot(epoch: epoch) }
     }
 
-    /// Starts a new epoch without changing the configured rules or reusing identities.
-    /// Detachment preserves earlier event metadata. Typed argument history is discarded.
+    /// Starts a new epoch with the same rules, revision, and reserved sequence positions.
+    /// Detached calls keep their original cursors and the earlier epoch retains its event metadata.
+    /// Typed argument history is discarded and invocation identities stay unique.
     @discardableResult
     public func resetHistory(_ mode: SessionResetMode = .requireQuiescence)
         throws(SessionResetError) -> SessionEpoch {
