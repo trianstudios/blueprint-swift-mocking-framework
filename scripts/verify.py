@@ -43,7 +43,8 @@ def record_result(name, output, returncode, valid, *, expected_failure):
 
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
              module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=(),
-             associated_bindings=(), method_specializations=(), generic_providers=(), rethrows_providers=(), scoped_rules=()):
+             associated_bindings=(), method_specializations=(), generic_providers=(), rethrows_providers=(), scoped_rules=(),
+             lazy_autoclosures=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -60,6 +61,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--rethrows-provider", provider])
     for selector in scoped_rules:
         arguments.extend(["--scoped-rule", selector])
+    for selector in lazy_autoclosures:
+        arguments.extend(["--lazy-autoclosure", selector])
     if spy:
         arguments.append("--spy")
     for source_module, path in sources:
@@ -67,6 +70,35 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
     for binding in associated_bindings:
         arguments.extend(["--bind-associated-type", binding])
     return arguments
+
+def verify_lazy_autoclosure_generation(tool, source, generated, scratch):
+    selection = ("choose(id:fallback:)",)
+    run("lazy-autoclosure-generation", generate(
+        tool, source, generated, "LazyChoiceDirectory", lazy_autoclosures=selection))
+    rejected = scratch / "RejectedLazyAutoclosure.swift"
+    rejected.write_bytes(generated.read_bytes())
+    baseline = (rejected.read_bytes(), rejected.stat().st_mtime_ns)
+    original = source.read_text(encoding="utf-8")
+    cases = [
+        ("without-opt-in", source, (), r"explicit --lazy-autoclosure method selector"),
+        ("duplicate", source, selection * 2, r"Duplicate lazy autoclosure selector"),
+    ]
+    for label, thunk in (
+        ("async", "() async -> Int"),
+        ("throwing", "() throws -> Int"),
+        ("escaping", "@escaping () -> Int"),
+        ("sendable", "@Sendable () -> Int"),
+    ):
+        variant = scratch / f"LazyAutoclosure-{label}.swift"
+        variant.write_text(original.replace("() -> Int", thunk), encoding="utf-8")
+        cases.append((label, variant, selection, r"nonescaping synchronous nonthrowing @autoclosure"))
+    for label, authored, selectors, diagnostic in cases:
+        run("lazy-autoclosure-reject-" + label, generate(
+            tool, authored, rejected, "LazyChoiceDirectory", lazy_autoclosures=selectors),
+            fails=True, patterns=[re.escape(authored.name) + r":\d+:\d+: error: BPM001:[^\n]*" + diagnostic])
+        if (rejected.read_bytes(), rejected.stat().st_mtime_ns) != baseline:
+            raise ValueError("Rejected lazy autoclosure generation changed valid prior output")
+
 
 def xcrun(*arguments):
     return subprocess.check_output(["xcrun", *arguments], text=True).strip()
@@ -548,6 +580,8 @@ def main():
             fails=True, patterns=[r"error: BPM001:[^\n]*" + diagnostic])
         if (rejected_rethrows.read_bytes(), rejected_rethrows.stat().st_mtime_ns) != rethrows_baseline:
             raise ValueError("Rejected rethrows provider settings changed the existing output")
+    verify_lazy_autoclosure_generation(
+        tool, source.with_name("LazyChoiceDirectory.swift"), generated.with_name("LazyChoiceDirectoryMock.swift"), temp)
     scoped_source = source.with_name("ScopedUserDirectory.swift")
     scoped_generated = generated.with_name("ScopedUserDirectoryMock.swift")
     run("scoped-rule-generation", generate(
@@ -1393,6 +1427,7 @@ def main():
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
                   r"RUN027_RUN029_orderedConsumptionHonorsClaimedBarriersAndKeepsHistory\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
+                  r"GEN018_lazyAutoclosureEvaluatesOnlyOnExplicitAnswerRequests\(\) passed",
                   r"RUN013_consumerRebindsDetachedServiceCallsAndRejectsStaleHandle\(\) passed",
                   r"RUN013_publicScopedRulesFollowProtocolCallsAndUnwind\(\) passed",
                   r"RUN013_generatedAsyncRulePriorityComposesWithWinningCaptures\(\) passed",
@@ -1575,6 +1610,7 @@ def main():
         "GenericMethodWrongConstraint": r"requires that 'UnhashableGenericMethodValue' conform to 'Hashable'",
         "GenericMethodWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericProviderExtraConstraint": r"type 'OverconstrainedIdentityProvider' does not conform to protocol 'GenericProviderDirectoryMockBehavior'",
+        "DeferredAutoclosure": r"passing non-escaping parameter",
         "GeneratedRuleScopeWrongSelector": r"cannot convert value of type 'Int.Type' to expected argument type 'String.Type'",
         "RethrowingProviderUnrelatedThrow": r"may only throw if its parameter does",
         "RethrowingProviderNoThrowsStub": r"'RethrowingDirectoryMock.Stubs' has no member 'apply'",

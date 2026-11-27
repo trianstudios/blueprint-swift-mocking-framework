@@ -124,6 +124,7 @@ struct Effect {
 struct CallbackType {
     enum Kind {
         case scoped
+        case lazyAutoclosure
         case escaping
         case mainActorEscaping
         case throwingEscaping(String)
@@ -136,6 +137,7 @@ struct CallbackType {
         var family: String {
             switch self {
             case .scoped: "SyncCallback"
+            case .lazyAutoclosure: "SyncAutoclosure"
             case .escaping: "SyncEscapingCallback"
             case .mainActorEscaping: "SyncMainActorEscapingCallback"
             case .throwingEscaping: "SyncThrowingEscapingCallback"
@@ -150,6 +152,7 @@ struct CallbackType {
         var attributes: String {
             switch self {
             case .scoped: ""
+            case .lazyAutoclosure: "@autoclosure "
             case .escaping, .throwingEscaping, .asyncEscaping, .asyncThrowingEscaping: "@escaping @Sendable "
             case .mainActorEscaping, .mainActorAsyncEscaping,
                  .mainActorThrowingEscaping, .mainActorAsyncThrowingEscaping:
@@ -309,6 +312,9 @@ struct Member {
 
     var genericArguments: String {
         if let callback {
+            if case .lazyAutoclosure = callback.kind {
+                return "\(inputType), \(callback.output), \(outputType)"
+            }
             let arguments = "\(inputType), \(callback.input), \(callback.output), \(outputType)"
             return callback.failure.map { "\(arguments), \($0)" } ?? arguments
         }
@@ -463,7 +469,8 @@ func generate(
     index: ProtocolSourceIndex, root: IndexedProtocol, projections: [String], variadicForwarding: [String],
     subscriptSpecializations: [String], methodSpecializations: [GenericMethodSpecialization] = [],
     genericProviderSelectors: [String] = [], rethrowsProviderSelectors: [String] = [],
-    scopedRuleSelectors: [String] = [], spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
+    scopedRuleSelectors: [String] = [], lazyAutoclosureSelectors: [String] = [],
+    spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
 ) throws -> GeneratedProtocolMock {
     let input = root.origin.path
     let module = root.origin.module
@@ -528,6 +535,20 @@ func generate(
     if hasImportedRequirements && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || specializesGenerics) {
         try reject(proto, "Supplied cross-module inheritance supports ordinary witnesses without forwarding, projections or generic specializations")
     }
+
+    let lazyAutoclosureSelections = Set(lazyAutoclosureSelectors.map {
+        $0.trimmingCharacters(in: .whitespacesAndNewlines)
+    })
+    guard lazyAutoclosureSelections.count == lazyAutoclosureSelectors.count else {
+        try reject(proto, "Duplicate lazy autoclosure selector")
+    }
+    if !lazyAutoclosureSelections.isEmpty {
+        guard isolation == .sendable, declarations.count == 1, !hasBindings, !spy,
+              projections.isEmpty, variadicForwarding.isEmpty, !specializesGenerics, rethrowsSelections.isEmpty else {
+            try reject(proto, "Lazy autoclosures require a direct Sendable profile without inheritance, projections, forwarding or generic providers")
+        }
+    }
+    var usedLazyAutoclosureSelections = Set<String>()
 
     func importedType(_ type: TypeSyntax) -> String? {
         if let identifier = type.as(IdentifierTypeSyntax.self) {
@@ -701,7 +722,8 @@ func generate(
     }
 
     func parseParameters(
-        _ parameters: FunctionParameterListSyntax, forSubscript: Bool = false, imported: Bool = false
+        _ parameters: FunctionParameterListSyntax, forSubscript: Bool = false, imported: Bool = false,
+        lazyAutoclosureSelected: Bool = false
     ) throws -> [Parameter] {
         try parameters.map { parameter in
             // A single name on a subscript index is local. A method's is external.
@@ -710,6 +732,25 @@ func generate(
             let unmodified = parameter.attributes.isEmpty && parameter.modifiers.isEmpty &&
                 parameter.defaultValue == nil && (simple(label) || label == "_")
             let tokens = parameter.type.tokens(viewMode: .sourceAccurate).map(\.text)
+            if let attributed = parameter.type.as(AttributedTypeSyntax.self),
+               attributed.attributes.contains(where: {
+                   $0.as(AttributeSyntax.self)?.attributeName.trimmedDescription == "autoclosure"
+               }) {
+                guard lazyAutoclosureSelected else {
+                    try reject(parameter, "Autoclosures require an explicit --lazy-autoclosure method selector")
+                }
+                guard unmodified, !isVariadic, attributed.specifiers.isEmpty,
+                      attributed.attributes.count == 1,
+                      let attribute = attributed.attributes.first?.as(AttributeSyntax.self),
+                      attribute.leftParen == nil, attribute.arguments == nil,
+                      let function = attributed.baseType.as(FunctionTypeSyntax.self),
+                      function.parameters.isEmpty, function.effectSpecifiers == nil,
+                      let value = supportedType(function.returnClause.type) else {
+                    try reject(parameter, "Lazy autoclosures require a nonescaping synchronous nonthrowing @autoclosure () -> Value")
+                }
+                let callback = CallbackType(input: "", output: value, kind: .lazyAutoclosure)
+                return Parameter(label: label, type: callback.declaration, callback: callback)
+            }
             if spy && isVariadic {
                 try reject(parameter, "Direct spy call-through cannot splat a Swift variadic argument; use --forward-variadic with an array-taking provider")
             }
@@ -1181,7 +1222,11 @@ func generate(
             }
             outputType = resolved
         }
-        let parameters = try parseParameters(fn.signature.parameterClause.parameters, imported: imported)
+        let declaredParameters = fn.signature.parameterClause.parameters
+        let selector = "\(fn.name.text)(" + declaredParameters.map { "\($0.firstName.text):" }.joined() + ")"
+        let lazyAutoclosureSelected = lazyAutoclosureSelections.contains(selector)
+        let parameters = try parseParameters(declaredParameters, imported: imported,
+                                             lazyAutoclosureSelected: lazyAutoclosureSelected)
         let specifiers = fn.signature.effectSpecifiers
         if imported && specifiers?.throwsClause?.type != nil {
             try reject(fn, "Cross-module inherited methods support untyped throws; a typed error needs semantic type resolution")
@@ -1196,6 +1241,16 @@ func generate(
                 : "Ordinary inout stubbing requires a synchronous method")
         }
         let callbacks = parameters.compactMap(\.callback)
+        if lazyAutoclosureSelected {
+            guard callbacks.count == 1, case .some(.lazyAutoclosure) = parameters.last?.callback?.kind,
+                  !parameters.contains(where: { $0.isInout || $0.isVariadic }),
+                  !effect.isAsync, effect.failure == nil, outputType != "Never" else {
+                try reject(fn, "Lazy autoclosure selector '\(selector)' requires a synchronous nonthrowing method with one final autoclosure and ordinary arguments")
+            }
+            guard usedLazyAutoclosureSelections.insert(selector).inserted else {
+                try reject(fn, "Ambiguous lazy autoclosure selector '\(selector)'")
+            }
+        }
         if !callbacks.isEmpty && (callbacks.count != 1 || parameters.last?.callback == nil ||
                                   effect.isAsync || effect.failure != nil) {
             let message: String
@@ -1210,6 +1265,9 @@ func generate(
         }
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
                       effect: effect, kind: .method, at: fn)
+    }
+    if let selector = lazyAutoclosureSelections.subtracting(usedLazyAutoclosureSelections).sorted().first {
+        try reject(proto, "Unknown lazy autoclosure selector '\(selector)'")
     }
     var specializationTypes: [String: Set<String>] = [:]
     for option in subscriptSpecializations {
@@ -1992,7 +2050,7 @@ private func run(_ arguments: [String]) throws {
         return
     }
     let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
-    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--specialize-method 'method(label:)=Type']... [--generic-provider 'method(label:)']... [--rethrows-provider 'method(label:)']... [--scoped-rule 'method(label:)']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
+    let usage = GenerationError(description: "usage: generate --input source.swift --module Module --protocol Protocol --output Mock.swift [--project 'method(label:)']... [--forward-variadic 'member(label:)']... [--specialize-subscript 'get_subscript(label:)=Type']... [--specialize-method 'method(label:)=Type']... [--generic-provider 'method(label:)']... [--rethrows-provider 'method(label:)']... [--scoped-rule 'method(label:)']... [--lazy-autoclosure 'method(label:)']... [--spy] [--source MODULE FILE]... [--bind-associated-type 'Name=Type']... [--source-condition MODULE FLAG true|false]...")
     guard arguments.count >= 8, arguments[0] == "--input", arguments[2] == "--module",
           arguments[4] == "--protocol", arguments[6] == "--output" else { throw usage }
     var options = arguments.dropFirst(8)
@@ -2003,6 +2061,7 @@ private func run(_ arguments: [String]) throws {
     var genericProviderSelectors: [String] = []
     var rethrowsProviderSelectors: [String] = []
     var scopedRuleSelectors: [String] = []
+    var lazyAutoclosureSelectors: [String] = []
     var bindingArguments: [String] = []
     var spy = false
     var sourcePaths: [String: [String]] = [:]
@@ -2038,6 +2097,9 @@ private func run(_ arguments: [String]) throws {
         case "--scoped-rule":
             guard let selector = options.popFirst() else { throw usage }
             scopedRuleSelectors.append(selector)
+        case "--lazy-autoclosure":
+            guard let selector = options.popFirst() else { throw usage }
+            lazyAutoclosureSelectors.append(selector)
         case "--bind-associated-type":
             guard let binding = options.popFirst() else { throw usage }
             bindingArguments.append(binding)
@@ -2071,7 +2133,8 @@ private func run(_ arguments: [String]) throws {
                               methodSpecializations: methods,
                               genericProviderSelectors: genericProviderSelectors,
                               rethrowsProviderSelectors: rethrowsProviderSelectors,
-                              scopedRuleSelectors: scopedRuleSelectors, spy: spy,
+                              scopedRuleSelectors: scopedRuleSelectors,
+                              lazyAutoclosureSelectors: lazyAutoclosureSelectors, spy: spy,
                               associatedTypeBindings: associatedTypeBindings)
     // Parsing and validation finish before publication. No partial output on unsupported input.
     try output.source.write(toFile: arguments[7], atomically: true, encoding: .utf8)

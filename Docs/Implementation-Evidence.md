@@ -509,3 +509,9 @@ Open-ended repetition, one-shot duplicate policies across independent requests, 
 RUN-024 now supports one delayed return step in a typed async-throwing sequence. The clock registers the wait after the winning rule reserves the step and publishes any capture. Runtime fixtures advance the manual clock to one nanosecond before the deadline and then acquire the answer at the deadline. A detached reset preserves an admitted waiter and its cancellation and terminal events in the archived epoch. The continuous fixture checks a monotonic lower bound.
 
 The independent SwiftPM consumer calls the generated mock through the protocol and cancels a task during synchronous winning-rule capture, before timer registration. It observes the configured typed error and one cancellation record, then consumes the next sequence step. Broader delayed effects and native qualification remain open.
+
+## Lazy autoclosure witnesses
+
+GEN-018 adds an explicit standalone generator selection for one final nonescaping, synchronous, nonthrowing autoclosure on a direct Sendable method. The generated witness preserves `@autoclosure`, matches ordinary arguments, and supplies a call-scoped evaluator to a typed answer. The independent SwiftPM fixture checks zero evaluations for a return stub and verification, then one and two explicit evaluations for separate answers. The evaluator stays on the invoking MainActor in the fixture, including when it reenters session inspection.
+
+The compiler rejects retaining the evaluator. The generator rejects missing or duplicate opt-in and unsupported autoclosure signatures before replacing output. Cached materialization, effectful matcher negatives, and broader native qualification remain open.
