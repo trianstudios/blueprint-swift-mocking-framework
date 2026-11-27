@@ -2474,13 +2474,38 @@ def main():
         r"Cannot call schema1\|ConsumerDomain\.TypeSubscriptDirectory\|type:subscript:[^\n]+"
         r"\.set[^\n]+ in a finished mock session"
     )
-    late_reporter = run_swift("swift-testing-late-reporter-ownership", [
-        "test", "--package-path", "Fixtures/ProtocolConsumer",
-        "--filter", "DX023_lateTypeScopeTaskKeepsOwningReporter"], fails=True,
-        extra_environment={"BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE": "1"},
-        patterns=[swift_testing_late_issue, r"recorded an issue at TypeSubscriptDirectory\.swift:",
-                  r"PASS: DX023 late type task retained its owning reporter",
-                  r"Test run with 1 test.*failed.*with 1 issue\b"])
+    late_patterns = (
+        swift_testing_late_issue, r"recorded an issue at TypeSubscriptDirectory\.swift:",
+        r"PASS: DX023 late type task retained its owning reporter",
+        r"Test run with 1 test.*failed.*with 1 issue\b",
+    )
+    # The structured origin check uses the native v0 event layout observed on Swift 6.4.
+    if release and tuple(map(int, release.groups())) >= (6, 4):
+        run("swift-testing-native-generated-origin", [
+            sys.executable, "Fixtures/ProtocolConsumer/verify_native_generated_origin.py",
+            "--swift", swift, "--tool", tool, "--evidence-dir", EVIDENCE,
+        ], env=swift_environment, timeout=100, patterns=[
+            r"PASS: DX028 native Swift Testing failure matches inspected generated origin",
+            r"PASS: DX028 malformed native result streams failed explicitly",
+            r"EVIDENCE: dx028-native-generated-origin\.json SHA-256 [0-9a-f]{64}",
+        ])
+        report = json.loads((EVIDENCE / "dx028-native-generated-origin.json").read_bytes())
+        log = (EVIDENCE / "dx028-native-runner.log").read_bytes()
+        if hashlib.sha256(log).hexdigest() != report["runnerLogSHA256"]:
+            raise RuntimeError("Generated origin proof does not match the native runner log")
+        late_reporter = log.decode("utf-8")
+        status = report["runnerExit"]
+        late_reporter = record_result(
+            "swift-testing-late-reporter-ownership", late_reporter, status,
+            status == 1 and all(re.search(pattern, late_reporter) for pattern in late_patterns),
+            expected_failure=True,
+        )
+    else:
+        late_reporter = run_swift("swift-testing-late-reporter-ownership", [
+            "test", "--package-path", "Fixtures/ProtocolConsumer",
+            "--filter", "DX023_lateTypeScopeTaskKeepsOwningReporter"], fails=True,
+            extra_environment={"BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE": "1"},
+            patterns=late_patterns)
     assert len(re.findall(swift_testing_late_issue, late_reporter)) == 1
 
     parameterized_reporter_checks = [

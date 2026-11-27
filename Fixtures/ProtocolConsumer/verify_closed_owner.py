@@ -18,6 +18,16 @@ OWNER = "owner-A"
 PEER = "peer-B"
 
 
+def native_test_command(swift, package, test, events_path, *, skip_build):
+    command = [
+        swift, "test", "--package-path", str(package), "--filter", test, "--disable-xctest",
+        "--event-stream-output-path", str(events_path), "--event-stream-version", "0",
+    ]
+    if skip_build:
+        command.append("--skip-build")
+    return command
+
+
 def event_payload(line):
     record = json.loads(line)
     if record["version"] != 0:
@@ -156,12 +166,7 @@ def verify(swift, package, evidence, context, *, skip_build, dropped_only):
         bridge = Path(directory)
         pending_events = bridge / "native-events.jsonl"
         os.mkfifo(bridge / "release", mode=0o600)
-        command = [
-            swift, "test", "--package-path", str(package), "--filter", TEST_FUNCTION, "--disable-xctest",
-            "--event-stream-output-path", str(pending_events), "--event-stream-version", "0",
-        ]
-        if skip_build:
-            command.append("--skip-build")
+        command = native_test_command(swift, package, TEST_FUNCTION, pending_events, skip_build=skip_build)
         env = os.environ | {
             "BLUEPRINT_CLOSED_OWNER_BRIDGE": directory,
             "BLUEPRINT_CLOSED_OWNER_CONTEXT": context,

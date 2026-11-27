@@ -685,3 +685,9 @@ Swift rejects an incompatible cache binding and a provider that adds a key const
 DX-032 has an independent release-optimized SwiftPM probe built from a clean commit archive. The selected Swift toolchain builds the runtime with checked optimization in isolated SwiftPM state and a dependency-free graph. The report records hardware, process, source, executable and build provenance.
 
 The scalar latency workload runs ordinary recording with a matching typed rule. Eight workers submit 100,000 total calls, and the probe checks one admission and one return per ID in the original epoch. A separate workload checks release of retained values after reset and then session finish. The report compares observed latency with the published scalar threshold. Reference baselines, lock wait and generator metrics, complete lifecycle audits and native release qualification remain open.
+
+## Native generated source attribution
+
+DX-028 now verifies one real Swift Testing v0 result from the selected macOS Swift 6.4 host. The independent consumer deliberately invokes a generated static setter from its finished owning scope. Its native result reports one failure under the owning test case and exits 1. Fresh read-only inspection identifies the exact generated endpoint and declaration. The comparison uses the witness's runtime source position and separately retains the declaration token column.
+
+The same run supplies the existing late-owner text check. The bounded verifier rejects missing terminal records, malformed JSON, duplicate fields, over-size streams and records, wrong source locations and a false success exit. The versioned framework transport, joined orphan and fatal contexts, and other runner profiles remain open.
