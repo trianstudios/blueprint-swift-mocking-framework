@@ -44,6 +44,23 @@ swift test --package-path Fixtures/ProtocolConsumer --filter SYS005
 
 For a pair of ordinary Sendable synchronous nonthrowing methods with the same arguments and `Int` and `String` results, select the result type in the generated setup and verification. For example, use `stubs.lookup(id: .equal("sku"), returning: Int.self).willReturn(42)` and `mock.verify.lookup(id: .equal("sku"), returning: Int.self).wasCalled(.once)`. Calls through the protocol select a witness using the result type in the caller. [Consumer fixture](Fixtures/ProtocolConsumer/Tests/ConsumerTests/ReturnOnlyOverloadTests.swift)
 
+### Keyed storage for generated subscripts
+
+Use `StoredSubscript<Key, Value>` with a Sendable, Hashable key and a Sendable value. Set an initial value for each key you need, then connect the generated getter and setter to the same store.
+
+```swift
+let scores = StoredSubscript<Int, Int>()
+scores.set(10, for: 7)
+let mock = WritableSpyDirectoryMock(failureReporter: .swiftTesting) { stubs in
+    stubs.get_subscript(slot: .any).willAnswer { slot in scores.get(slot) ?? 0 }
+    stubs.set_subscript(slot: .any, newValue: .any).willAnswer { arguments in
+        scores.set(arguments.1, for: arguments.0)
+    }
+}
+```
+
+Each read, write, or removal is atomic. Getter and setter history stays separate, including when Swift calls both during a compound assignment. [Consumer fixture](Fixtures/ProtocolConsumer/Tests/ConsumerTests/StoredSubscriptTests.swift)
+
 ### SwiftPM build-tool generation
 
 To build mocks from source in a SwiftPM test or test-support target, add the runtime and tooling packages from a local checkout of this repository. Set the target’s dependencies to include the protocol’s Swift source target and the runtime product. Attach `BlueprintMockingBuildPlugin` from the tooling package.

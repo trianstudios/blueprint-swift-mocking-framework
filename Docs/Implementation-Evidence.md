@@ -66,6 +66,12 @@ The focused command `python3 scripts/verify.py --release-checks-only` runs those
 
 The release checker requires every profile artifact for a completed contract to bind to the same full candidate revision and to that artifact’s declared profile. A two-profile fixture certifies its synthetic contract with distinct matching results. Stale or substituted results and duplicate profile tuples fail. The [candidate release profile plan](Release-Profile-Plan.md) lists the proposed SYS-008 evaluator, the remaining native runs, and evidence requirements for review.
 
+## Indexed storage for Sendable subscripts
+
+RUN-016 uses a typed `StoredSubscript` backing store for generated getters and setters. Each operation snapshots the key index, resolves the caller’s key outside the lock, and commits against the same version using a primitive entry ID. A changed index causes a retry. The store holds displaced data until after unlocking.
+
+The independent SwiftPM consumer drives the generated subscript from concurrent writers and verifies separate getter and setter histories. Reentrant hash and equality fixtures change the index before commit, including replacing an entry at the same key. Tests confirm the outer operation uses the new index and keeps both writes. A replaced value’s destructor reads the committed value and reenters the store. This covers the checked Sendable route on the current Mac. Actor-local keyed storage and release-profile qualification remain open.
+
 ## Return-only overloads
 
 GEN012-A supports a pair of synchronous nonthrowing methods on an ordinary Sendable protocol with the same arguments and distinct `Int` and `String` results. Both descriptors take an explicit result metatype. The independent SwiftPM consumer selects each real witness through the protocol, supplies the same input, and verifies separate return histories and endpoint identities. Swift rejects a String result configured for the Int endpoint. Other overload shapes and the generic operator gate GEN012-B remain open.
