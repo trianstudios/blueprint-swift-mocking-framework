@@ -164,6 +164,47 @@ def verify_generated(tool, evidence, staged, request, checks, label, *, drift=()
     print(f"PASS: DX011 {label} preserves authored/generated state", flush=True)
 
 
+def verify_source_membership(tool, evidence, staged, output, request, checks):
+    shard, index = (output / name for name in OUTPUT_NAMES)
+    stable = snapshot(output)
+    unrelated = staged / "Adjacent Sources" / "Unselected.swift"
+    unrelated.write_text("public struct Unselected: Sendable {}\n", encoding="utf-8")
+    expanded = request + ["--source", "UnselectedDomain", str(unrelated)]
+
+    verify_generated(tool, evidence, staged, expanded, checks, "verify-expanded-source-set", drift=(index,))
+    generated = invoke(tool, evidence, "generate-expanded-source-set", expanded, checks, verb="generate")
+    expanded_outputs = snapshot(output)
+    if (generated.returncode != 0 or expanded_outputs[shard.name] != stable[shard.name]
+            or expanded_outputs[index.name][4] == stable[index.name][4]):
+        raise ValueError("Changing supplied source membership must change only the generated index")
+
+    unrelated.write_text("public struct\n", encoding="utf-8")
+    verify_generated(tool, evidence, staged, expanded, checks, "verify-unselected-edit")
+    generated = invoke(tool, evidence, "generate-unselected-edit", expanded, checks, verb="generate")
+    if generated.returncode != 0 or snapshot(output) != expanded_outputs:
+        raise ValueError("Generation parsed an unrelated module or rewrote its unchanged output")
+
+    unrelated.unlink()
+    for verb in ("inspect", "generate", "verify-generated"):
+        label = f"{verb}-missing-listed-source"
+        before = snapshot(staged)
+        failed = invoke(tool, evidence, label, expanded, checks, verb=verb)
+        require_unchanged(staged, before, label)
+        diagnostic = (
+            f"error: BPM002: Missing supplied Swift source in module UnselectedDomain: {unrelated}\n"
+        ).encode()
+        if failed.returncode != 1 or failed.stdout or failed.stderr != diagnostic:
+            raise ValueError(f"{label}: expected a missing listed source diagnostic, got {failed.returncode}")
+
+    verify_generated(tool, evidence, staged, request, checks, "verify-reduced-source-set", drift=(index,))
+    generated = invoke(tool, evidence, "generate-reduced-source-set", request, checks, verb="generate")
+    restored = snapshot(output)
+    if (generated.returncode != 0 or restored[shard.name] != stable[shard.name]
+            or restored[index.name][4] != stable[index.name][4]):
+        raise ValueError("Removing unrelated membership must restore the original index bytes and keep the shard")
+    print("PASS: DX012 source membership validates listed files and updates only index provenance", flush=True)
+
+
 def verify(tool, repository, evidence):
     checks = {}
     with tempfile.TemporaryDirectory(prefix="Read Only Inspection ", dir=evidence) as temporary:
@@ -194,6 +235,9 @@ def verify(tool, repository, evidence):
             raise ValueError("Inspection changed with reordered path spellings or prepared generated outputs")
         print("PASS: DX003 warm inspection is byte-identical and preserves generated files", flush=True)
         verify_generated(tool, evidence, staged, request, checks, "verify-exact")
+        verify_generated(tool, evidence, staged, arguments(configuration, output, reordered),
+                         checks, "verify-reordered-source-spellings")
+        verify_source_membership(tool, evidence, staged, output, request, checks)
 
         incomplete = [path for name, path in sources.items() if name != BASE_PROTOCOL]
         cases = [(

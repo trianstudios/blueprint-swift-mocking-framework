@@ -495,7 +495,8 @@ def main():
             raise ValueError("The rejected parser self-comparison left a passing report")
     run("declaration-inspection", [sys.executable, ROOT / "scripts/verify_inspection.py",
                                   "--tool", tool, "--evidence-dir", EVIDENCE],
-        patterns=[r"PASS: DX003 read-only inspection", r"PASS: DX011 verify-generated drift checks"])
+        patterns=[r"PASS: DX003 read-only inspection", r"PASS: DX011 verify-generated drift checks",
+                  r"PASS: DX012 source membership validates listed files and updates only index provenance"])
     run("endpoint-inspection", [sys.executable, ROOT / "scripts/verify_endpoint_inspection.py",
                                "--tool", tool, "--evidence-dir", EVIDENCE],
         patterns=[r"PASS: SYS007 configured inspection reports stable and effect-sensitive endpoint IDs",
