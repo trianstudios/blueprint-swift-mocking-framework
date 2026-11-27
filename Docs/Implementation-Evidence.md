@@ -42,6 +42,12 @@ The second milestone adds a generated MainActor mock for GEN-035 and RUN-020. It
 
 Introduce session-coordinated identities and lifecycle invariants before implementing live revisions/reset or cross-mock ordering (SYS-007, RUN-014, RUN-034, RUN-036, RUN-042). The original matrix remains the completion definition.
 
+## Explicit dependency adapters
+
+SYS-005 exercises a final class, a struct, and a free function through three injected protocols in the independent SwiftPM consumer. `CheckoutQuoteService` uses the live wrappers in one test and typed generated doubles in the other. The mock path verifies each argument and returned call. Calling the original dependencies directly with the same arguments leaves the complete session snapshot and counts unchanged. The verifier regenerates all three checked-in witnesses and compares the bytes.
+
+These fixtures cover the functional SYS-005 gate on the tested arm64 macOS toolchain. The release profile runs and review remain open. [Dependency adapters](../README.md#testing-final-classes-value-types-and-free-functions)
+
 ## Timed session assertions
 
 RUN-031, RUN-032 and RUN-033 have local evidence for sustained metadata counts. The session assigns elapsed time and ordinal in the same event transaction. The observer replays retained events in order and returns the last included watermark at an exclusive deadline. Manual-clock fixtures cover a brief violation between wakes, a restarted window, equal-time events, cancellation, early finish, reset, and unavailable history. The generated-mock consumer exercises the public API using a specific endpoint and completion phase. The current timed API supports session-owned manual and continuous clocks. Richer timeout diagnostics, immutable argument and result projections, and certification across supported profiles remain open.

@@ -22,6 +22,24 @@ swift test --package-path Fixtures/ProtocolConsumer
 swift run --package-path Fixtures/ProtocolConsumer consumer-demo
 ```
 
+### Testing final classes, value types, and free functions
+
+Give the consumer a protocol for each operation it needs and write a live adapter that calls the existing dependency. Generate the test double for the protocol. Inject either the live adapter or the generated mock through the same initializer. The production target needs only the protocol and live adapter.
+
+The checkout quote example shows all three forms in one service.
+
+| Existing dependency | Injectable protocol | Live adapter |
+| --- | --- | --- |
+| Final class `ProductCatalog` | `CatalogPricing` | `ProductCatalogAdapter` |
+| Struct `BasketCredit` | `BasketDiscount` | `BasketCreditAdapter` |
+| Free function `canonicalSKU` | `SKUFormatting` | `CanonicalSKUAdapter` |
+
+Select `CatalogPricing`, `BasketDiscount`, and `SKUFormatting` when regenerating the mocks. Mock history begins at the generated protocol witnesses. Direct calls to the catalog, credit value, or function stay outside that history. For a dependency with restricted access, put the live adapter where Swift permits the call and inject its protocol at the consumer boundary. [Adapters and service](Fixtures/ProtocolConsumer/Sources/ConsumerDomain/CheckoutAdapters.swift) · [Consumer tests](Fixtures/ProtocolConsumer/Tests/ConsumerTests/DependencyAdapterTests.swift)
+
+```sh
+swift test --package-path Fixtures/ProtocolConsumer --filter SYS005
+```
+
 ### SwiftPM build-tool generation
 
 To build mocks from source in a SwiftPM test or test-support target, add the runtime and tooling packages from a local checkout of this repository. Set the target’s dependencies to include the protocol’s Swift source target and the runtime product. Attach `BlueprintMockingBuildPlugin` from the tooling package.

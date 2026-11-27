@@ -464,6 +464,14 @@ def main():
         projections=("sample(_:)",), forwarding=("sample(_:)",)))
     temp = ROOT / ".build/verification"
     temp.mkdir(parents=True, exist_ok=True)
+    adapter_source = source.with_name("CheckoutAdapters.swift")
+    for selected, check in (("CatalogPricing", "catalog-pricing-adapter"),
+                            ("BasketDiscount", "basket-discount-adapter"),
+                            ("SKUFormatting", "sku-formatting-adapter")):
+        expected = generated.with_name(selected + "Mock.swift")
+        regenerated = temp / expected.name
+        run(check + "-generation", generate(tool, adapter_source, regenerated, selected))
+        run(check + "-output", ["cmp", expected, regenerated])
     verify_conditional_generation(tool, temp)
     availability_config_source = temp / availability_source.name
     authored_availability = availability_source.read_text()
@@ -1113,6 +1121,8 @@ def main():
     run_swift("runtime-tests", ["test"], patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b"])
     run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
+                  r"SYS005_checkoutServiceUsesLiveDependencyAdapters\(\) passed",
+                  r"SYS005_generatedAdapterMocksOnlyRecordCallsThroughProtocols\(\) passed",
                   r"GEN002_diamondBranchesShareOneTypedWitnessAndEndpoint\(\) passed",
                   r"GEN002_unstubbedSharedWitnessReportsItsOriginalDeclarationFile\(\) passed",
                   r"GEN002_qualifiedParentsKeepModuleIdentityAndForeignDeclarationProvenance\(\) passed",
