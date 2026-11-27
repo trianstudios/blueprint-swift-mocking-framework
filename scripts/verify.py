@@ -1484,6 +1484,9 @@ def main():
                             r"GEN007_failureMappingsSelectOverloadsByArgumentType\(\) passed"])
     run_swift("runtime-tests", ["test"], patterns=[
         r"\b[1-9]\d* tests?\b.*\bpassed\b",
+        r"DX027_checkedVerificationBoundsTheFailureWithoutDescribingPayloads\(\) passed",
+        r"DX027_mainActorVerificationUsesTheSameBoundedRenderer\(\) passed",
+        r"DX027_renderingPreservesSmallAndExactlyBudgetedCountFailures\(\) passed",
         r"RUN017_registryResolvesExactTypedFactoriesAndKeepsPublishedCopiesIndependent\(\) passed",
         r"RUN017_registryRejectsCyclesAndDepthBeforeEnteringTheRepeatedFactory\(\) passed",
         r"RUN024_delayedSequenceResumesAtExactManualDeadline\(\) passed",
@@ -1517,6 +1520,7 @@ def main():
                   r"RUN015_closedOverlayRejectsPendingCompletionOnItsPinnedScenario\(\) passed",
                   r"RUN015_detachedCompletionAndReusablePlanPreserveIndependentCursors\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
+                  r"DX027_nativeReporterReceivesABoundedVerificationMessage\(\) passed",
                   r"GEN009_fluentSelfUsesTypedFactoryAndVerifiesOnInvokedMock\(\) passed",
                   r"GEN018_lazyAutoclosureEvaluatesOnlyOnExplicitAnswerRequests\(\) passed",
                   r"GEN018_materializedMatcherAndAnswerReuseOneValue\(\) passed",

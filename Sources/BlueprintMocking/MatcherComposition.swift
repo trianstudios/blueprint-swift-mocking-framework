@@ -160,21 +160,68 @@ public extension MainActorMatcher {
 
 enum MatcherDescription {
     private static let unnamed = "unnamed matcher"
+    // Composed descriptions and count-failure messages share a 4 KiB UTF-8 budget.
+    private static let maximumBytes = 4_096
+    private static let truncationMarker = "… [truncated]"
 
     static func fields(_ fields: [(label: String, description: String?)]) -> String? {
         guard fields.contains(where: { $0.description != nil }) else { return nil }
-        let operands = fields.map { "\($0.label): \($0.description ?? unnamed)" }.joined(separator: ", ")
-        return "fields(\(operands))"
+        var writer = Writer()
+        writer.append("fields(")
+        for (index, field) in fields.enumerated() {
+            if writer.isTruncated { break }
+            if index > 0 { writer.append(", ") }
+            writer.append(field.label)
+            writer.append(": ")
+            writer.append(field.description ?? unnamed)
+        }
+        writer.append(")")
+        return writer.rendered
     }
 
     static func compose(_ operation: String, _ descriptions: [String?]) -> String? {
         guard descriptions.contains(where: { $0 != nil }) else { return nil }
-        let operands = descriptions.map { $0 ?? unnamed }.joined(separator: ", ")
-        return "\(operation)(\(operands))"
+        var writer = Writer()
+        writer.append(operation)
+        writer.append("(")
+        for (index, description) in descriptions.enumerated() {
+            if writer.isTruncated { break }
+            if index > 0 { writer.append(", ") }
+            writer.append(description ?? unnamed)
+        }
+        writer.append(")")
+        return writer.rendered
     }
 
     static func countFailure(_ message: String, description: String?) -> String {
-        guard let description else { return message }
-        return "\(message)\nMatcher \(description)"
+        var writer = Writer()
+        writer.append(message)
+        if let description {
+            writer.append("\nMatcher ")
+            writer.append(description)
+        }
+        return writer.rendered
+    }
+
+    private struct Writer {
+        private var bytes: [UInt8] = []
+        private(set) var isTruncated = false
+
+        mutating func append(_ fragment: String) {
+            guard !isTruncated else { return }
+            // Read one extra byte to distinguish an exact fit from truncation.
+            bytes.append(contentsOf: fragment.utf8.prefix(maximumBytes + 1 - bytes.count))
+            guard bytes.count > maximumBytes else { return }
+
+            let suffix = truncationMarker.utf8
+            var end = maximumBytes - suffix.count
+            // The first byte omitted cannot be a continuation byte of a retained scalar.
+            while bytes[end] & 0xC0 == 0x80 { end -= 1 }
+            bytes.removeSubrange(end...)
+            bytes.append(contentsOf: suffix)
+            isTruncated = true
+        }
+
+        var rendered: String { String(decoding: bytes, as: UTF8.self) }
     }
 }

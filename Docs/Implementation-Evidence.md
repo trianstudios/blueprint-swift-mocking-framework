@@ -535,3 +535,9 @@ Two bounded consumer subprocesses exercise unregistered and cyclic default resol
 GEN-009 emits a final mock whose bare `Self` witness returns the concrete final mock type. Ordinary setup uses a typed factory or explicit return, and the journal retains `Self` in the semantic declaration ID. The independent SwiftPM fixture uses both generic and existential callers and verifies each terminal event on the mock that received the call. Swift rejects an unrelated return conformer and an illegal existential Self-operand call.
 
 Standalone and configured generation use the same implementation. A compiler-valid protocol bound to a supplied final superclass receives a source-located adapter diagnostic. Rejected fixed and effectful cases preserve both configured output files. Recursive witness graphs, other Self positions and effects, generated adapters and broader native qualification remain open.
+
+## Bounded count failure diagnostics
+
+DX-027 now limits count verification failures and composed matcher descriptions to 4,096 UTF-8 bytes. It appends fragments to a bounded buffer and marks truncation at a scalar boundary. Count and source context are preserved. Checked and MainActor tests exercise oversized labels, normal and exact-fit messages, once-per-candidate predicates, and payloads whose descriptions must stay unread. The generated independent consumer verifies that Swift Testing receives one bounded issue through the native reporter.
+
+Ranked mismatches, general redaction, trace export and incomplete history window diagnostics remain open. Broader native reporter qualification remains open.

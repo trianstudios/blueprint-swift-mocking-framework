@@ -308,6 +308,8 @@ Use `--materialized-autoclosure 'choose(id:fallback:)'` when a matcher needs the
 
 Direct Sendable methods can declare a bare `Self` result on synchronous, nonthrowing requirements with ordinary value inputs. Use the generated final mock type in `willReturn` or a typed `willAnswer` factory. Calls through both generic and existential dependencies verify against the mock that received the call. A protocol constrained to one supplied final class receives an adapter diagnostic.
 
+Count verification failures and composed matcher descriptions are limited to 4,096 UTF-8 bytes. Longer messages keep the count and the beginning of the matcher context, then end with `… [truncated]` at a valid UTF-8 boundary. The renderer uses explicit matcher descriptions and leaves argument payloads untouched.
+
 An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
 
 ```swift
