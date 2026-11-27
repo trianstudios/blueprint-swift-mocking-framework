@@ -567,9 +567,20 @@ def verify_borrowed_span_generation(tool, scratch, swift, swiftc, sdk, env):
             if snapshot() != previous:
                 raise ValueError("Rejected borrowed Span generation changed its outputs")
 
+    scoped_source = source.with_name("ScopedSpanDirectory.swift")
+    rejected = scratch / "RejectedScopedSpanDirectory.swift"
+    rejected.write_bytes(committed.read_bytes())
+    before = (rejected.read_bytes(), rejected.stat().st_mtime_ns)
+    run("borrowed-span-reject-callback-witness", generate(
+        tool, scoped_source, rejected, "ScopedSpanDirectory", module="SpanDomain"), fails=True,
+        patterns=[r"ScopedSpanDirectory\.swift:\d+:\d+: error: BPM001: [^\n]*Use a scoped adapter"])
+    if (rejected.read_bytes(), rejected.stat().st_mtime_ns) != before:
+        raise ValueError("Rejecting a directly generated scoped callback changed the existing file")
+
     package = [swift, "test", "--package-path", fixture, "--jobs", "1"]
     run("borrowed-span-consumer", [*package, "--filter", "GEN037"], env=env, timeout=360,
-        patterns=[r"GEN037_borrowedSpanProjectsOwnedBytesBeforeItsOwnerReleases\(\) passed"])
+        patterns=[r"GEN037_borrowedSpanProjectsOwnedBytesBeforeItsOwnerReleases\(\) passed",
+                  r"GEN037_scopedAdapterPassesTheBorrowedSubviewOnlyToItsNonescapingCallback\(\) passed"])
     products = subprocess.check_output(
         [swift, "build", "--package-path", fixture, "--show-bin-path"], cwd=ROOT, env=env, text=True,
     ).strip()
@@ -577,6 +588,8 @@ def verify_borrowed_span_generation(tool, scratch, swift, swiftc, sdk, env):
         ("RetainBorrowedSpan", r"error:[^\n]*Escapable"),
         ("ExtendBorrowedSpanLifetime", r"error:[^\n]*lifetime-dependent variable 'escaped' escapes its scope"),
         ("EscapingBorrowedSpanProjection", r"error:[^\n]*captured by an escaping closure[^\n]*borrowed parameter"),
+        ("EscapeScopedSpanView", r"error:[^\n]*lifetime-dependent variable 'view' escapes its scope"),
+        ("EscapeScopedSpanCallback", r"error:[^\n]*escaping closure captures non-escaping parameter 'read'"),
     ):
         run("compile-reject-" + name,
             [*compiler, "-I", products, "-I", Path(products) / "Modules", "-emit-sil", "-o", os.devnull,

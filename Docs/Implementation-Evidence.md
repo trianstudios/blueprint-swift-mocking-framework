@@ -769,3 +769,9 @@ The instrumented control counted six parses for three files before the change an
 GEN-004 accepts one leading exclamation mark on a custom source-module define. The native SwiftPM consumer switches the domain target's define and exercises an ordinary and a negated requirement through the generated mock. The two builds receive the correct Int and String or String and Bool witnesses. Standalone and configured generation agree. A stale witness fails the mismatched native build.
 
 Missing source-module context and a compound condition still produce source-located diagnostics and preserve the generated pair. Automatic flag discovery, built-in compiler tests and broader expressions remain open.
+
+## Scoped callback adapter for a borrowed span
+
+The GEN-037 consumer now exercises a handwritten scoped adapter around the generated prefix-length selector. The adapter passes a borrowed prefix from the real input to a nonescaping callback and returns an owned Int. The original byte owner is released after the call. History retains the selector's owned projection and the expected admission and return phases.
+
+Swift SIL checks reject an escaping view and an escaping callback independently. This lane uses the default checked Swift 6.4 profile. Direct dependent Span results require a separate supported compiler profile.
