@@ -41,12 +41,13 @@ private actor SetupGate {
             try await checkInvalidScope(mode)
             return
         }
-        try await checkConstruction(detachingEpoch: false)
-        try await checkConstruction(detachingEpoch: true)
+        try await checkConstruction(detachingEpoch: false, cancelling: false)
+        try await checkConstruction(detachingEpoch: false, cancelling: true)
+        try await checkConstruction(detachingEpoch: true, cancelling: true)
         print("PASS: GEN026 async construction stays active across suspension and links only after initialization")
     }
 
-    private static func checkConstruction(detachingEpoch: Bool) async throws {
+    private static func checkConstruction(detachingEpoch: Bool, cancelling: Bool) async throws {
         let session = MockSession()
         let prior = session.snapshot().epoch
         let gate = SetupGate()
@@ -55,6 +56,7 @@ private actor SetupGate {
         ) { seed, stubs in
             precondition(session.snapshot().activeInvocationCount == 1)
             await gate.suspendSetup()
+            precondition(Task.isCancelled == cancelling)
             stubs.label(.any).willAnswer { "\(seed)/\($0)" }
         }
         let task = Task.detached {
@@ -68,6 +70,7 @@ private actor SetupGate {
         precondition(suspended.epoch == prior)
         precondition(suspended.activeInvocationCount == 1)
         precondition(suspended.events.map(\.phase) == [.admitted])
+        precondition(suspended.cancellationRequests.isEmpty)
         let attempt = suspended.events[0]
         precondition(attempt.constructedMockID == nil)
         precondition(attempt.endpoint.rawValue.contains("|init(seed:Swift.Int) async->Self|"))
@@ -90,11 +93,25 @@ private actor SetupGate {
             precondition(session.snapshot(epoch: prior)?.events.map(\.phase) == [.admitted])
         }
 
+        if cancelling { task.cancel() }
+        let pending = session.snapshot(epoch: prior)!
+        precondition(pending.activeInvocationCount == 1 && pending.events == suspended.events)
+        precondition(
+            pending.cancellationRequests.count == (cancelling ? 1 : 0),
+            "Cancellation request was not recorded while async initializer setup was suspended"
+        )
+        if let request = pending.cancellationRequests.first {
+            precondition(request.admission == attempt && request.ordinal > attempt.ordinal)
+        }
+        if detachingEpoch { precondition(session.snapshot().cancellationRequests.isEmpty) }
+
         await gate.release()
         let instance = await task.value
         let construction = session.snapshot(epoch: prior)!
         precondition(construction.events.map(\.phase) == [.admitted, .returned])
+        precondition(construction.cancellationRequests == pending.cancellationRequests)
         let terminal = construction.events[1]
+        if let request = construction.cancellationRequests.first { precondition(request.ordinal < terminal.ordinal) }
         precondition(terminal.invocationID == attempt.invocationID && terminal.mockID == attempt.mockID)
         precondition(terminal.epoch == prior && terminal.ordinal > attempt.ordinal)
         guard let attached = terminal.constructedMockID else {
@@ -111,7 +128,9 @@ private actor SetupGate {
         let trace = try JSONSerialization.jsonObject(with: construction.exportTraceJSON()) as! [String: Any]
         let records = trace["records"] as! [[String: Any]]
         precondition(records[0]["constructedMockID"] == nil)
-        precondition(records[1]["constructedMockID"] as? String == String(attached.rawValue))
+        let kinds = records.compactMap { $0["kind"] as? String }
+        precondition(kinds == (cancelling ? ["admitted", "cancellationRequested", "returned"] : ["admitted", "returned"]))
+        precondition(records.last?["constructedMockID"] as? String == String(attached.rawValue))
     }
 
     private static func checkInvalidScope(_ mode: String) async throws {

@@ -52,6 +52,14 @@ public struct MockConstructionAttempt: ~Copyable, Sendable {
     fileprivate var isCompleted = false
     fileprivate var publishesInstanceLink = false
 
+    /// Records cancellation requested while async preparation runs without changing its result.
+    public borrowing func observingCancellation<Value: Sendable>(
+        isolation: isolated (any Actor)? = #isolation,
+        _ operation: () async -> Value
+    ) async -> Value {
+        await instanceScope.observingConstructionCancellation(for: invocation, isolation: isolation, operation)
+    }
+
     /// Generated initializer witnesses call this after initializing all stored state.
     public consuming func complete() {
         var attempt = consume self
@@ -88,12 +96,7 @@ public struct MockThrowingConstructionAttempt: ~Copyable, Sendable {
         isolation: isolated (any Actor)? = #isolation,
         _ operation: () async -> Value
     ) async -> Value {
-        let session = scope.session
-        let invocation = self.invocation
-        return await withTaskCancellationHandler(operation: operation, onCancel: {
-            let wake = session.withLock { $0.recordCancellationRequest(for: invocation) }
-            wake?.publish()
-        }, isolation: isolation)
+        await scope.observingConstructionCancellation(for: invocation, isolation: isolation, operation)
     }
 
     /// Records the configured failure without allocating a mock identity.
@@ -303,6 +306,17 @@ public struct MockScope: Sendable {
         }
     }
 
+    fileprivate func observingConstructionCancellation<Value: Sendable>(
+        for invocation: SessionInvocationID, isolation: isolated (any Actor)?,
+        _ operation: () async -> Value
+    ) async -> Value {
+        let session = self.session
+        return await withTaskCancellationHandler(operation: operation, onCancel: {
+            let wake = session.withLock { $0.recordCancellationRequest(for: invocation) }
+            wake?.publish()
+        }, isolation: isolation)
+    }
+
     fileprivate func completeProviderInvocation(
         _ invocation: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil,
         constructedMockID: MockID? = nil
@@ -353,7 +367,7 @@ public struct SessionEvent: Equatable, Sendable {
     }
 }
 
-/// A cancellation request observed while an async-throwing invocation was active.
+/// A cancellation request observed while an async invocation was active.
 public struct SessionCancellationRequest: Equatable, Sendable {
     public let ordinal: UInt64
     public let elapsed: Duration

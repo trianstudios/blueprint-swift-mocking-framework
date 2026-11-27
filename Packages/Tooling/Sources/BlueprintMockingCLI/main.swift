@@ -2593,7 +2593,9 @@ func generate(
                     of: endpoint, reporter: construction.__reporter, source: source
                 )
                 let stubs = Stubs(\(stubs))
-                await construction.__configure(seed, stubs)
+                await attempt.observingCancellation {
+                    await construction.__configure(seed, stubs)
+                }
                 self.init(failureReporter: construction.__reporter, scope: attempt.instanceScope, stubs: stubs)
                 attempt.complete()
                 """.replacingOccurrences(of: "\n", with: "\n        ")

@@ -805,3 +805,9 @@ This evidence covers the configured CLI with the Xcode parser libraries. Each pr
 ## Native Swift Testing suite evidence
 
 A full prototype run exited successfully from the independent consumer suite while its console log omitted three named completion lines. Repeated checks reproduced missing lines under merged, split and serial capture. On Swift 6.4 and later, the verifier now checks the native v0 event stream for successful run completion, matching test starts and completions, and the exact required test identities. It also checks the independent availability receipt on the console. The result log links the event stream by checksum. Earlier compiler profiles retain their existing capture path.
+
+## Cancellation during nonthrowing async construction
+
+GEN-026 now records cooperative cancellation requests during nonthrowing async setup using the same session recorder as the typed-throwing lane. The independent consumer holds setup, requests cancellation and observes one request while the attempt remains active. Setup then resumes, observes the task cancellation and initializes the instance. Tests compare an uncancelled attempt, cancellation in the current epoch and cancellation after detach-active reset. The trace retains the admitted, cancellation-requested and returned records in the original epoch and links the actual instance on return.
+
+The generated endpoint identity and the existing missing-await and scope checks are retained. This evidence covers cancellation during configured preparation on the selected native toolchain.
