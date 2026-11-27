@@ -951,6 +951,12 @@ def main():
         temp, [swiftc, "-swift-version", "6", "-sdk", sdk], swift_environment)
     verify_byte_buffer_projection_generation(
         tool, source.with_name("SnapshotByteBufferReader.swift"), generated.with_name("SnapshotByteBufferReaderMock.swift"), temp)
+    private_owner_source = source.with_name("PrivateFeePricingOwner.swift")
+    private_owner_mock = temp / "PrivateFeePricingMock.swift"
+    run("private-owner-adapter-generation", generate(tool, private_owner_source, private_owner_mock, "PrivateFeePricing"))
+    built_private_owner = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/PrivateFeePricingMock.swift"
+    if private_owner_mock.read_bytes() != built_private_owner.read_bytes():
+        raise ValueError("The committed private adapter fixture differs from standalone generation")
     scoped_source = source.with_name("ScopedUserDirectory.swift")
     scoped_generated = generated.with_name("ScopedUserDirectoryMock.swift")
     run("scoped-rule-generation", generate(
@@ -1815,6 +1821,7 @@ def main():
                   r"RUN015_closedOverlayRejectsPendingCompletionOnItsPinnedScenario\(\) passed",
                   r"RUN015_detachedCompletionAndReusablePlanPreserveIndependentCursors\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
+                  r"GEN031_ownerFilePrivateSeamUsesLiveAndGeneratedAdapters\(\) passed",
                   r"SYS006_concurrentRepositoryRetryComposesProjectionRevisionCancellationAndDeadlines\(\) passed",
                   r"GEN040_explicitByteBufferAdapterCopiesOnlyTheBoundedPrefix\(\) passed",
                   r"GEN021_generatedPackProviderPreservesTypedArgumentsAndIdentity\(\) passed",
@@ -2014,6 +2021,7 @@ def main():
         "OwnedResultCapturedReplay": r"noncopyable 'previous' cannot be consumed when captured by an escaping closure",
         "OwnedResultErasure": r"return expression of type 'FreshOwnedTicket' does not conform to 'Copyable'",
         "OwnedResultFixedReturn": r"has no member 'willReturn'",
+        "PrivateFeePricingOutsideOwner": r"'addSurcharge' is inaccessible due to 'private' protection level",
         "ByteBufferDeferredAddressCapture": r"capture of 'buffer' with non-Sendable type 'UnsafeBufferPointer<UInt8>'",
         "PackProviderFixedArity": r"type 'FixedArityPackProvider' does not conform to protocol 'PackProviderDirectoryMockBehavior'",
         "PackProviderWrongResultShape": r"type 'WrongResultPackProvider' does not conform to protocol 'PackProviderDirectoryMockBehavior'",
@@ -2181,6 +2189,9 @@ def main():
             payload = "DirectoryEntry" if fixture.stem == "MainActorAsyncTransport" else "ActorSpyEntry"
             diagnostic_patterns.append(rf"non-Sendable '{payload}'-typed result.*main actor-isolated")
         compiler_command = [*compiler_floor, *compiler_stage, "-I", modules]
+        if fixture.stem == "PrivateFeePricingOutsideOwner":
+            compiler_command.extend(["-module-name", "ConsumerDomain",
+                                     ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDomain/PrivateFeePricingOwner.swift"])
         check_name = "compile-reject-" + fixture.stem
         run(check_name, [*compiler_command, fixture], env=swift_environment,
             fails=True, patterns=diagnostic_patterns)

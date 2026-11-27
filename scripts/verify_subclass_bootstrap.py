@@ -58,7 +58,19 @@ def verify(args):
         require_success(run([executable], evidence / "subclass-consumer-run.log"), "subclass consumer execution")
 
         modified = output.stat().st_mtime_ns
+        private_boundary = (
+            "selected private or fileprivate method is unavailable for direct replacement. "
+            "Expose an adapter in its owning scope or use an accessible enclosing operation."
+        )
+        frozen_source = (
+            suite.replace("bootstrapValue = render(seed)", "bootstrapValue = seed")
+            .replace(r'"outer:\(render(value))"', "value")
+        )
         negatives = [
+            ("private-override", frozen_source.replace("    open func render(", "    private func render("),
+             9, private_boundary),
+            ("fileprivate-override", frozen_source.replace("    open func render(", "    fileprivate func render("),
+             9, private_boundary),
             ("final-base", suite.replace("open class", "public final class").replace("open func", "public func"),
              2, "cannot subclass a final class"),
             ("closed-base", suite.replace("open class", "public class").replace("open func", "public func"),

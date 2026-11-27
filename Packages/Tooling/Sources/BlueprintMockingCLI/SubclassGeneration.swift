@@ -120,7 +120,13 @@ private func subclassInterface(_ request: SubclassGenerationRequest, source: Str
     guard methods.count == 1, let method = methods.first else {
         throw diagnose(type.classKeyword, "override selector must select exactly one directly declared method")
     }
-    guard method.modifiers.map({ $0.name.text }) == ["open"], method.body != nil else {
+    let methodModifiers = method.modifiers.map { $0.name.text }
+    if methodModifiers.contains("private") || methodModifiers.contains("fileprivate") {
+        throw diagnose(method.funcKeyword,
+                       "selected private or fileprivate method is unavailable for direct replacement. "
+                           + "Expose an adapter in its owning scope or use an accessible enclosing operation.")
+    }
+    guard methodModifiers == ["open"], method.body != nil else {
         throw diagnose(method.funcKeyword, "selected override must be open and overridable across modules; inject a protocol adapter")
     }
     guard method.attributes.isEmpty, method.genericParameterClause == nil, method.genericWhereClause == nil,

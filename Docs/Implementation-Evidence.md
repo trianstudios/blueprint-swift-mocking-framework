@@ -617,3 +617,9 @@ The fixture checks a passing `stable` window and a negative `eventually` deadlin
 GEN-016 and GEN-036 add an availability-gated synchronous registration witness for one unary `@escaping @isolated(any) @Sendable (Int) -> String` callback. The private nominal payload stores the exact typed function, and replay awaits the original isolation through the established session capture lifecycle. The independent SwiftPM consumer captures MainActor and custom global actor callbacks and runs each from detached work. Reset and finish retire handles before new replay.
 
 Swift SIL checks reject missing await, forced synchronous conversion to MainActor, actor-state access through an erased actor and unguarded use at macOS 13. A guarded caller links with the macOS 13 deployment target and the replay fixture runs on host macOS 27.0.1. Compiler probes place generic dynamic-function runtime support at macOS 15, iOS and tvOS 18, watchOS 11 and visionOS 2. Other native runtime profiles and callback effect shapes remain open.
+
+## Owner-file adapters for private dependencies
+
+GEN-031 now has an independent SwiftPM consumer that uses an owner-authored protocol adapter and the generated double interchangeably. The live adapter calls the private fee operation from a same-file extension. Swift rejects the identical operation from an extension in a different file of the same module. The generated double supports ordinary typed inputs and call verification without privileged access to the owner.
+
+The subclass selector diagnoses a private or fileprivate method in a frozen dependency whose public operations expose no enclosing seam. Both variants retain their original output bytes and timestamp. The positive MainActor bootstrap and forwarding fixture still executes. Broader adapter authoring and native qualification remain open.
