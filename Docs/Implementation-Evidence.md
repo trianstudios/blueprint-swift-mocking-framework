@@ -502,4 +502,10 @@ RUN-010 and RUN-024 also cover a finite series of the same typed synchronous non
 
 The independent SwiftPM consumer checks unsorted and equal deadlines against the monotonic registration lower bound. Reentrant cancellation, reset, and finish retire queued siblings at the same deadline while the acquired occurrence completes. A deallocation fixture verifies that every queued occurrence retires, including those still waiting for the first timer. Manual advances still acquire entire due batches. Continuous one-shot tests continue to cover exact-receipt cancellation and lifecycle behavior.
 
-Open-ended repetition, one-shot duplicate policies across independent requests, scheduling for other actor and effect profiles, child delivery events, delayed sequence steps, and broader native qualification remain open.
+Open-ended repetition, one-shot duplicate policies across independent requests, scheduling for other actor and effect profiles, child delivery events, and broader native qualification remain open.
+
+## Clock-delayed async-throwing sequence returns
+
+RUN-024 now supports one delayed return step in a typed async-throwing sequence. The clock registers the wait after the winning rule reserves the step and publishes any capture. Runtime fixtures advance the manual clock to one nanosecond before the deadline and then acquire the answer at the deadline. A detached reset preserves an admitted waiter and its cancellation and terminal events in the archived epoch. The continuous fixture checks a monotonic lower bound.
+
+The independent SwiftPM consumer calls the generated mock through the protocol and cancels a task during synchronous winning-rule capture, before timer registration. It observes the configured typed error and one cancellation record, then consumes the next sequence step. Broader delayed effects and native qualification remain open.

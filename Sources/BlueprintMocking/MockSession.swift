@@ -291,14 +291,17 @@ public final class MockSession: Sendable {
 
     /// Moves a manual session clock forward without adding an event. The session acquires due
     /// callback deliveries at the new clock reading and runs them before this call returns.
+    /// Due async steps resume on their own tasks.
     public func advanceClock(by duration: Duration) throws(SessionClockError) {
-        let (wake, replacements, callbacks) = try state.withLock { (state: inout State) throws(SessionClockError) in
+        let (wake, replacements, callbacks, delayedAnswers) = try state.withLock {
+            (state: inout State) throws(SessionClockError) in
             try state.advanceClock(by: duration)
             return (state.observationWake(), state.resolveQuiescentReplacements(publishAtIdle: false),
-                    state.acquireDueCallbacks())
+                    state.acquireDueCallbacks(), state.acquireDueDelayedAnswers())
         }
         for replacement in replacements { replacement.publish() }
         wake?.publish()
+        for answer in delayedAnswers { answer.publish() }
         callbacks.publish()
     }
 
@@ -429,6 +432,9 @@ public final class MockSession: Sendable {
         private var claimsByScope: [String: SessionConsumptionClaims] = [:]
         private var active: [SessionInvocationID: SessionEvent] = [:]
         private var activeCancellationRequests: Set<SessionInvocationID> = []
+        // A wait belongs to an admitted call and survives a reset that detaches that call.
+        private var delayedAnswers: [SessionInvocationID: PendingDelayedAnswer] = [:]
+        var delayedAnswerWaiterCount: Int { delayedAnswers.count }
         var activeInvocationCountAcrossEpochs: Int { active.count }
         private var journals: [WeakSessionJournal] = []
         private var nextQuiescenceWaiter: UInt64 = 0
@@ -701,6 +707,36 @@ public final class MockSession: Sendable {
             }
             quiescentReplacements = pending
             return deliveries
+        }
+
+        mutating func registerDelayedAnswer(
+            for invocationID: SessionInvocationID, after delay: Duration,
+            continuation: CheckedContinuation<DelayedAnswerWake, Never>
+        ) -> DelayedAnswerRegistration {
+            precondition(active[invocationID] != nil, "A delayed answer requires an active invocation")
+            if Task.isCancelled || activeCancellationRequests.contains(invocationID) {
+                let wake = recordCancellationRequest(for: invocationID)
+                return .cancelled(wake)
+            }
+            let deadline = clock.elapsed + delay
+            let request = PendingDelayedAnswer(deadline: deadline, continuation: continuation)
+            precondition(delayedAnswers.updateValue(request, forKey: invocationID) == nil,
+                         "An invocation can wait for one reserved answer")
+            return .waiting(until: clock.continuousInstant(at: deadline))
+        }
+
+        mutating func cancelDelayedAnswer(for invocationID: SessionInvocationID) -> DelayedAnswerDelivery? {
+            delayedAnswers.removeValue(forKey: invocationID)?.settle(.cancelled)
+        }
+
+        mutating func acquireDelayedAnswer(for invocationID: SessionInvocationID) -> DelayedAnswerDelivery? {
+            delayedAnswers.removeValue(forKey: invocationID)?.settle(.elapsed)
+        }
+
+        fileprivate mutating func acquireDueDelayedAnswers() -> [DelayedAnswerDelivery] {
+            let elapsed = clock.elapsed
+            let due = delayedAnswers.compactMap { $0.value.deadline <= elapsed ? $0.key : nil }
+            return due.compactMap { acquireDelayedAnswer(for: $0) }
         }
 
         mutating func recordCancellationRequest(for invocationID: SessionInvocationID) -> SessionObservationDelivery? {

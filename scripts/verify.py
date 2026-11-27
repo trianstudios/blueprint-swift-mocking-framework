@@ -1368,6 +1368,9 @@ def main():
                             r"GEN007_failureMappingsSelectOverloadsByArgumentType\(\) passed"])
     run_swift("runtime-tests", ["test"], patterns=[
         r"\b[1-9]\d* tests?\b.*\bpassed\b",
+        r"RUN024_delayedSequenceResumesAtExactManualDeadline\(\) passed",
+        r"RUN024_delayedSequenceCancellationKeepsDetachedAdmissionAndConsumesStep\(\) passed",
+        r"RUN024_delayedSequenceContinuousClockWakesInvocation\(\) passed",
         r"RUN013_nestedScopesRestoreAndConsultOuterRulesOnMiss\(\) passed",
         r"RUN013_anExhaustedInnerWinnerBlocksOuterBaseAndForwarding\(\) passed",
         r"RUN013_lexicalScopesAreBoundToTheEndpointInstanceAndTaskContext\(\) passed",
@@ -1384,6 +1387,7 @@ def main():
     run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
                   r"RUN027_RUN029_orderedConsumptionHonorsClaimedBarriersAndKeepsHistory\(\) passed",
+                  r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
                   r"RUN013_publicScopedRulesFollowProtocolCallsAndUnwind\(\) passed",
                   r"RUN013_generatedAsyncRulePriorityComposesWithWinningCaptures\(\) passed",
                   r"RUN013_generatedScopedRulesFollowProtocolCallsAndUnwind\(\) passed",

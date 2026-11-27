@@ -427,8 +427,12 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func recordCancellationRequest(for admission: JournalAdmission) {
-        let wake = scope.session.withLock { $0.recordCancellationRequest(for: admission.event.invocationID) }
+        let id = admission.event.invocationID
+        let (wake, delayedAnswer) = scope.session.withLock {
+            ($0.recordCancellationRequest(for: id), $0.cancelDelayedAnswer(for: id))
+        }
         wake?.publish()
+        delayedAnswer?.publish()
     }
 
     func update(_ admission: JournalAdmission, replacing input: Input) {
@@ -917,20 +921,47 @@ public struct AsyncThrowingForwarding<Input: Sendable, Output: Sendable, Failure
     }
 }
 
+private enum AsyncThrowingStepAnswer<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
+    case immediate(AsyncAnswer<Input, Output, Failure>)
+    case delayedReturn(Output, delay: Duration, cancellation: Failure)
+
+    func perform(_ input: Input, in session: MockSession, invocationID: SessionInvocationID)
+        async -> Result<Output, Failure> {
+        switch self {
+        case .immediate(let answer):
+            return await answer(input)
+        case .delayedReturn(let output, let delay, let cancellation):
+            switch await session.waitForDelayedAnswer(invocationID, after: delay) {
+            case .elapsed: return .success(output)
+            case .cancelled: return .failure(cancellation)
+            }
+        }
+    }
+}
+
 /// A legal step for a Sendable async endpoint's exact input, result, and thrown error.
 public struct AsyncThrowingSequenceStep<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    fileprivate let answer: AsyncAnswer<Input, Output, Failure>
+    fileprivate let answer: AsyncThrowingStepAnswer<Input, Output, Failure>
 
     public static func returning(_ output: Output) -> Self {
-        Self(answer: { _ in .success(output) })
+        Self(answer: .immediate { _ in .success(output) })
+    }
+
+    /// Reserves this step once, then waits on the owning session's clock.
+    /// The positive delay starts when the reserved call registers its wait,
+    /// after any winning-rule capture. Cancellation before the wait is acquired
+    /// throws the configured failure. The call resumes on its own task.
+    public static func returning(_ output: Output, after delay: Duration, onCancellation failure: Failure) -> Self {
+        precondition(delay > .zero, "A delayed sequence step needs a positive duration")
+        return Self(answer: .delayedReturn(output, delay: delay, cancellation: failure))
     }
 
     public static func throwing(_ failure: Failure) -> Self {
-        Self(answer: { _ in .failure(failure) })
+        Self(answer: .immediate { _ in .failure(failure) })
     }
 
     public static func answering(_ body: @escaping @Sendable (Input) async throws(Failure) -> Output) -> Self {
-        Self(answer: { input in
+        Self(answer: .immediate { input in
             do throws(Failure) { return .success(try await body(input)) }
             catch { return .failure(error) }
         })
@@ -943,7 +974,7 @@ fileprivate struct AsyncRuleBehavior<Input: Sendable, Plan: Sendable>: Sendable 
 }
 
 fileprivate typealias PlannedAsyncThrowingRule<Input: Sendable, Output: Sendable, Failure: Error> =
-    Rule<Input, AsyncRuleBehavior<Input, PlannedAnswer<AsyncAnswer<Input, Output, Failure>>>>
+    Rule<Input, AsyncRuleBehavior<Input, PlannedAnswer<AsyncThrowingStepAnswer<Input, Output, Failure>>>>
 
 public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
     fileprivate let rules: [PlannedAsyncThrowingRule<Input, Output, Failure>]
@@ -959,7 +990,7 @@ public struct AsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Fail
 }
 
 private struct PublishedAsyncThrowingConfiguration<Input: Sendable, Output: Sendable, Failure: Error>: Sendable {
-    let rules: [Rule<Input, AsyncRuleBehavior<Input, PublishedAnswer<AsyncAnswer<Input, Output, Failure>>>>]
+    let rules: [Rule<Input, AsyncRuleBehavior<Input, PublishedAnswer<AsyncThrowingStepAnswer<Input, Output, Failure>>>>]
 
     func forkSequences(restarting: Bool) -> Self {
         Self(rules: rules.map { rule in
@@ -977,7 +1008,7 @@ public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Fail
         AsyncThrowingStub(owner: self, matcher: matcher, capture: nil, rulePriority: 0)
     }
     fileprivate func add(
-        _ matcher: Matcher<Input>, _ answer: PlannedAnswer<AsyncAnswer<Input, Output, Failure>>,
+        _ matcher: Matcher<Input>, _ answer: PlannedAnswer<AsyncThrowingStepAnswer<Input, Output, Failure>>,
         capture: WinningRuleCapture<Input>?, priority: Int
     ) {
         precondition(!finished, "Setup is already published; live reconfiguration is not implemented")
@@ -1182,7 +1213,8 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         if let winningRule {
             if let answer = winningRule.answer.plan.reserve(in: session) {
                 winningRule.answer.capture?.publish(input, admission.event)
-                outcome = .answered(await answer(input), origin: nil)
+                let result = await answer.perform(input, in: session, invocationID: admission.event.invocationID)
+                outcome = .answered(result, origin: nil)
             } else {
                 outcome = .unanswered(.exhaustedSequence)
             }
