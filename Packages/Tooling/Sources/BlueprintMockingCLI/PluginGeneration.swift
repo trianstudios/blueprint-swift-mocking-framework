@@ -124,10 +124,11 @@ private struct BuildGenerationRequest {
             guard seen.insert(path).inserted else { throw invalid("Duplicate Swift source input \(path)") }
             sources[module, default: []].append(path)
         }
-        self.config = URL(fileURLWithPath: configPath)
+        let configuration = URL(fileURLWithPath: configPath)
+        self.config = configuration
         self.output = URL(fileURLWithPath: outputPath, isDirectory: true)
         self.inputSetID = inputSetID
-        self.sources = sources
+        self.sources = try interface == nil ? mergeTrackedSources(sources, relativeTo: configuration) : sources
         self.sourceConditions = conditions.values
         if let interface {
             guard let contextPath, sources.isEmpty, conditions.values.isEmpty else {
@@ -141,6 +142,83 @@ private struct BuildGenerationRequest {
             importedInterface = nil
         }
     }
+}
+
+private let externalSourceManifestName = "blueprint-mocking.external-sources.json"
+
+private struct ExternalSourceManifest: Decodable {
+    struct Entry: Decodable {
+        let module: String
+        let path: String
+    }
+    let schemaVersion: Int
+    let mode: String
+    let sources: [Entry]
+}
+
+private func mergeTrackedSources(_ supplied: [String: [String]], relativeTo configuration: URL)
+    throws -> [String: [String]] {
+    let package = configuration.deletingLastPathComponent().standardizedFileURL
+    let manifest = package.appendingPathComponent(externalSourceManifestName)
+    let files = FileManager.default
+    let attributes: [FileAttributeKey: Any]
+    do {
+        attributes = try files.attributesOfItem(atPath: manifest.path)
+    } catch let error as CocoaError where [.fileNoSuchFile, .fileReadNoSuchFile].contains(error.code) {
+        return supplied
+    }
+    guard attributes[.type] as? FileAttributeType == .typeRegular else {
+        throw invalid("The external source manifest must be a regular file, not a symbolic link.")
+    }
+
+    let data = try Data(contentsOf: manifest)
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          Set(object.keys) == ["schemaVersion", "mode", "sources"],
+          let entries = object["sources"] as? [[String: Any]],
+          entries.allSatisfy({ Set($0.keys) == ["module", "path"] }),
+          let decoded = try? JSONDecoder().decode(ExternalSourceManifest.self, from: data),
+          decoded.schemaVersion == 1 else {
+        throw invalid("Expected a schema-1 external source manifest with mode and module/path sources.")
+    }
+    guard decoded.mode == "tracked" else {
+        throw invalid("External source discovery mode '\(decoded.mode)' is unsupported. "
+                      + "This route accepts a tracked manifest; prebuild scanning needs a separate eligible binary-backed route.")
+    }
+
+    let canonicalRoot = package.resolvingSymlinksInPath().standardizedFileURL
+    let rootComponents = canonicalRoot.pathComponents
+    var seen = Set(supplied.values.joined().map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().standardizedFileURL.path })
+    var combined = supplied
+    for entry in decoded.sources {
+        guard supplied[entry.module] != nil else {
+            throw invalid("External source module '\(entry.module)' must be a supplied Swift source module.")
+        }
+        let components = entry.path.split(separator: "/", omittingEmptySubsequences: false)
+        guard !entry.path.utf8.contains(0), !entry.path.contains("\\"),
+              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              components.last?.hasSuffix(".swift") == true else {
+            throw invalid("External source paths must be normalized relative .swift files inside the package.")
+        }
+        let url = package.appendingPathComponent(entry.path).standardizedFileURL
+        let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+        let canonical = canonicalRoot.appendingPathComponent(entry.path).standardizedFileURL
+        guard resolved.pathComponents.starts(with: rootComponents),
+              resolved.pathComponents.count > rootComponents.count else {
+            throw invalid("External source '\(entry.path)' resolves outside its package.")
+        }
+        guard resolved.path == canonical.path else {
+            throw invalid("External source '\(entry.path)' uses a symbolic link.")
+        }
+        guard let found = try? files.attributesOfItem(atPath: url.path),
+              found[.type] as? FileAttributeType == .typeRegular else {
+            throw invalid("External source '\(entry.path)' must be an existing regular Swift file.")
+        }
+        guard seen.insert(canonical.path).inserted else {
+            throw invalid("External source '\(entry.path)' is already listed or belongs to target membership.")
+        }
+        combined[entry.module, default: []].append(url.path)
+    }
+    return combined
 }
 
 private func fingerprint(_ contents: String) -> String {

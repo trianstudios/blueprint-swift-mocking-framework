@@ -45,6 +45,19 @@ struct BlueprintMockingBuildPlugin: BuildToolPlugin {
 
         let tool = try context.tool(named: "BlueprintMockingCLI")
         let outputDirectory = context.pluginWorkDirectoryURL
+        // The manifest is the stable dependency. Resolve its current members when the
+        // canonical command runs, since SwiftPM may cache this plan across file-list edits.
+        var inputs = [configuration]
+        let manifest = packageDirectory.appendingPathComponent("blueprint-mocking.external-sources.json")
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: manifest.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                throw PluginInputError(description: "The external source manifest must be a regular file, not a symbolic link.")
+            }
+            inputs.append(manifest)
+        } catch let error as CocoaError where [.fileNoSuchFile, .fileReadNoSuchFile].contains(error.code) {
+            // This build uses ordinary target membership only.
+        }
         var arguments = [
             "generate", "--config", configuration.path, "--output", outputDirectory.path,
             "--input-set-id", inputSetID(for: sources)
@@ -58,7 +71,7 @@ struct BlueprintMockingBuildPlugin: BuildToolPlugin {
                 displayName: "Generate Blueprint mocks for \(target.name)",
                 executable: tool.url,
                 arguments: arguments,
-                inputFiles: [configuration] + sources.map(\.url),
+                inputFiles: inputs + sources.map(\.url),
                 outputFiles: [
                     outputDirectory.appendingPathComponent("BlueprintMocks.generated.swift"),
                     outputDirectory.appendingPathComponent("BlueprintMockingIndex.generated.swift")

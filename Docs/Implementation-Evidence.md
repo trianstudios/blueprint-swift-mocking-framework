@@ -661,3 +661,9 @@ This fixture exercises the explicit metatype factory seam in SYS-006. Native ini
 DX-022 adds an explicit macOS XCTest case bridge for neutral mock issues. A generated verification in the external consumer supplies a dynamic path and original line. The native observation callback sees exactly one issue on the supplied active case with the original full path, line and message, and the run exits unsuccessfully. The bridge rejects an inactive case before reporting. The test-first ambient control attributed the native event to the reporter source.
 
 The case and suite bridges share the same native location conversion. Existing intentional sync and async caller-line, late-owner and suite orphan checks still exercise the native runner. This evidence covers the selected macOS XCTest profile.
+
+## SwiftPM tracked supplemental source membership
+
+DX-005 adds an optional, schema-1 supplemental source manifest to configured SwiftPM generation. The plug-in tracks the manifest and the canonical command resolves its latest rows at execution. This keeps a cached build plan valid when a supplemental member is added or deleted. The accepted lane requires package-relative regular Swift files in an existing supplied module.
+
+In one native SwiftPM build directory, listing a file outside target membership updates the index and keeps the shard bytes and timestamp. Removing the row and file restores the baseline index bytes. An unchanged plan and unlisted file leave both outputs alone. Conflicting source, incorrect module, duplicate membership, traversal, and linked paths fail while preserving the valid outputs. An unsupported prebuild declaration also fails. The run used a local artifact containing the Xcode-linked generator. Direct tracking of supplemental byte-only edits, prebuild runners, and other parser and host profiles remain open.

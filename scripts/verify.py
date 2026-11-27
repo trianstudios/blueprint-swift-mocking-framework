@@ -799,6 +799,12 @@ def main():
         r"PASS: GEN010 configured generic methods compiled and ran through the SwiftPM build plugin",
         r"EVIDENCE: swiftpm-plugin-generic-method-report\.json SHA-256 [0-9a-f]{64}",
     ])
+    run("swiftpm-plugin-tracked-external-sources", [
+        sys.executable, "Fixtures/PluginConsumer/verify_external_manifest.py", "--swift", swift,
+        "--host-tool", tool, "--evidence-dir", EVIDENCE / "external-manifest", "--jobs", "1",
+    ], env=swift_environment, timeout=360, patterns=[
+        r"PASS: tracked external Swift file membership regenerates through the SwiftPM build graph",
+    ])
     baseline = generated.read_bytes()
     inherited_source = source.with_name("InheritedDirectory.swift")
     inherited_generated = generated.with_name("InheritedDirectoryMock.swift")
