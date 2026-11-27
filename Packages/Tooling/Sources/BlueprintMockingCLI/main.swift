@@ -128,6 +128,7 @@ struct CallbackType {
         case mainActorEscaping
         case throwingEscaping(String)
         case asyncEscaping
+        case asyncThrowingEscaping(String)
 
         var family: String {
             switch self {
@@ -136,13 +137,14 @@ struct CallbackType {
             case .mainActorEscaping: "SyncMainActorEscapingCallback"
             case .throwingEscaping: "SyncThrowingEscapingCallback"
             case .asyncEscaping: "SyncAsyncEscapingCallback"
+            case .asyncThrowingEscaping: "SyncAsyncThrowingEscapingCallback"
             }
         }
 
         var attributes: String {
             switch self {
             case .scoped: ""
-            case .escaping, .throwingEscaping, .asyncEscaping: "@escaping @Sendable "
+            case .escaping, .throwingEscaping, .asyncEscaping, .asyncThrowingEscaping: "@escaping @Sendable "
             case .mainActorEscaping: "@escaping @Swift.MainActor @Sendable "
             }
         }
@@ -153,8 +155,10 @@ struct CallbackType {
     let kind: Kind
 
     var failure: String? {
-        if case .throwingEscaping(let failure) = kind { return failure }
-        return nil
+        switch kind {
+        case .throwingEscaping(let failure), .asyncThrowingEscaping(let failure): failure
+        default: nil
+        }
     }
 
     var declaration: String {
@@ -162,6 +166,7 @@ struct CallbackType {
         switch kind {
         case .asyncEscaping: effects = " async"
         case .throwingEscaping(let failure): effects = " throws(\(failure))"
+        case .asyncThrowingEscaping(let failure): effects = " async throws(\(failure))"
         default: effects = ""
         }
         return "\(kind.attributes)(\(input))\(effects) -> \(output)"
@@ -612,28 +617,27 @@ func generate(
                 default:
                     try reject(parameter, "Escaping callback capture requires exactly @escaping and @Sendable, optionally with @MainActor")
                 }
-                if let asyncSpecifier = function.effectSpecifiers?.asyncSpecifier {
-                    guard asyncSpecifier.text == "async" else {
+                if let effects = function.effectSpecifiers {
+                    if let asyncSpecifier = effects.asyncSpecifier, asyncSpecifier.text != "async" {
                         try reject(parameter, "Escaping callback capture requires async for asynchronous function arguments")
                     }
+                    let isAsync = effects.asyncSpecifier != nil
                     guard case .escaping = kind else {
-                        try reject(parameter, "Asynchronous escaping callbacks require a nonisolated @Sendable function")
+                        let subject = isAsync ? "Asynchronous" : "Typed-throwing"
+                        try reject(parameter, "\(subject) escaping callbacks require a nonisolated @Sendable function")
                     }
-                    guard function.effectSpecifiers?.throwsClause == nil else {
-                        try reject(parameter, "Asynchronous throwing escaping callbacks are not supported")
+                    if let clause = effects.throwsClause {
+                        guard clause.throwsSpecifier.text == "throws",
+                              let failureType = clause.type?.as(IdentifierTypeSyntax.self),
+                              failureType.genericArgumentClause == nil, simple(failureType.name.text),
+                              !["Never", "Self", "Stubs", "Verification", selected + "Mock"].contains(failureType.name.text) else {
+                            try reject(parameter, "Escaping callback capture requires throws with a named failure type other than Never")
+                        }
+                        let failure = failureType.name.text
+                        kind = isAsync ? .asyncThrowingEscaping(failure) : .throwingEscaping(failure)
+                    } else if isAsync {
+                        kind = .asyncEscaping
                     }
-                    kind = .asyncEscaping
-                } else if let effects = function.effectSpecifiers {
-                    guard case .escaping = kind else {
-                        try reject(parameter, "Typed-throwing escaping callbacks require a nonisolated @Sendable function")
-                    }
-                    guard let clause = effects.throwsClause, clause.throwsSpecifier.text == "throws",
-                          let failureType = clause.type?.as(IdentifierTypeSyntax.self),
-                          failureType.genericArgumentClause == nil, simple(failureType.name.text),
-                          !["Never", "Self", "Stubs", "Verification", selected + "Mock"].contains(failureType.name.text) else {
-                        try reject(parameter, "Escaping callback capture requires throws with a named failure type other than Never")
-                    }
-                    kind = .throwingEscaping(failureType.name.text)
                 }
                 let callback = CallbackType(input: input, output: output, kind: kind)
                 return Parameter(label: label, type: callback.declaration, callback: callback)

@@ -10,6 +10,7 @@ import ConsumerDoubles
         }
         if CommandLine.arguments.contains("--typed-throwing-callback") {
             try verifyThrowingCallback(reporter: reporter)
+            try await verifyAsyncThrowingCallback(reporter: reporter)
             return
         }
         if CommandLine.arguments.contains("--quiescent-configuration") {
@@ -114,5 +115,32 @@ import ConsumerDoubles
         }
         precondition(mock.verify.register(id: .equal("row"), phase: .returned).wasCalled(.once).passed)
         print("PASS: GEN016 executable replayed a typed callback success and failure")
+    }
+
+    private static func verifyAsyncThrowingCallback(reporter: FailureReporter) async throws {
+        let session = MockSession()
+        let captor = AsyncThrowingEscapingCallbackCaptor<Int, String, AsyncCallbackFixtureError>(session: session)
+        let mock = AsyncThrowingEscapingCallbackDirectoryMock(failureReporter: reporter, session: session) { stubs in
+            stubs.register(id: .equal("row")).capturingCallback(into: captor).willReturn("registered")
+        }
+        let registration = registerAsyncThrowingEscapingCallback(mock, id: "row") {
+            input async throws(AsyncCallbackFixtureError) in
+            await Task.yield()
+            guard input >= 0 else { throw .rejected(input) }
+            return "replayed-\(input)"
+        }
+        precondition(registration == "registered")
+        guard let capture = captor.captures.first else { preconditionFailure("No async callback captured") }
+
+        let success = try await capture.invoke(7, onUnavailable: { .unavailable(7) })
+        precondition(success == "replayed-7")
+        do throws(AsyncCallbackFixtureError) {
+            _ = try await capture.invoke(-7, onUnavailable: { .unavailable(-7) })
+            preconditionFailure("Expected the async callback's typed failure")
+        } catch {
+            precondition(error == .rejected(-7))
+        }
+        precondition(mock.verify.register(id: .equal("row"), phase: .returned).wasCalled(.once).passed)
+        print("PASS: GEN016 executable replayed an async typed callback success and failure")
     }
 }

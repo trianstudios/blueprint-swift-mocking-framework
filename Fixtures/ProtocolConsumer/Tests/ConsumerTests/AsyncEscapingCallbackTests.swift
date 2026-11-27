@@ -4,7 +4,7 @@ import ConsumerDomain
 import ConsumerDoubles
 import Testing
 
-private actor AsyncCallbackReplayGate {
+actor AsyncCallbackReplayGate {
     private let entered = AsyncStream<Void>.makeStream()
     private let opened = AsyncStream<Void>.makeStream()
     private var isPaused = false
