@@ -970,29 +970,40 @@ private struct PublishedAsyncThrowingConfiguration<Input: Sendable, Output: Send
 }
 
 public final class AsyncThrowingStubbing<Input: Sendable, Output: Sendable, Failure: Error> {
-    private var rules: [PlannedAsyncThrowingRule<Input, Output, Failure>] = []
+    private var rules: [(priority: Int, rule: PlannedAsyncThrowingRule<Input, Output, Failure>)] = []
     private var finished = false
     public init() {}
     public func matching(_ matcher: Matcher<Input>) -> AsyncThrowingStub<Input, Output, Failure> {
-        AsyncThrowingStub(owner: self, matcher: matcher, capture: nil)
+        AsyncThrowingStub(owner: self, matcher: matcher, capture: nil, rulePriority: 0)
     }
     fileprivate func add(
         _ matcher: Matcher<Input>, _ answer: PlannedAnswer<AsyncAnswer<Input, Output, Failure>>,
-        capture: WinningRuleCapture<Input>?
+        capture: WinningRuleCapture<Input>?, priority: Int
     ) {
         precondition(!finished, "Setup is already published; live reconfiguration is not implemented")
-        rules.append(Rule(matcher: matcher, answer: AsyncRuleBehavior(plan: answer, capture: capture)))
+        let rule = Rule(matcher: matcher, answer: AsyncRuleBehavior(plan: answer, capture: capture))
+        rules.append((priority, rule))
     }
     public func finish() -> AsyncThrowingConfiguration<Input, Output, Failure> {
         precondition(!finished, "Setup is already published")
         finished = true
-        return AsyncThrowingConfiguration(rules: rules)
+        // A stable ascending sort preserves registration order among equal priorities.
+        // Dispatch already scans each independent layer in reverse.
+        let ordered = rules.sorted { $0.priority < $1.priority }.map { $0.rule }
+        return AsyncThrowingConfiguration(rules: ordered)
     }
 }
 public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Error> {
     fileprivate let owner: AsyncThrowingStubbing<Input, Output, Failure>
     fileprivate let matcher: Matcher<Input>
     fileprivate let capture: WinningRuleCapture<Input>?
+    fileprivate let rulePriority: Int
+
+    /// Sets this rule's priority within its own configuration. Rules default to zero.
+    /// Matching rules with higher priorities take precedence. Ties prefer the latest registration.
+    public func priority(_ value: Int) -> Self {
+        Self(owner: owner, matcher: matcher, capture: capture, rulePriority: value)
+    }
 
     /// Projects the argument once after this rule reserves an answer and before it executes.
     /// A second call replaces the policy on the returned descriptor. The captor and
@@ -1001,20 +1012,21 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
         into captor: ArgumentCaptor<Value>, projecting projection: @escaping @Sendable (Input) -> Value
     ) -> Self {
         AsyncThrowingStub(owner: owner, matcher: matcher,
-                          capture: WinningRuleCapture(captor: captor, projecting: projection))
+                          capture: WinningRuleCapture(captor: captor, projecting: projection),
+                          rulePriority: rulePriority)
     }
 
     public func willReturn(_ output: Output) {
         owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.returning(output).answer),
-                  capture: capture)
+                  capture: capture, priority: rulePriority)
     }
     public func willThrow(_ error: Failure) {
         owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.throwing(error).answer),
-                  capture: capture)
+                  capture: capture, priority: rulePriority)
     }
     public func willAnswer(_ answer: @escaping @Sendable (Input) async throws(Failure) -> Output) {
         owner.add(matcher, .single(AsyncThrowingSequenceStep<Input, Output, Failure>.answering(answer).answer),
-                  capture: capture)
+                  capture: capture, priority: rulePriority)
     }
 
     /// Reserves one step for each matching call. An exhausted finite sequence
@@ -1024,7 +1036,8 @@ public struct AsyncThrowingStub<Input: Sendable, Output: Sendable, Failure: Erro
         _ remaining: AsyncThrowingSequenceStep<Input, Output, Failure>...,
         policy: StubSequencePolicy = .finite
     ) {
-        owner.add(matcher, .sequence([first.answer] + remaining.map(\.answer), policy), capture: capture)
+        owner.add(matcher, .sequence([first.answer] + remaining.map(\.answer), policy),
+                  capture: capture, priority: rulePriority)
     }
 }
 
