@@ -1482,20 +1482,22 @@ func generate(
         rethrowsMethods.append(requirement)
     }
 
-    var constructor: (origin: ProtocolSourceOrigin, failure: String?)?
+    var constructor: (origin: ProtocolSourceOrigin, failure: String?, isFailable: Bool)?
     for (declarationID, item) in activeMembers.flatMap({ entry in entry.items.map { (entry.declarationID, $0) } }) {
         if let initializer = item.decl.as(InitializerDeclSyntax.self) {
             let parameters = initializer.signature.parameterClause.parameters
             let effects = initializer.signature.effectSpecifiers
-            let message = "Construction scopes support one ordinary direct Sendable init(seed: Int) or one synchronous " +
-                "init(seed: Int) throws(PublicError) without other generation modes"
+            let isFailable = initializer.optionalMark?.text == "?"
+            let message = "Construction scopes support one ordinary direct Sendable init(seed: Int), init?(seed: Int), "
+                + "or synchronous init(seed: Int) throws(PublicError) without other generation modes"
             guard constructor == nil, declarationID == proto.id, declarations.count == 1,
                   isolation == .sendable, !fromTextualInterface, !hasBindings, !spy, !specializesGenerics,
                   projections.isEmpty, variadicForwarding.isEmpty, scopedRuleSelectors.isEmpty,
                   rethrowsSelections.isEmpty, lazyAutoclosureSelections.isEmpty, materializedAutoclosureSelections.isEmpty,
                   initializer.attributes.isEmpty, initializer.modifiers.isEmpty, initializer.body == nil,
-                  initializer.optionalMark == nil, initializer.genericParameterClause == nil,
+                  initializer.optionalMark == nil || isFailable, initializer.genericParameterClause == nil,
                   initializer.genericWhereClause == nil, effects?.asyncSpecifier == nil,
+                  !isFailable || effects?.throwsClause == nil,
                   parameters.count == 1, let parameter = parameters.first,
                   parameter.firstName.text == "seed", parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
                   parameter.defaultValue == nil, parameter.ellipsis == nil,
@@ -1513,7 +1515,7 @@ func generate(
                 try index.requireUnshadowedQualifier(module, at: type)
                 failure = "\(module).\(type.name.text)"
             }
-            constructor = (index.origin(of: initializer), failure)
+            constructor = (index.origin(of: initializer), failure, isFailable)
             continue
         }
         if fromTextualInterface {
@@ -2438,7 +2440,8 @@ func generate(
         output += "                projectSendingResult: @escaping @Sendable (\(sending.outputType)) -> Swift.Int,\n"
     }
     let defaultConfigure = hasProviderWitness && instanceIndices.isEmpty ? " = { _ in }" : ""
-    if constructor?.failure != nil {
+    let preparesConstruction = constructor.map { $0.failure != nil || $0.isFailable } ?? false
+    if preparesConstruction {
         output += "                stubs: Stubs) {\n"
     } else {
         output += "                _ configure: \(isolation.annotation)(Stubs) -> Void\(defaultConfigure)) {\n"
@@ -2457,7 +2460,7 @@ func generate(
     }
     for i in instanceIndices {
         let m = members[i]
-        if constructor?.failure != nil {
+        if preparesConstruction {
             output += "        let setup\(i) = stubs.__setup\(i)\n"
         } else {
             output += "        let setup\(i) = \(m.family)Stubbing<\(m.genericArguments)>()\n"
@@ -2466,7 +2469,7 @@ func generate(
     for i in forwardingIndices.sorted() {
         output += "        forwarding.__install\(i)?(setup\(i))\n"
     }
-    if constructor?.failure == nil {
+    if !preparesConstruction {
         output += "        configure(Stubs(" + instanceIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
     }
     func spyForwardingArgument(_ index: Int) -> String {
@@ -2546,20 +2549,18 @@ func generate(
     }
     output += "    }\n"
     let constructorEffect = constructor?.failure.map { " throws(\($0))" } ?? ""
-    let constructorIdentity = endpointIdentity("init(seed:Swift.Int)", effect: constructorEffect, result: "Self")
+    let optionalMark = constructor?.isFailable == true ? "?" : ""
+    let constructorIdentity = endpointIdentity("init\(optionalMark)(seed:Swift.Int)", effect: constructorEffect,
+                                               result: "Self\(optionalMark)")
     if let constructor {
         let origin = constructor.origin
         let file = String(reflecting: origin.fileName)
         let fileID = String(reflecting: origin.module + "/" + origin.fileName)
         let source = "SourceLocation(fileID: \(fileID), filePath: \(file), line: \(origin.line), column: \(origin.column))"
-        let configureResult = constructor.failure.map { "Swift.Result<Swift.Void, \($0)>" } ?? "Swift.Void"
+        let configuredResult = constructor.isFailable ? "BlueprintMocking.FailableConstructionDecision" : "Swift.Void"
+        let configureResult = constructor.failure.map { "Swift.Result<Swift.Void, \($0)>" } ?? configuredResult
         let scopeSetup: String
-        let witness: String
         if let failure = constructor.failure {
-            let stubs = instanceIndices.map { index in
-                let member = members[index]
-                return "__setup\(index): \(member.family)Stubbing<\(member.genericArguments)>()"
-            }.joined(separator: ", ")
             scopeSetup = """
             return ConstructionScope(
                 __scope: session.makeEpochBoundMock(), __reporter: failureReporter,
@@ -2573,23 +2574,35 @@ func generate(
                 }
             )
             """.replacingOccurrences(of: "\n", with: "\n        ")
+        } else {
+            scopeSetup = "ConstructionScope(__scope: session.makeEpochBoundMock(), __reporter: failureReporter, __configure: configure)"
+        }
+
+        let witness: String
+        if preparesConstruction {
+            let stubs = instanceIndices.map { index in
+                let member = members[index]
+                return "__setup\(index): \(member.family)Stubbing<\(member.genericArguments)>()"
+            }.joined(separator: ", ")
+            let admission = constructor.isFailable ? "beginFailableConstruction" : "beginThrowingConstruction"
+            let success = constructor.isFailable ? "initialize" : "success"
+            let decline = constructor.isFailable
+                ? "case .returnNil:\n    attempt.recordNil()\n    return nil"
+                : "case .failure(let error):\n    attempt.recordFailure()\n    throw error"
             witness = """
-            let attempt = construction.__scope.beginThrowingConstruction(
+            let attempt = construction.__scope.\(admission)(
                 of: endpoint, reporter: construction.__reporter, source: source
             )
             let stubs = Stubs(\(stubs))
             switch construction.__configure(seed, stubs) {
-            case .failure(let error):
-                attempt.recordFailure()
-                throw error
-            case .success:
+            \(decline)
+            case .\(success):
                 let reservation = attempt.reserveInstance()
                 self.init(failureReporter: construction.__reporter, scope: reservation.instanceScope, stubs: stubs)
                 reservation.complete()
             }
             """.replacingOccurrences(of: "\n", with: "\n        ")
         } else {
-            scopeSetup = "ConstructionScope(__scope: session.makeEpochBoundMock(), __reporter: failureReporter, __configure: configure)"
             witness = """
             let attempt = construction.__scope.beginInfallibleConstruction(
                 of: endpoint, reporter: construction.__reporter, source: source
@@ -2637,12 +2650,12 @@ func generate(
 
             public static func makeConstructionScope(
                 failureReporter: FailureReporter, session: MockSession = MockSession(),
-                _ configure: @escaping @Sendable (Swift.Int, Stubs)\(constructorEffect) -> Swift.Void
+                _ configure: @escaping @Sendable (Swift.Int, Stubs)\(constructorEffect) -> \(configuredResult)
             ) -> ConstructionScope {
                 \(scopeSetup)
             }
 
-            public convenience init(seed: Swift.Int)\(constructorEffect) {
+            public convenience init\(optionalMark)(seed: Swift.Int)\(constructorEffect) {
                 let endpoint = EndpointID(\(String(reflecting: constructorIdentity)))
                 let source = \(source)
                 guard let construction = Self.__constructionScope else {

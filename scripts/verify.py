@@ -2272,6 +2272,14 @@ def main():
         r"PASS: GEN026-typed reject-wrong-error-ordinary",
         r"PASS: GEN026-typed reject-wrong-error-main-default",
     ])
+    run("failable-construction-consumer", [
+        sys.executable, "Fixtures/TypedConstructionConsumer/verify_failable.py", "--tool", tool, "--swiftc", swiftc,
+        "--sdk", sdk, "--runtime-modules", modules, "--runtime-library", modules / "BlueprintMocking.o",
+        "--evidence-dir", EVIDENCE / "failable-construction",
+    ], env=swift_environment, timeout=300, patterns=[
+        r"PASS: GEN026-failable run-metatype-consumer",
+        r"PASS: GEN026-failable reject-async-failable",
+    ])
     if os.environ.get("BLUEPRINT_VERIFY_XCODE_PHASE") == "1":
         selected_xcode = Path(xcrun("--find", "xcodebuild"))
         run("xcode-standalone-build-phase", [

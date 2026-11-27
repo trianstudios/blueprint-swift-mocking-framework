@@ -109,7 +109,7 @@ func finishTwice(_ construction: consuming MockConstructionAttempt) {
 
         protocol = original.split("\n\n", 1)[0] + "\n"
         for name, source, diagnostic in [
-            ("failable", protocol.replace("init(seed: Int)", "init?(seed: Int)"), "ordinary direct Sendable"),
+            ("wrong-failable-label", protocol.replace("init(seed: Int)", "init?(value: Int)"), "ordinary direct Sendable"),
             ("throwing", protocol.replace("init(seed: Int)", "init(seed: Int) throws"), "ordinary direct Sendable"),
             ("async", protocol.replace("init(seed: Int)", "init(seed: Int) async"), "ordinary direct Sendable"),
             ("wrong-input", protocol.replace("init(seed: Int)", "init(seed: String)"), "ordinary direct Sendable"),

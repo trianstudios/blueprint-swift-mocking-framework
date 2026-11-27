@@ -775,3 +775,9 @@ Missing source-module context and a compound condition still produce source-loca
 The GEN-037 consumer now exercises a handwritten scoped adapter around the generated prefix-length selector. The adapter passes a borrowed prefix from the real input to a nonescaping callback and returns an owned Int. The original byte owner is released after the call. History retains the selector's owned projection and the expected admission and return phases.
 
 Swift SIL checks reject an escaping view and an escaping callback independently. This lane uses the default checked Swift 6.4 profile. Direct dependent Span results require a separate supported compiler profile.
+
+## Scoped failable protocol initialization
+
+GEN-026 now supports one direct synchronous init?(seed: Int) with an explicit initialize or return-nil decision. The native metatype fixture verifies a nil return, a completed attempt without an instance identity and a distinct initialized identity for success. Nil and success both have a returned phase. Only a successful failable attempt carries the instance link. A detached reset preserves nil completion in the original epoch.
+
+Standalone and configured witnesses agree. Explicit detached binding, scope diagnostics and default-isolation compilation are checked. Unsupported mixed effects preserve previous generated files. The ordinary and typed-throwing constructor fixtures still pass. Async, mixed effects and broader initializers remain open.

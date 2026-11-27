@@ -15,14 +15,14 @@ import tempfile
 FIXTURE = Path(__file__).resolve().parent
 
 
-def run(command, evidence, label, *, expected=0, diagnostic=None):
+def run(command, evidence, label, *, expected=0, diagnostic=None, suite="GEN026-typed"):
     result = subprocess.run(list(map(str, command)), capture_output=True, text=True, timeout=30,
                             env={**os.environ, "SWIFT_BACKTRACE": "enable=no"})
     (evidence / f"{label}.log").write_text(result.stdout + result.stderr, encoding="utf-8")
     accepted = result.returncode != 0 if expected is None else result.returncode == expected
     if not accepted or diagnostic and not re.search(diagnostic, result.stderr):
         raise RuntimeError(f"{label}: got exit {result.returncode}\n{result.stdout}{result.stderr}")
-    print(f"PASS: GEN026-typed {label}", flush=True)
+    print(f"PASS: {suite} {label}", flush=True)
     return result.stdout
 
 

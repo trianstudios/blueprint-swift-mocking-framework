@@ -85,13 +85,38 @@ public struct MockThrowingConstructionAttempt: ~Copyable, Sendable {
 
     /// Records the configured failure without allocating a mock identity.
     public consuming func recordFailure() {
+        finishWithoutInstance(phase: .threw)
+    }
+
+    fileprivate consuming func finishWithoutInstance(phase: CallPhase) {
         var attempt = consume self
         attempt.isResolved = true
-        attempt.scope.completeProviderInvocation(attempt.invocation, phase: .threw)
+        attempt.scope.completeProviderInvocation(attempt.invocation, phase: phase)
     }
 
     deinit {
         if !isResolved { scope.completeProviderInvocation(invocation, phase: .terminated) }
+    }
+}
+
+/// Explicit preparation result for a synchronous failable initializer.
+public enum FailableConstructionDecision: Sendable {
+    case initialize
+    case returnNil
+}
+
+/// An admitted failable construction awaiting its configured decision.
+public struct MockFailableConstructionAttempt: ~Copyable, Sendable {
+    fileprivate let preparation: MockThrowingConstructionAttempt
+
+    /// Reserves an identity after a decision to initialize. Completion publishes the instance link.
+    public consuming func reserveInstance() -> MockConstructionAttempt {
+        preparation.reserveInstance()
+    }
+
+    /// Completes the configured nil result without allocating an instance identity.
+    public consuming func recordNil() {
+        preparation.finishWithoutInstance(phase: .returned)
     }
 }
 
@@ -156,6 +181,15 @@ public struct MockScope: Sendable {
     ) -> MockThrowingConstructionAttempt {
         let event = admitProviderInvocation(endpoint, reporter: reporter, source: source)
         return MockThrowingConstructionAttempt(scope: self, invocation: event.invocationID)
+    }
+
+    /// Admits a failable constructor under its construction scope's identity.
+    public func beginFailableConstruction(
+        of endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation
+    ) -> MockFailableConstructionAttempt {
+        MockFailableConstructionAttempt(
+            preparation: beginThrowingConstruction(of: endpoint, reporter: reporter, source: source)
+        )
     }
 
     /// Records an immediate generic provider call without retaining its values.
@@ -291,7 +325,7 @@ public struct SessionEvent: Equatable, Sendable {
     // Mock numbers are allocated from 1; zero indicates that no attachment was published.
     fileprivate var constructedMockNumber: UInt64 = 0
 
-    /// The instance attached by a successful typed-throwing constructor, when it differs from the admission scope.
+    /// The instance attached by a successful constructor when it differs from the admission scope.
     public var constructedMockID: MockID? {
         guard constructedMockNumber != 0 else { return nil }
         return MockID(sessionID: epoch.sessionID, rawValue: constructedMockNumber)
