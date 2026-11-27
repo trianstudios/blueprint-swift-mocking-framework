@@ -249,7 +249,7 @@ python3 scripts/verify_generation_performance.py \
   --evidence-dir "$artifact_dir/generation-performance"
 ```
 
-Use an empty evidence directory. Add `--smoke` to exercise the fixture with three protocols. The measured wall includes process launch. Approved reference hardware, launch-excluded timing and downstream compile impact are separate release checks.
+Use an empty evidence directory. Add `--smoke` to exercise the fixture with three protocols. The measured wall includes process launch. For separately measured components, build the same bundled generator compiler inputs with `-Onone -D BLUEPRINT_MEASURE_GENERATION` and pass `--component-build-evidence "$build_directory"` along with that binary and its receipt. Retain `source.tar`, `build.command`, `build.meter-stderr` and `bundled-linkage.log` in the directory. The compiler-only command runs under `/usr/bin/time -l`. Record their SHA-256 hashes and the receipt hash in `build-provenance.json` using the field names in `component_build_profile`. The reported launch component ends at Swift entry. Downstream compile impact and reference hardware remain separate release checks.
 
 ### Optional source facts cache
 

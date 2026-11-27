@@ -3,11 +3,14 @@
 
 import argparse
 from decimal import Decimal
+from functools import partial
 import json
 import os
 from pathlib import Path
 import platform
 import re
+import secrets
+import shlex
 import stat
 import statistics
 import subprocess
@@ -15,6 +18,7 @@ import sys
 import tempfile
 import time
 
+from check_release import read_json
 from verify_inspection import MODULE, OUTPUT_NAMES, arguments, sha256, snapshot
 from verify_offline_runtime import NETWORK_BLOCK, offline_git_environment
 from verify_parser_parity import PARSER_LIBRARIES, compiler_receipt_context, verify_receipt
@@ -28,6 +32,9 @@ WARM_TARGET_NS = 250_000_000
 COLD_TARGET_NS = 5_000_000_000
 COLD_TARGET_BYTES = 512 * 1024 * 1024
 REPORT = "generation-performance.json"
+TIMING_PREFIX = b"DX032_GENERATION_TIME_V1 "
+TIMING_NONCE = "BLUEPRINT_GENERATION_TIMING_NONCE"
+TIMING_FLAG = "BLUEPRINT_MEASURE_GENERATION"
 TIME_HEADER = re.compile(rb"\s*([0-9]+(?:\.[0-9]+)?) real\s+([0-9]+(?:\.[0-9]+)?) user\s+([0-9]+(?:\.[0-9]+)?) sys\s*")
 TIME_COUNT = re.compile(rb"\s*([0-9]+)\s+([a-z][a-z0-9 ()/_-]+)\s*")
 MOCK = re.compile(rb"(?m)^public final class (ScaleProtocol[0-9]{4})Mock:")
@@ -103,18 +110,83 @@ def require_unchanged(directory, previous):
         raise ValueError(f"Expected no-op generation to preserve output bytes, identities and mtimes: {directory.name}")
 
 
-def run_timed(tool, root, configuration, output, sources, evidence, label, environment, count):
+
+def parse_component_timing(stderr, nonce, spawned, exited):
+    lines = stderr.splitlines(keepends=True)
+    marks = [line for line in lines if line.startswith(TIMING_PREFIX)]
+    if len(marks) != 1 or lines[0] != marks[0]:
+        raise ValueError("Expected exactly one configured generation timing record before the process meter")
+    fields = marks[0][len(TIMING_PREFIX):].strip().split()
+    if len(fields) != 4 or fields[0] != nonce.encode("ascii"):
+        raise ValueError("Configured generation timing nonce does not match this process")
+    if any(re.fullmatch(rb"[0-9]{1,20}", value) is None for value in fields[1:]):
+        raise ValueError("Configured generation timing requires integer nanoseconds")
+    entry, begin, end = map(int, fields[1:])
+    if not spawned <= entry <= begin < end <= exited:
+        raise ValueError("Configured generation timing is outside its monotonic clock window")
+    return b"".join(lines[1:]), {
+        "launchToSwiftEntryNanos": entry - spawned,
+        "argumentDispatchNanos": begin - entry,
+        "configuredGenerationNanos": end - begin,
+        "afterSwiftEntryNanos": end - entry,
+        "completionToExitNanos": exited - end,
+    }
+
+
+def component_build_profile(directory, receipt_digest, revision, environment):
+    profile_path = directory / "build-provenance.json"
+    profile = read_json(profile_path.read_bytes(), "configured generation timing build provenance")
+    names = {
+        "sourceArchiveSHA256": "source.tar",
+        "buildCommandSHA256": "build.command",
+        "buildMeterSHA256": "build.meter-stderr",
+        "linkageSHA256": "bundled-linkage.log",
+    }
+    if profile["bundledReceiptSHA256"] != receipt_digest or any(
+            digest(directory / name) != profile[key] for key, name in names.items()):
+        raise ValueError("Configured generation timing build provenance differs from its artifacts")
+    arguments_record = shlex.split((directory / "build.command").read_text(encoding="utf-8"))
+    definitions = [next_argument if argument == "-D" else argument[2:]
+                   for argument, next_argument in zip(arguments_record, [*arguments_record[1:], ""])
+                   if argument.startswith("-D")]
+    optimizations = [argument for argument in arguments_record
+                     if argument in {"-Onone", "-O", "-Osize", "-Ounchecked"}]
+    if (not arguments_record or arguments_record[0] != environment["SWIFT_EXEC"]
+            or profile["buildOptimization"] != "-Onone" or optimizations != ["-Onone"]
+            or definitions != [TIMING_FLAG]):
+        raise ValueError("Expected the bundled generator build with only its generation timing flag")
+    with (directory / "source.tar").open("rb") as archive:
+        archived = subprocess.check_output(["git", "get-tar-commit-id"], stdin=archive, env=environment,
+                                           text=True, timeout=15).strip()
+    if archived != revision:
+        raise ValueError("Configured generation timing build archive revision does not match the receipt")
+    return profile | {
+        "provenanceSHA256": digest(profile_path),
+        "meter": parse_darwin_time((directory / "build.meter-stderr").read_bytes()),
+    }
+
+def run_timed(tool, root, configuration, output, sources, evidence, label, environment, count, *, component_timing=False):
     request = arguments(configuration, output, sources)
     argv = ["/usr/bin/time", "-l", *NETWORK_BLOCK, str(tool), "generate", *request]
-    start = time.perf_counter_ns()
+    clock = time.perf_counter_ns
+    if component_timing:
+        clock = partial(time.clock_gettime_ns, time.CLOCK_MONOTONIC)
+        nonce = secrets.token_hex(16)
+        environment = environment | {TIMING_NONCE: nonce}
+    start = clock()
     child = subprocess.run(argv, cwd=root, env=environment, capture_output=True, timeout=90, check=False)
-    elapsed = time.perf_counter_ns() - start
+    end = clock()
     (evidence / f"{label}.stdout").write_bytes(child.stdout)
     (evidence / f"{label}.meter-stderr").write_bytes(child.stderr)
     stamp = f"Blueprint Mocking: generated {count} protocol mock(s)\n".encode("ascii")
     if child.returncode or child.stdout != stamp:
         raise ValueError(f"{label}: generation did not produce the exact expected stamp (exit {child.returncode})")
-    return parse_darwin_time(child.stderr) | {"processWallNanos": elapsed}
+    stderr = child.stderr
+    timing = {}
+    if component_timing:
+        stderr, component = parse_component_timing(stderr, nonce, start, end)
+        timing["componentTiming"] = component
+    return parse_darwin_time(stderr) | {"processWallNanos": end - start} | timing
 
 
 def benchmark(tool, evidence, environment, count, cold_methods, warm_repeats, *, invoke=run_timed):
@@ -156,10 +228,22 @@ def benchmark(tool, evidence, environment, count, cold_methods, warm_repeats, *,
                         if name != "." and name != "Generated" and not name.startswith("Generated/")}
             if authored != {name: value for name, value in input_state.items() if name != "."}:
                 raise ValueError(f"{label}: generation changed authored inputs")
+    launch = None
+    steady = [row.get("componentTiming") for row in modes["warm"]["samples"]]
+    if any(sample is not None for sample in steady):
+        if any(sample is None for sample in steady):
+            raise ValueError("Configured generation timing is incomplete across warm samples")
+        modes["warm"]["launchExcludedMedianNanos"] = statistics.median(
+            sample["afterSwiftEntryNanos"] for sample in steady
+        )
+        modes["warm"]["configuredGenerationMedianNanos"] = statistics.median(
+            sample["configuredGenerationNanos"] for sample in steady
+        )
+        launch = statistics.median(sample["launchToSwiftEntryNanos"] for sample in steady)
     return modes | {
         "status": "report-only",
         "certificationVerdict": None, "regressionVerdict": None, "clientCompileImpact": None,
-        "toolLaunchNanos": None, "toolBuildNanos": None, "buildOptimizationFromReceipt": None,
+        "toolLaunchNanos": launch, "toolBuildNanos": None, "buildOptimizationFromReceipt": None,
         "publishedD43Targets": {
             "warm": {"sourceProtocolDeclarations": DECLARATIONS, "medianExcludingLaunchAndBuildNanos": WARM_TARGET_NS},
             "cold": {"sourceProtocolDeclarations": DECLARATIONS, "selectedRequirements": DECLARATIONS * COLD_METHODS,
@@ -169,12 +253,13 @@ def benchmark(tool, evidence, environment, count, cold_methods, warm_repeats, *,
     }
 
 
-def verify(repository, tool, receipt_path, evidence, warm_repeats, smoke):
+def verify(repository, tool, receipt_path, evidence, warm_repeats, smoke, component_build=None):
     if sys.platform != "darwin":
         raise ValueError("This driver uses the native macOS process meter and bundled generator")
     _, selected = swift_toolchain()
     environment = offline_git_environment(selected) | {"GIT_OPTIONAL_LOCKS": "0", "LC_ALL": "C", "LANG": "C"}
-    environment = {key: value for key, value in environment.items() if not key.startswith("DYLD_")}
+    environment = {key: value for key, value in environment.items()
+                   if not key.startswith("DYLD_") and key != TIMING_NONCE}
     revision = clean_revision(repository, environment)
     common = compiler_receipt_context(revision, environment)
     compiler = Path(common["swiftCompiler"])
@@ -184,6 +269,9 @@ def verify(repository, tool, receipt_path, evidence, warm_repeats, smoke):
         raise ValueError("Provide the prepared executable bundled generator")
     receipt_digest = digest(receipt_path)
     receipt = verify_receipt(receipt_path, common, "bundled", tool, {"parserSHA256": parsers})
+    build = None
+    if component_build is not None:
+        build = component_build_profile(component_build, receipt_digest, revision, environment)
     if evidence.is_relative_to(repository):
         relative = evidence.relative_to(repository)
         result = subprocess.run(["git", "-C", repository, "check-ignore", "--quiet", "--", relative],
@@ -194,7 +282,16 @@ def verify(repository, tool, receipt_path, evidence, warm_repeats, smoke):
     if any(evidence.iterdir()):
         raise ValueError("Use an empty evidence directory")
     result = benchmark(tool, evidence, environment, 3 if smoke else DECLARATIONS,
-                       2 if smoke else COLD_METHODS, warm_repeats)
+                       2 if smoke else COLD_METHODS, warm_repeats,
+                       invoke=partial(run_timed, component_timing=build is not None))
+    if build is not None:
+        if component_build_profile(component_build, receipt_digest, revision, environment) != build:
+            raise ValueError("Configured generation timing build artifacts changed during measurement")
+        result.update(
+            componentBuildEvidence=build, toolBuildNanos=build["meter"]["meterWallNanos"],
+            componentTimingScope="Darwin CLOCK_MONOTONIC; spawn to Swift entry includes meter, sandbox and loader; "
+                                 "entry to configured completion includes argument dispatch; compiler-only meter is separate",
+        )
     if (clean_revision(repository, environment) != revision or digest(tool) != receipt["executableSHA256"]
             or digest(receipt_path) != receipt_digest
             or any(digest(host_libraries / name) != digest_value for name, digest_value in parsers.items())
@@ -220,11 +317,14 @@ def main():
     parser.add_argument("--bundled-receipt", type=Path, required=True)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--warm-repeats", type=int, default=5)
+    parser.add_argument("--component-build-evidence", type=Path,
+                        help="Measure the receipted benchmark-only binary with its exact bundled build artifacts")
     parser.add_argument("--smoke", action="store_true", help="Use a scaled-down structural check without budget claims")
     args = parser.parse_args()
     try:
         verify(args.repository.resolve(), args.tool.resolve(), args.bundled_receipt.resolve(),
-               args.evidence_dir.resolve(), args.warm_repeats, args.smoke)
+               args.evidence_dir.resolve(), args.warm_repeats, args.smoke,
+               args.component_build_evidence.resolve() if args.component_build_evidence else None)
     except (KeyError, OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         print(f"Generation performance measurement failed: {error}", file=sys.stderr)
         return 1

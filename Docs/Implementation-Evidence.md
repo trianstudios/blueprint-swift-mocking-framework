@@ -841,3 +841,9 @@ Missing lexical and detached scopes emit one standalone diagnostic and throw the
 GEN-026 now accepts one direct init?(seed: Int) async. The independent consumer suspends setup and exercises initialize and nil decisions with and without cooperative task cancellation. Request recording leaves the active attempt in place. The nil terminal has no instance link or reserved raw identity. A successful terminal links the actual initialized instance.
 
 Cancellation after a detach-active reset records the request and the eventual terminal in the original epoch. Compiler and generator fixtures preserve mixed-effect controls and compare standalone and configured output. Broader failable throwing forms and native release certification remain open.
+
+## Configured generation component timings
+
+DX-032 can measure the existing configured call using a dedicated bundled generator build. A successful invocation emits a nonce-bound record using the same Darwin monotonic clock as the driver. The verifier checks the real process interval and records launch to Swift entry, dispatch and configured work separately. Build time comes from the compiler-only meter bound to the build command, archive, receipt and linkage evidence.
+
+The ordinary driver still records process-wall timing. The instrumented fixture compares output digests and no-op preservation against the stock tool and checks diagnostics on rejection. This remains local report-only evidence. Reference machine review and downstream build-time impact remain open.

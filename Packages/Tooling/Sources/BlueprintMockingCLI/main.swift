@@ -1,6 +1,25 @@
 import Foundation
 import SwiftParser
 import SwiftSyntax
+#if BLUEPRINT_MEASURE_GENERATION && os(macOS)
+import Darwin
+
+private enum ConfiguredGenerationMeasurement {
+    static let swiftEntry = clock_gettime_nsec_np(CLOCK_MONOTONIC)
+
+    static var nonce: String? {
+        guard let value = ProcessInfo.processInfo.environment["BLUEPRINT_GENERATION_TIMING_NONCE"],
+              value.utf8.count == 32,
+              value.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return nil }
+        return value
+    }
+
+    static func publish(_ nonce: String, begin: UInt64, end: UInt64) {
+        let marker = "DX032_GENERATION_TIME_V1 \(nonce) \(swiftEntry) \(begin) \(end)\n"
+        FileHandle.standardError.write(Data(marker.utf8))
+    }
+}
+#endif
 
 struct GenerationError: Error, CustomStringConvertible {
     let description: String
@@ -2939,7 +2958,17 @@ private func run(_ arguments: [String]) throws {
         return
     }
     if arguments.first == "generate" && arguments.dropFirst().first == "--config" {
+        #if BLUEPRINT_MEASURE_GENERATION && os(macOS)
+        let timingNonce = ConfiguredGenerationMeasurement.nonce
+        let timingBegin = timingNonce.map { _ in clock_gettime_nsec_np(CLOCK_MONOTONIC) }
+        #endif
         try generateBuildOutputs(arguments: arguments.dropFirst())
+        #if BLUEPRINT_MEASURE_GENERATION && os(macOS)
+        let timingEnd = timingBegin.map { _ in clock_gettime_nsec_np(CLOCK_MONOTONIC) }
+        if let timingNonce, let timingBegin, let timingEnd {
+            ConfiguredGenerationMeasurement.publish(timingNonce, begin: timingBegin, end: timingEnd)
+        }
+        #endif
         return
     }
     let arguments = arguments.first == "generate" ? Array(arguments.dropFirst()) : arguments
@@ -3039,6 +3068,10 @@ private func run(_ arguments: [String]) throws {
 }
 
 do {
+    #if BLUEPRINT_MEASURE_GENERATION && os(macOS)
+    // Evaluate the lazy clock stamp before materializing arguments.
+    _ = ConfiguredGenerationMeasurement.swiftEntry
+    #endif
     try run(Array(CommandLine.arguments.dropFirst()))
 } catch let mismatch as IncompatibleImporterContext {
     FileHandle.standardError.write(Data("\(mismatch)\n".utf8))
