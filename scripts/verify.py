@@ -18,6 +18,13 @@ from fatal_child import check_fatal_child
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = Path(os.environ.get("BLUEPRINT_EVIDENCE_DIRECTORY", ROOT / "Evidence")).resolve()
 RESULTS = []
+DEFAULT_VALUE_FAILURE_CASES = (
+    ("default-unregistered-terminates", "--unregistered-default-value",
+     r"No registered default factory for ConsumerDomain\.DefaultCatalogProduct for catalog\.lookup$"),
+    ("default-cycle-terminates", "--cyclic-default-value",
+     r"Default-value cycle: ConsumerDomain\.DefaultCatalogProduct -> ConsumerDomain\.DefaultCatalogRegion"
+     r" -> ConsumerDomain\.DefaultCatalogProduct for catalog\.lookup$"),
+)
 
 def run(name, command, *, fails=False, patterns=(), env=None, timeout=120):
     completed = subprocess.run(
@@ -1431,6 +1438,8 @@ def main():
                             r"GEN007_failureMappingsSelectOverloadsByArgumentType\(\) passed"])
     run_swift("runtime-tests", ["test"], patterns=[
         r"\b[1-9]\d* tests?\b.*\bpassed\b",
+        r"RUN017_registryResolvesExactTypedFactoriesAndKeepsPublishedCopiesIndependent\(\) passed",
+        r"RUN017_registryRejectsCyclesAndDepthBeforeEnteringTheRepeatedFactory\(\) passed",
         r"RUN024_delayedSequenceResumesAtExactManualDeadline\(\) passed",
         r"RUN024_delayedSequenceCancellationKeepsDetachedAdmissionAndConsumesStep\(\) passed",
         r"RUN024_delayedSequenceContinuousClockWakesInvocation\(\) passed",
@@ -1455,6 +1464,7 @@ def main():
     run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
                   r"RUN027_RUN029_orderedConsumptionHonorsClaimedBarriersAndKeepsHistory\(\) passed",
+                  r"RUN017_checkedEndpointUsesRegisteredDomainDefaultAfterStubAndForwarding\(\) passed",
                   r"RUN015_generatedScenarioReservesOnceAndIgnoresStaleCompletionAfterABA\(\) passed",
                   r"RUN015_generatedScenarioPublishesCurrentSuccessfulCompletion\(\) passed",
                   r"RUN015_liveOverlayCompletionSurvivesBaseOnlyReplacement\(\) passed",
@@ -1853,6 +1863,8 @@ def main():
             output += f"\nVerifier: {result.error}\n"
         record_result(name, output, result.returncode, result.error is None, expected_failure=True)
 
+    for name, flag, message in DEFAULT_VALUE_FAILURE_CASES:
+        run_fatal(name, flag, message)
     missing_stubs = [
         ("typed", "--missing", r"UserRepository\|fetchUser\(id:String\) async throws\(RepositoryError\)->String"),
         ("sync", "--missing-sync", r"UserRepository\|greeting\(_:String\)->String"),

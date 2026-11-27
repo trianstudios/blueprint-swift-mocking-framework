@@ -33,6 +33,14 @@ import ConsumerDoubles
             let service = GenericSubscriptClient(directory: mock)
             _ = service.read(true)
         }
+        if CommandLine.arguments.contains("--unregistered-default-value") {
+            verifyDefaultValueFailure(cyclic: false)
+            return
+        }
+        if CommandLine.arguments.contains("--cyclic-default-value") {
+            verifyDefaultValueFailure(cyclic: true)
+            return
+        }
         if CommandLine.arguments.contains("--closed-rethrows-provider") {
             try verifyClosedRethrowsProvider()
             return

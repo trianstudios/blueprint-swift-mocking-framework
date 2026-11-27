@@ -220,6 +220,7 @@ fileprivate enum UnansweredCallReason: Sendable {
     case forwardingCycle([String])
     case forwardingTargetUnbound
     case forwardingTargetReleased
+    case defaultValueResolution(DefaultValueResolutionError)
 }
 
 /// The requested lexical configuration no longer belongs to a live session epoch.
@@ -684,6 +685,9 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         case .forwardingTargetReleased:
             kind = .unexpectedCall
             message = "Forwarding target was released for \(endpoint.diagnosticName)"
+        case .defaultValueResolution(let error):
+            kind = .unexpectedCall
+            message = "\(error.diagnostic) for \(endpoint.diagnosticName)"
         }
         let issue = MockIssue(kind: kind, endpoint: endpoint, message: message,
                               source: source, watermark: admission.id)
@@ -857,6 +861,7 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     private let journal: Journal<Input>
     private let forwarding: (@Sendable (Input) -> Output)?
     private let fallback: (@Sendable (MockIssue) -> Output)?
+    private let defaultValues: DefaultValueRegistry?
 
     /// Reports an unstubbed call before invoking the failure fallback.
     public convenience init(
@@ -869,16 +874,36 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
     }
 
     /// Calls the real implementation on a stub miss if supplied.
-    public init(id: EndpointID, configuration: SyncConfiguration<Input, Output>,
-                failureReporter: FailureReporter,
-                scope: MockScope = MockSession().makeMock(),
-                forwarding: (@Sendable (Input) -> Output)?,
-                fallback: (@Sendable (MockIssue) -> Output)? = nil) {
+    public convenience init(id: EndpointID, configuration: SyncConfiguration<Input, Output>,
+                            failureReporter: FailureReporter,
+                            scope: MockScope = MockSession().makeMock(),
+                            forwarding: (@Sendable (Input) -> Output)?,
+                            fallback: (@Sendable (MockIssue) -> Output)? = nil) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  scope: scope, forwarding: forwarding, fallback: fallback, defaultValues: nil)
+    }
+
+    /// Uses explicitly registered typed defaults on a stub and forwarding miss.
+    public convenience init(id: EndpointID, configuration: SyncConfiguration<Input, Output>,
+                            failureReporter: FailureReporter,
+                            scope: MockScope = MockSession().makeMock(),
+                            forwarding: (@Sendable (Input) -> Output)? = nil,
+                            defaultValues: DefaultValueRegistry) {
+        self.init(id: id, configuration: configuration, failureReporter: failureReporter,
+                  scope: scope, forwarding: forwarding, fallback: nil, defaultValues: defaultValues)
+    }
+
+    private init(id: EndpointID, configuration: SyncConfiguration<Input, Output>,
+                 failureReporter: FailureReporter, scope: MockScope,
+                 forwarding: (@Sendable (Input) -> Output)?,
+                 fallback: (@Sendable (MockIssue) -> Output)?,
+                 defaultValues: DefaultValueRegistry?) {
         configuration.validateCaptureSession(scope.session.id)
         self.configuration = configuration
         self.journal = Journal(endpoint: id, reporter: failureReporter, scope: scope)
         self.forwarding = forwarding
         self.fallback = fallback
+        self.defaultValues = defaultValues
     }
     public func invoke(_ input: Input, source: SourceLocation = SourceLocation()) -> Output {
         guard let admission = journal.begin(input) else {
@@ -891,7 +916,18 @@ public final class SyncEndpoint<Input: Sendable, Output: Sendable>: Sendable {
             journal.complete(admission, phase: .returned, origin: stub == nil ? .forwarded : nil)
             return result
         }
-        return journal.resolveMissingNonthrowingCall(admission, source: source, fallback: fallback)
+        guard let defaultValues else {
+            return journal.resolveMissingNonthrowingCall(admission, source: source, fallback: fallback)
+        }
+        do throws(DefaultValueResolutionError) {
+            let result = try defaultValues.require(Output.self)
+            journal.complete(admission, phase: .returned)
+            return result
+        } catch {
+            let issue = journal.reportUnansweredCall(admission, phase: .terminated, source: source,
+                                                    reason: .defaultValueResolution(error))
+            fatalError(issue.message)
+        }
     }
     public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
         journal.verification(matching: matcher, phase: phase)
