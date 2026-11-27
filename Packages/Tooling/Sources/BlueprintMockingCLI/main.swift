@@ -297,6 +297,7 @@ struct Member {
     let isolation: Isolation
     let kind: WitnessKind
     var requiresResultMetatype = false
+    var producesOwnedResult = false
 
     var usesInout: Bool { parameters.contains(where: \.isInout) }
     var usesConsumingInput: Bool { parameters.contains(where: \.isConsumingInput) }
@@ -313,6 +314,7 @@ struct Member {
         if let callback { return callback.kind.family }
         if parameters.contains(where: \.isIsolatedActor) { return "IsolatedSync" }
         if usesConsumingInput { return "BlueprintMocking.ConsumingSync" }
+        if producesOwnedResult { return "BlueprintMocking.OwnedSync" }
         return (usesInout ? "Inout" : isolation.prefix) + effect.family
     }
     var verificationInputType: String { usesInout ? "InoutValues<\(inputType)>" : inputType }
@@ -721,7 +723,8 @@ func generate(
 
     func addMember(
         name: String, parameters: [Parameter], outputType: String,
-        effect: Effect, kind: WitnessKind, declaredResult: String? = nil, at node: some SyntaxProtocol
+        effect: Effect, kind: WitnessKind, declaredResult: String? = nil,
+        producesOwnedResult: Bool = false, at node: some SyntaxProtocol
     ) throws {
         let source = index.origin(of: node)
         let witness = witnessName(name, kind: kind)
@@ -732,7 +735,8 @@ func generate(
         }
         let parameterTypes = parameters.map { "\($0.label):\($0.witnessType)" }.joined(separator: ",")
         let matcherTypes = parameters.filter { $0.callback == nil }.map {
-            "\($0.label):\($0.isInout || $0.isConsumingInput ? "Int" : $0.runtimeType)"
+            let lowered = $0.isInout || $0.isConsumingInput || producesOwnedResult
+            return "\($0.label):\(lowered ? "Int" : $0.runtimeType)"
         }.joined(separator: ",")
         let specialization: String
         if case .specializedGeneric(_, let type) = kind {
@@ -755,6 +759,9 @@ func generate(
             }
             if parameters.contains(where: \.isInout) || previous.usesInout {
                 try reject(node, "Inout overloads with identical matcher signatures require distinct argument labels" + locations)
+            }
+            if producesOwnedResult || previous.producesOwnedResult {
+                try reject(node, "Owned result overloads with identical matcher signatures require distinct argument labels" + locations)
             }
             if parameters.contains(where: \.isConsumingInput) || previous.usesConsumingInput {
                 try reject(node, "Consuming input overloads with identical metadata matcher signatures require distinct argument labels" + locations)
@@ -796,7 +803,8 @@ func generate(
         let identity = endpointIdentity(endpoint, effect: effect.declaration, result: resultIdentity)
         let member = Member(name: name, parameters: parameters, outputType: outputType,
                             effect: effect, identity: identity, origin: source,
-                            isolation: isolation, kind: kind, requiresResultMetatype: requiresResultMetatype)
+                            isolation: isolation, kind: kind, requiresResultMetatype: requiresResultMetatype,
+                            producesOwnedResult: producesOwnedResult)
         if hasBindings {
             // Distinct type spellings can become the same Swift type after binding.
             let selector = member.selector
@@ -1351,6 +1359,37 @@ func generate(
             continue
         }
         let returnType = fn.signature.returnClause?.type
+        if !fromTextualInterface, let result = returnType?.as(IdentifierTypeSyntax.self),
+           try index.hasExplicitNoncopyableStruct(named: result.name.text, at: result) {
+            let message = "An owned result factory requires a direct synchronous nonthrowing Sendable "
+                + "method with zero or one Int argument and a concrete same-module noncopyable struct result"
+            guard declarationID == proto.id, declarations.count == 1, isolation == .sendable,
+                  !hasBindings, !spy, !specializesGenerics, projections.isEmpty, variadicForwarding.isEmpty,
+                  scopedRuleSelectors.isEmpty, rethrowsSelections.isEmpty,
+                  fn.attributes.isEmpty, fn.signature.effectSpecifiers == nil,
+                  result.genericArgumentClause == nil, declaredParameters.count <= 1 else {
+                try reject(fn, message)
+            }
+            try index.requireNoncopyableStruct(named: result.name.text, at: result, subject: "An owned result")
+            try index.requireUnshadowedQualifier(module, at: result)
+            try index.requireUnshadowedQualifier("BlueprintMocking", at: fn)
+            var inputs: [Parameter] = []
+            if let parameter = declaredParameters.first {
+                let label = parameter.firstName.text
+                let type = parameter.type.trimmedDescription
+                guard parameter.defaultValue == nil, parameter.ellipsis == nil,
+                      parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+                      type == "Int" || type == "Swift.Int", label == "_" || simple(label) else {
+                    try reject(parameter, message)
+                }
+                try index.requireUnshadowedQualifier("Swift", at: parameter.type)
+                if type == "Int" { try index.requireUnshadowedQualifier("Int", at: parameter.type) }
+                inputs.append(Parameter(label: label, type: "Swift.Int"))
+            }
+            try addMember(name: fn.name.text, parameters: inputs, outputType: "\(module).\(result.name.text)",
+                          effect: Effect(isAsync: false, failure: nil), kind: .method, producesOwnedResult: true, at: fn)
+            continue
+        }
         let returnsBareSelf = returnType?.trimmedDescription == "Self"
         if let returnType, returnsBareSelf {
             guard declarationID == proto.id, declarations.count == 1, isolation == .sendable,

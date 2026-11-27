@@ -570,10 +570,16 @@ The native fixture exports a library-evolution interface, stages only the public
 
 GEN-032 and RUN-022 cover one checked Sendable synchronous nonthrowing method with a concrete same-module noncopyable struct and an `Int` result. The generated initializer requires a typed borrowing projection. A call admits pending metadata, publishes the projected integer, and transfers the original value once into the selected answer. Verification sees incomplete history during reentry before publication and uses the retained metadata afterward.
 
-The independent SwiftPM consumer observes exactly one destruction on both a typed consuming answer and a fixed return, including after reset and finish. Swift SIL verification rejects use after consume, duplicate transfer, and escaping a borrowed parameter. Configured and standalone output agree. Borrowing witnesses, consuming self, owned results and wider native qualification remain open.
+The independent SwiftPM consumer observes exactly one destruction on both a typed consuming answer and a fixed return, including after reset and finish. Swift SIL verification rejects use after consume, duplicate transfer, and escaping a borrowed parameter. Configured and standalone output agree. Borrowing witnesses, consuming self and wider native qualification remain open.
 
 ## Explicit source membership provenance
 
 DX-012 now computes normalized source membership from the configured request in addition to the supplied input-set ID. The native CLI runner holds the caller ID constant. Adding and removing an unrelated listed file reports index-only drift and preserves the matching shard. Reordered paths and equivalent spellings verify identically. Editing content in an unrelated module leaves both files untouched. An explicitly listed file that disappears fails inspection, generation and verification before outputs change.
 
 This evidence covers configured membership and missing paths. The imported-interface path retains its existing content-and-context stamp. Persistent parse, graph and emission caches and the broader semantic-input mutation suite remain open.
+
+## Fresh noncopyable results
+
+GEN-033 and RUN-022 now cover direct synchronous nonthrowing Sendable requirements returning a concrete same-module noncopyable value. The generated factory accepts no input or one `Int`. It returns ownership to the caller and retains only ordinary input history. The independent SwiftPM consumer creates three simultaneously live results, finishes the mock session with all three still owned, and consumes them in a different order. Each producer invocation and destructor is observed once.
+
+Swift SIL checks reject replay of a captured move-only value and erasure to `Any`. The generated factory stub exposes `willProduce`, and Swift rejects an attempted fixed return. Standalone and configured generation agree. One-shot slots, generic owned values, broader effects and native qualification remain open.

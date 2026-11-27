@@ -306,17 +306,28 @@ final class ProtocolSourceIndex {
         }
     }
 
-    func requireNoncopyableStruct(named name: String, at reference: some SyntaxProtocol) throws {
+    private static func explicitNoncopyableMarker(in declaration: DeclSyntax) -> TypeSyntax? {
+        declaration.as(StructDeclSyntax.self)?.inheritanceClause?.inheritedTypes.lazy.compactMap {
+            $0.type.as(SuppressedTypeSyntax.self)?.type
+        }.first { ["Copyable", "Swift.Copyable"].contains($0.trimmedDescription) }
+    }
+
+    func hasExplicitNoncopyableStruct(named name: String, at reference: some SyntaxProtocol) throws -> Bool {
+        let candidates = try Self.shadows(named: name, in: load(origin(of: reference).module))
+        return candidates.contains { Self.explicitNoncopyableMarker(in: $0.declaration) != nil }
+    }
+
+    func requireNoncopyableStruct(
+        named name: String, at reference: some SyntaxProtocol, subject: String = "A consuming input"
+    ) throws {
         let site = origin(of: reference)
         let candidates = try Self.shadows(named: name, in: load(site.module))
         guard Self.isSimple(name), candidates.count == 1, let candidate = candidates.first,
               !candidate.isConditional, let value = candidate.declaration.as(StructDeclSyntax.self),
               value.name.text == name, value.attributes.isEmpty, value.modifiers.map(\.name.text) == ["public"],
               value.genericParameterClause == nil, value.genericWhereClause == nil,
-              let marker = value.inheritanceClause?.inheritedTypes.lazy.compactMap({
-                  $0.type.as(SuppressedTypeSyntax.self)?.type
-              }).first(where: { ["Copyable", "Swift.Copyable"].contains($0.trimmedDescription) }) else {
-            throw Self.error(at: site, "A consuming input requires one unconditional public nongeneric struct "
+              let marker = Self.explicitNoncopyableMarker(in: candidate.declaration) else {
+            throw Self.error(at: site, "\(subject) requires one unconditional public nongeneric struct "
                              + "'\(site.module).\(name)' with an explicit ~Copyable declaration.")
         }
         try requireUnshadowedQualifier(marker.trimmedDescription == "Copyable" ? "Copyable" : "Swift", at: marker)

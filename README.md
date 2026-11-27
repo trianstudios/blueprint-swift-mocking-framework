@@ -330,6 +330,8 @@ A direct checked Sendable protocol method can take one `isolated` parameter of a
 
 A generated checked Sendable method can take one concrete noncopyable `consuming` argument and return `Int` in the supported synchronous profile. Provide `projectingInput:` as a typed borrowing closure when initializing the mock. Setup and verification use the projected `Int`; an answer receives the original input with its consuming convention. While the projection is pending, verification reports incomplete history. The runtime stores the projected metadata only.
 
+A direct synchronous nonthrowing requirement can also return a concrete same-module noncopyable struct, with zero arguments or one `Int` argument. Configure it with `willProduce` and create a fresh result in the typed factory on each call. The caller owns the returned value and verification uses the ordinary arguments.
+
 An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
 
 ```swift
