@@ -228,6 +228,13 @@ def main():
         "bash", "scripts/generate.sh", "--input", source, "--module", "ConsumerDomain",
         "--protocol", "UserRepository", "--output", generated], env=generation_environment)
     tool = ROOT / ".build/prototype-tooling/generate"
+    run("runtime-schema-generated-compatibility", [
+        sys.executable, "scripts/verify_runtime_schema.py", "--tool", tool,
+        "--swiftc", swiftc, "--sdk", sdk, "--evidence-dir", EVIDENCE,
+    ], env=swift_environment, timeout=360, patterns=[
+        r"PASS: GEN007 emitted witnesses reject an incompatible runtime despite a consumer-local schema lookalike",
+        r"EVIDENCE: runtime-schema-report\.json SHA-256 [0-9a-f]{64}",
+    ])
     publication_fixture = ROOT / "Fixtures/OfflineGenerationConsumer"
     run("generation-recovery-fault-tool", [
         "bash", "scripts/generate.sh", "inspect", "--config", publication_fixture / "blueprint-mocking.json",
@@ -1127,6 +1134,7 @@ def main():
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
                   r"RUN007_generatedVerificationReportsOnlyExplicitMatcherDescriptions\(\) passed",
                   r"RUN034_detachedMatchingCannotConsumeCurrentSequencePosition\(\) passed",
+                  r"GEN007_typedAsyncDescriptorSetupAndVerificationDoNotInvokeWitness\(\) passed",
                   r"RUN009_generatedWinningRulesCaptureOnceThroughReentryAndConcurrency\(\) passed",
                   r"SYS005_checkoutServiceUsesLiveDependencyAdapters\(\) passed",
                   r"SYS005_generatedAdapterMocksOnlyRecordCallsThroughProtocols\(\) passed",

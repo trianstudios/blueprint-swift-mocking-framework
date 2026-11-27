@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class IntDirectoryMock: IntDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     public typealias Element = Swift.Int
     private let __endpoint0: SyncEndpoint<Swift.String, Swift.Int>
     private let __endpoint1: SyncEndpoint<Swift.Int, Void>

@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class TypeSubscriptDirectoryMock: TypeSubscriptDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: SyncEndpoint<Int, Int>
     private let __endpoint1: SyncEndpoint<(Int, Int), Void>
 
@@ -133,13 +133,13 @@ public final class TypeSubscriptDirectoryMock: TypeSubscriptDirectory {
     public static subscript(_ input: Int) -> Int {
         get {
             guard let scope = __typeScope else {
-                fatalError(BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|ConsumerDomain.TypeSubscriptDirectory|type:subscript:(_:Int).get->Int|Sendable"), source: SourceLocation(fileID: "ConsumerDomain/TypeSubscriptDirectory.swift", filePath: "TypeSubscriptDirectory.swift", line: 2, column: 1)))
+                fatalError(BlueprintMocking.BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|ConsumerDomain.TypeSubscriptDirectory|type:subscript:(_:Int).get->Int|Sendable"), source: SourceLocation(fileID: "ConsumerDomain/TypeSubscriptDirectory.swift", filePath: "TypeSubscriptDirectory.swift", line: 2, column: 1)))
             }
             return scope.__endpoint2.invoke(input, source: SourceLocation(fileID: "ConsumerDomain/TypeSubscriptDirectory.swift", filePath: "TypeSubscriptDirectory.swift", line: 2, column: 1))
         }
         set {
             guard let scope = __typeScope else {
-                _ = BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|ConsumerDomain.TypeSubscriptDirectory|type:subscript:(_:Int).set(_:Int,newValue:Int)->Void|Sendable"), source: SourceLocation(fileID: "ConsumerDomain/TypeSubscriptDirectory.swift", filePath: "TypeSubscriptDirectory.swift", line: 2, column: 1))
+                _ = BlueprintMocking.BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|ConsumerDomain.TypeSubscriptDirectory|type:subscript:(_:Int).set(_:Int,newValue:Int)->Void|Sendable"), source: SourceLocation(fileID: "ConsumerDomain/TypeSubscriptDirectory.swift", filePath: "TypeSubscriptDirectory.swift", line: 2, column: 1))
                 return
             }
             scope.__endpoint3.invoke((input, newValue), source: SourceLocation(fileID: "ConsumerDomain/TypeSubscriptDirectory.swift", filePath: "TypeSubscriptDirectory.swift", line: 2, column: 1))

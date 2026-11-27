@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class IntSequenceMock: IntSequence {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     public typealias Element = Swift.Int
     public typealias Iterator = ConsumerDomain.IntCursor
     private let __endpoint0: SyncEndpoint<Void, Swift.Int>

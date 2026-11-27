@@ -1108,7 +1108,7 @@ func generate(
     import \(module)
 
     \(mockAvailability?.annotation ?? "")\(isolation.annotation)public final class \(declaration): \(selected) {
-        private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+        private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
 
     """
     let resolvedBindings = bindings.types.sorted { $0.key < $1.key }.map {
@@ -1489,7 +1489,7 @@ func generate(
             output += "            reporter: __failureReporter, source: \(location(declaration.origin)))\n    }\n"
         case .typeSubscriptGetter(let indices):
             func missingScope(_ member: Member) -> String {
-                "BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID(\(String(reflecting: member.identity))), source: \(location(member.origin)))"
+                "BlueprintMocking.BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID(\(String(reflecting: member.identity))), source: \(location(member.origin)))"
             }
             output += "\n    public static subscript(\(m.parameterDeclaration)) -> \(m.outputType) {\n"
             output += "        get {\n            guard let scope = __typeScope else {\n"

@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class InoutSpyDirectoryMock: InoutSpyDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: InoutSyncThrowingEndpoint<Swift.Int, Int, InoutSpyFailure>
     private let __endpoint1: InoutSyncEndpoint<Swift.Int, Void>
 

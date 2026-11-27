@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class LookupParametersMock: LookupParameters {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: SyncEndpoint<(String, String), String>
     private let __endpoint1: SyncEndpoint<(String, Int), LookupRecord>
     private let __endpoint2: SyncEndpoint<Void, String>

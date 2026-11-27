@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 @MainActor public final class ActorSpyDirectoryMock: ActorSpyDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: MainActorSyncEndpoint<ActorSpyEntry, Void>
     private let __endpoint1: MainActorSyncEndpoint<ActorSpyEntry, ActorSpyEntry>
     private let __endpoint2: MainActorAsyncThrowingEndpoint<ActorSpyEntry, ActorSpyEntry, ActorSpyFailure>

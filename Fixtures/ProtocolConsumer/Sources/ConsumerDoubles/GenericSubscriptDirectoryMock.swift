@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class GenericSubscriptDirectoryMock: GenericSubscriptDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __scope: MockScope
     private let __failureReporter: FailureReporter
     private let __endpoint0: SyncEndpoint<Int, Int>

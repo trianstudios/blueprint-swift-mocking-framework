@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class VariadicDirectoryMock: VariadicDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: AsyncThrowingEndpoint<(String, [Int], String), String, VariadicFailure>
     private let __endpoint1: SyncEndpoint<[Int], [Int]>
 

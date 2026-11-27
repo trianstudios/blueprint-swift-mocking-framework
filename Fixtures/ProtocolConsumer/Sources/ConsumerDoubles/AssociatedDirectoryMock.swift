@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class AssociatedDirectoryMock: AssociatedDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     public typealias Element = Swift.String
     private let __endpoint0: SyncEndpoint<Swift.String, Void>
     private let __endpoint1: SyncEndpoint<String, Swift.String>

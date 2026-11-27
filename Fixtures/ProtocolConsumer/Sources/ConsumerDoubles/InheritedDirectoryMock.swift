@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class InheritedDirectoryMock: InheritedDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: AsyncThrowingEndpoint<Int, String, InheritedDirectoryFailure>
     private let __endpoint1: SyncEndpoint<Void, String>
     private let __endpoint2: SyncEndpoint<String, String>

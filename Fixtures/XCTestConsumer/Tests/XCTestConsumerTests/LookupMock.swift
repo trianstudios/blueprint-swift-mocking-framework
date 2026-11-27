@@ -5,7 +5,7 @@ import BlueprintMocking
 import LookupDomain
 
 public final class LookupMock: Lookup {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: SyncEndpoint<String, String>
     private let __endpoint1: AsyncThrowingEndpoint<String, String, LookupFailure>
 
@@ -143,13 +143,13 @@ public final class LookupMock: Lookup {
     public static subscript(_ input: Int) -> Int {
         get {
             guard let scope = __typeScope else {
-                fatalError(BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|LookupDomain.Lookup|type:subscript:(_:Int).get->Int|Sendable"), source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1)))
+                fatalError(BlueprintMocking.BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|LookupDomain.Lookup|type:subscript:(_:Int).get->Int|Sendable"), source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1)))
             }
             return scope.__endpoint2.invoke(input, source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1))
         }
         set {
             guard let scope = __typeScope else {
-                _ = BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|LookupDomain.Lookup|type:subscript:(_:Int).set(_:Int,newValue:Int)->Void|Sendable"), source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1))
+                _ = BlueprintMocking.BlueprintRuntimeSchemaV1.reportMissingTypeScope(EndpointID("schema1|LookupDomain.Lookup|type:subscript:(_:Int).set(_:Int,newValue:Int)->Void|Sendable"), source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1))
                 return
             }
             scope.__endpoint3.invoke((input, newValue), source: SourceLocation(fileID: "LookupDomain/Lookup.swift", filePath: "Lookup.swift", line: 6, column: 1))

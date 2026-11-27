@@ -66,6 +66,12 @@ The focused command `python3 scripts/verify.py --release-checks-only` runs those
 
 The release checker requires every profile artifact for a completed contract to bind to the same full candidate revision and to that artifact’s declared profile. A two-profile fixture certifies its synthetic contract with distinct matching results. Stale or substituted results and duplicate profile tuples fail. The [candidate release profile plan](Release-Profile-Plan.md) lists the proposed SYS-008 evaluator, the remaining native runs, and evidence requirements for review.
 
+## Generated runtime compatibility
+
+GEN-007 now checks the runtime marker from the imported `BlueprintMocking` module. A native compiler fixture generates an async-throwing instance witness and a static-subscript witness. It compiles the same emitted source and consumer-local lookalike against two separately built runtime modules. The actual marker compiles. Renaming only the runtime’s marker produces a compiler error at both generated compatibility fields. The static accessor fallbacks also reference the runtime module.
+
+The independent SwiftPM consumer proves that typed async-throwing setup and synchronous count verification leave the session snapshot and answer count unchanged. Calling the witness then produces one answer and one admission/return pair. These checks cover GEN007-A and GEN007-B for the tested generator profile. Class generation, dynamic descriptor compatibility and release-profile qualification remain open.
+
 ## Sequence cursors across epoch resets
 
 RUN-034 now keeps installed async-throwing rule cursors local to each epoch. A reset takes the same session lock as sequence reservation and copies the reserved position into the new epoch without changing the rule revision. An invocation admitted before reset still uses the old cursor. Matchers and answers run outside the session lock.

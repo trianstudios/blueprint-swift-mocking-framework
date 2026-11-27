@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class GeneratedProjectionDirectoryProjectedMock<ProjectionArgument0: Sendable, ProjectionResult0: Sendable, ProjectionArgument2: Sendable, ProjectionResult2: Sendable>: GeneratedProjectionDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: ProjectedAsyncThrowingEndpoint<GeneratedProjectionPayload, GeneratedProjectionPayload, GeneratedProjectionFailure, ProjectionArgument0, ProjectionResult0>
     private let __endpoint1: SyncEndpoint<Void, String>
     private let __endpoint2: ProjectedSyncEndpoint<GeneratedProjectionPayload, GeneratedProjectionPayload, ProjectionArgument2, ProjectionResult2>

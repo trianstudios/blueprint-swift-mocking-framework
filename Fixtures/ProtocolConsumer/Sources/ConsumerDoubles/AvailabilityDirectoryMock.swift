@@ -6,7 +6,7 @@ import ConsumerDomain
 
 @available(macOS 14.0, *)
 public final class AvailabilityDirectoryMock: AvailabilityDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: SyncEndpoint<Void, Int>
     private let __endpoint1: SyncEndpoint<Void, NewReceipt>
 

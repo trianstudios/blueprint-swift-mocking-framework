@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class AsyncThrowingEscapingCallbackDirectoryMock: AsyncThrowingEscapingCallbackDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: SyncAsyncThrowingEscapingCallbackEndpoint<String, Int, String, String, AsyncCallbackFixtureError>
 
     public struct Stubs {

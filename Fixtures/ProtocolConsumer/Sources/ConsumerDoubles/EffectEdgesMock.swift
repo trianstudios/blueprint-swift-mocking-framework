@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class EffectEdgesMock: EffectEdges {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: AsyncEndpoint<String, Void>
     private let __endpoint1: SyncEndpoint<String, String>
     private let __endpoint2: AsyncEndpoint<String, String>

@@ -5,7 +5,7 @@ import BlueprintMocking
 import ConsumerDomain
 
 public final class VariadicDirectoryProjectedMock<ProjectionArgument1: Sendable, ProjectionResult1: Sendable>: VariadicDirectory {
-    private let __schema: BlueprintRuntimeSchemaV1.Type = BlueprintRuntimeSchemaV1.self
+    private let __schema: BlueprintMocking.BlueprintRuntimeSchemaV1.Type = BlueprintMocking.BlueprintRuntimeSchemaV1.self
     private let __endpoint0: AsyncThrowingEndpoint<(String, [Int], String), String, VariadicFailure>
     private let __endpoint1: ProjectedSyncEndpoint<[Int], [Int], ProjectionArgument1, ProjectionResult1>
 
