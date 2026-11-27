@@ -112,6 +112,7 @@ private struct SessionTraceRecord: Encodable {
     let elapsedSeconds: String
     let elapsedAttoseconds: String
     let mockID: String
+    let constructedMockID: String?
     let invocationID: String
     let configurationRevision: String
     private let kind: Kind
@@ -135,6 +136,7 @@ private struct SessionTraceRecord: Encodable {
         elapsedSeconds = String(duration.seconds)
         elapsedAttoseconds = String(duration.attoseconds)
         mockID = String(event.mockID.rawValue)
+        constructedMockID = event.constructedMockID.map { String($0.rawValue) }
         invocationID = String(event.invocationID.rawValue)
         configurationRevision = String(event.configurationRevision.rawValue)
         self.kind = kind

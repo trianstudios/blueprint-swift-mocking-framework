@@ -745,3 +745,9 @@ The fixture adds a file to actual domain Compile Sources and the phase input lis
 DX-014 verifies exact Swift shard and index bytes across five fresh checkout variants with spaces, Unicode, C and Turkish locales, and reordered source and selection inputs. Repeat generation preserves both files. Missing and ambiguous parent diagnostics compare after replacing the actual checkout root and retaining file, line and column.
 
 Source diagnostics drop redundant dot path components and order ambiguous candidates by displayed location. File reads use the original path spelling. A symlink and parent-traversal control verifies that the source opened is the authored path's real target. Existing inspection and drift checks still pass. Persistent cache and cross-OS qualification remain open.
+
+## Scoped typed-throwing protocol initialization
+
+GEN-026 also accepts one direct synchronous init(seed: Int) throws(Failure) with a public same-module error enum. The active attempt belongs to the construction scope while setup runs. Failure records a thrown terminal and preserves the exact declared error and payload through the protocol metatype. No instance identity is allocated on failure. Success publishes an explicit link to the constructed instance on the attempt's terminal record. The optional link is part of metadata-only session trace.
+
+The separate consumer verifies the original attempt ID, distinct successful instance identities, no allocation on failure, and archived failure after a detached reset. Both isolation modes reject a setup closure with a different error type. Unsupported shapes preserve prior output, and ordinary generation and lifecycle checks still pass. Failable, async and broader typed initializer profiles remain open.

@@ -50,18 +50,48 @@ public struct MockConstructionAttempt: ~Copyable, Sendable {
     fileprivate let invocation: SessionInvocationID
 
     fileprivate var isCompleted = false
+    fileprivate var publishesInstanceLink = false
 
     /// Generated initializer witnesses call this after initializing all stored state.
     public consuming func complete() {
         var attempt = consume self
         attempt.isCompleted = true
-        attempt.instanceScope.completeProviderInvocation(attempt.invocation, phase: .returned)
+        attempt.instanceScope.completeProviderInvocation(
+            attempt.invocation, phase: .returned,
+            constructedMockID: attempt.publishesInstanceLink ? attempt.instanceScope.id : nil
+        )
     }
 
     deinit {
         if !isCompleted {
             instanceScope.completeProviderInvocation(invocation, phase: .terminated)
         }
+    }
+}
+
+/// An admitted typed-throwing construction with no allocated instance identity.
+public struct MockThrowingConstructionAttempt: ~Copyable, Sendable {
+    fileprivate let scope: MockScope
+    fileprivate let invocation: SessionInvocationID
+    fileprivate var isResolved = false
+
+    /// Called after successful preparation. The instance is linked only when its initializer completes.
+    public consuming func reserveInstance() -> MockConstructionAttempt {
+        var attempt = consume self
+        attempt.isResolved = true
+        return MockConstructionAttempt(instanceScope: attempt.scope.session.makeMock(), invocation: attempt.invocation,
+                                       publishesInstanceLink: true)
+    }
+
+    /// Records the configured failure without allocating a mock identity.
+    public consuming func recordFailure() {
+        var attempt = consume self
+        attempt.isResolved = true
+        attempt.scope.completeProviderInvocation(attempt.invocation, phase: .threw)
+    }
+
+    deinit {
+        if !isResolved { scope.completeProviderInvocation(invocation, phase: .terminated) }
     }
 }
 
@@ -118,6 +148,14 @@ public struct MockScope: Sendable {
         let event = admitProviderInvocation(endpoint, reporter: reporter, source: source, reservesInstance: true)
         return MockConstructionAttempt(instanceScope: MockScope(id: event.mockID, session: session),
                                        invocation: event.invocationID)
+    }
+
+    /// Admits a typed-throwing constructor under its construction scope's identity.
+    public func beginThrowingConstruction(
+        of endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation
+    ) -> MockThrowingConstructionAttempt {
+        let event = admitProviderInvocation(endpoint, reporter: reporter, source: source)
+        return MockThrowingConstructionAttempt(scope: self, invocation: event.invocationID)
     }
 
     /// Records an immediate generic provider call without retaining its values.
@@ -211,10 +249,12 @@ public struct MockScope: Sendable {
     }
 
     fileprivate func completeProviderInvocation(
-        _ invocation: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil
+        _ invocation: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil,
+        constructedMockID: MockID? = nil
     ) {
         let (delivery, wake) = session.withLock { state in
-            let (_, delivery) = state.complete(invocation, phase: phase, origin: origin)
+            let (_, delivery) = state.complete(invocation, phase: phase, origin: origin,
+                                               constructedMockID: constructedMockID)
             return (delivery, state.observationWake())
         }
         delivery?.publish()
@@ -247,6 +287,15 @@ public struct SessionEvent: Equatable, Sendable {
     public let phase: CallPhase
     /// The forwarding origin for a terminal event. Admissions have no origin.
     public let origin: CallOrigin?
+
+    // Mock numbers are allocated from 1; zero indicates that no attachment was published.
+    fileprivate var constructedMockNumber: UInt64 = 0
+
+    /// The instance attached by a successful typed-throwing constructor, when it differs from the admission scope.
+    public var constructedMockID: MockID? {
+        guard constructedMockNumber != 0 else { return nil }
+        return MockID(sessionID: epoch.sessionID, rawValue: constructedMockNumber)
+    }
 }
 
 /// A cancellation request observed while an async-throwing invocation was active.
@@ -818,9 +867,14 @@ public final class MockSession: Sendable {
         }
 
         mutating func complete(
-            _ invocationID: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil
+            _ invocationID: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil,
+            constructedMockID: MockID? = nil
         ) -> (event: SessionEvent, delivery: SessionQuiescenceDelivery?) {
             precondition(phase != .admitted, "Completion requires a terminal phase")
+            if let constructedMockID {
+                precondition(phase == .returned && constructedMockID.sessionID == epoch.sessionID,
+                             "A successful construction must attach an instance from this session")
+            }
             guard let admission = active.removeValue(forKey: invocationID) else {
                 preconditionFailure("No active invocation matches this completion")
             }
@@ -829,7 +883,8 @@ public final class MockSession: Sendable {
             let event = SessionEvent(
                 ordinal: lastEventOrdinal, elapsed: clock.elapsed, epoch: admission.epoch, mockID: admission.mockID,
                 endpoint: admission.endpoint, invocationID: invocationID,
-                configurationRevision: admission.configurationRevision, phase: phase, origin: origin
+                configurationRevision: admission.configurationRevision, phase: phase, origin: origin,
+                constructedMockNumber: constructedMockID?.rawValue ?? 0
             )
             histories[admission.epoch]!.activeInvocationCount -= 1
             histories[admission.epoch]!.events.append(event)

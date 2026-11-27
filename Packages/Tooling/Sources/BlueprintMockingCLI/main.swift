@@ -1482,27 +1482,38 @@ func generate(
         rethrowsMethods.append(requirement)
     }
 
-    var constructor: ProtocolSourceOrigin?
+    var constructor: (origin: ProtocolSourceOrigin, failure: String?)?
     for (declarationID, item) in activeMembers.flatMap({ entry in entry.items.map { (entry.declarationID, $0) } }) {
         if let initializer = item.decl.as(InitializerDeclSyntax.self) {
             let parameters = initializer.signature.parameterClause.parameters
+            let effects = initializer.signature.effectSpecifiers
+            let message = "Construction scopes support one ordinary direct Sendable init(seed: Int) or one synchronous " +
+                "init(seed: Int) throws(PublicError) without other generation modes"
             guard constructor == nil, declarationID == proto.id, declarations.count == 1,
                   isolation == .sendable, !fromTextualInterface, !hasBindings, !spy, !specializesGenerics,
                   projections.isEmpty, variadicForwarding.isEmpty, scopedRuleSelectors.isEmpty,
                   rethrowsSelections.isEmpty, lazyAutoclosureSelections.isEmpty, materializedAutoclosureSelections.isEmpty,
                   initializer.attributes.isEmpty, initializer.modifiers.isEmpty, initializer.body == nil,
                   initializer.optionalMark == nil, initializer.genericParameterClause == nil,
-                  initializer.genericWhereClause == nil, initializer.signature.effectSpecifiers == nil,
+                  initializer.genericWhereClause == nil, effects?.asyncSpecifier == nil,
                   parameters.count == 1, let parameter = parameters.first,
                   parameter.firstName.text == "seed", parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
                   parameter.defaultValue == nil, parameter.ellipsis == nil,
                   ["Int", "Swift.Int"].contains(parameter.type.trimmedDescription) else {
-                try reject(initializer, "Construction scopes support one ordinary direct Sendable init(seed: Int) without other generation modes")
+                try reject(initializer, message)
             }
             try index.requireUnshadowedQualifier("Swift", at: initializer)
             try index.requireUnshadowedQualifier("BlueprintMocking", at: initializer)
             if parameter.type.trimmedDescription == "Int" { try index.requireUnshadowedQualifier("Int", at: parameter.type) }
-            constructor = index.origin(of: initializer)
+            var failure: String?
+            if let clause = effects?.throwsClause {
+                guard clause.throwsSpecifier.text == "throws", let type = clause.type?.as(IdentifierTypeSyntax.self),
+                      type.genericArgumentClause == nil else { try reject(initializer, message) }
+                try index.requireConstructionFailureEnum(named: type.name.text, at: type)
+                try index.requireUnshadowedQualifier(module, at: type)
+                failure = "\(module).\(type.name.text)"
+            }
+            constructor = (index.origin(of: initializer), failure)
             continue
         }
         if fromTextualInterface {
@@ -2427,7 +2438,11 @@ func generate(
         output += "                projectSendingResult: @escaping @Sendable (\(sending.outputType)) -> Swift.Int,\n"
     }
     let defaultConfigure = hasProviderWitness && instanceIndices.isEmpty ? " = { _ in }" : ""
-    output += "                _ configure: \(isolation.annotation)(Stubs) -> Void\(defaultConfigure)) {\n"
+    if constructor?.failure != nil {
+        output += "                stubs: Stubs) {\n"
+    } else {
+        output += "                _ configure: \(isolation.annotation)(Stubs) -> Void\(defaultConfigure)) {\n"
+    }
     if constructor == nil && isolation == .sendable && (!instanceIndices.isEmpty || needsProviderScope) {
         output += "        let scope = session.makeMock()\n"
     }
@@ -2442,12 +2457,18 @@ func generate(
     }
     for i in instanceIndices {
         let m = members[i]
-        output += "        let setup\(i) = \(m.family)Stubbing<\(m.genericArguments)>()\n"
+        if constructor?.failure != nil {
+            output += "        let setup\(i) = stubs.__setup\(i)\n"
+        } else {
+            output += "        let setup\(i) = \(m.family)Stubbing<\(m.genericArguments)>()\n"
+        }
     }
     for i in forwardingIndices.sorted() {
         output += "        forwarding.__install\(i)?(setup\(i))\n"
     }
-    output += "        configure(Stubs(" + instanceIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
+    if constructor?.failure == nil {
+        output += "        configure(Stubs(" + instanceIndices.map { "__setup\($0): setup\($0)" }.joined(separator: ", ") + "))\n"
+    }
     func spyForwardingArgument(_ index: Int) -> String {
         let member = members[index]
         func inputExpression(_ index: Int) -> String {
@@ -2524,11 +2545,61 @@ func generate(
         output += "        self.__endpoint\(i) = \(endpointFamily(i))Endpoint(id: \(endpointID),\n            configuration: setup\(i).finish()\(projection), failureReporter: failureReporter\(mapping))\n"
     }
     output += "    }\n"
-    let constructorIdentity = endpointIdentity("init(seed:Swift.Int)", effect: "", result: "Self")
+    let constructorEffect = constructor?.failure.map { " throws(\($0))" } ?? ""
+    let constructorIdentity = endpointIdentity("init(seed:Swift.Int)", effect: constructorEffect, result: "Self")
     if let constructor {
-        let file = String(reflecting: constructor.fileName)
-        let fileID = String(reflecting: constructor.module + "/" + constructor.fileName)
-        let source = "SourceLocation(fileID: \(fileID), filePath: \(file), line: \(constructor.line), column: \(constructor.column))"
+        let origin = constructor.origin
+        let file = String(reflecting: origin.fileName)
+        let fileID = String(reflecting: origin.module + "/" + origin.fileName)
+        let source = "SourceLocation(fileID: \(fileID), filePath: \(file), line: \(origin.line), column: \(origin.column))"
+        let configureResult = constructor.failure.map { "Swift.Result<Swift.Void, \($0)>" } ?? "Swift.Void"
+        let scopeSetup: String
+        let witness: String
+        if let failure = constructor.failure {
+            let stubs = instanceIndices.map { index in
+                let member = members[index]
+                return "__setup\(index): \(member.family)Stubbing<\(member.genericArguments)>()"
+            }.joined(separator: ", ")
+            scopeSetup = """
+            return ConstructionScope(
+                __scope: session.makeEpochBoundMock(), __reporter: failureReporter,
+                __configure: { seed, stubs in
+                    do throws(\(failure)) {
+                        try configure(seed, stubs)
+                        return .success(())
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            )
+            """.replacingOccurrences(of: "\n", with: "\n        ")
+            witness = """
+            let attempt = construction.__scope.beginThrowingConstruction(
+                of: endpoint, reporter: construction.__reporter, source: source
+            )
+            let stubs = Stubs(\(stubs))
+            switch construction.__configure(seed, stubs) {
+            case .failure(let error):
+                attempt.recordFailure()
+                throw error
+            case .success:
+                let reservation = attempt.reserveInstance()
+                self.init(failureReporter: construction.__reporter, scope: reservation.instanceScope, stubs: stubs)
+                reservation.complete()
+            }
+            """.replacingOccurrences(of: "\n", with: "\n        ")
+        } else {
+            scopeSetup = "ConstructionScope(__scope: session.makeEpochBoundMock(), __reporter: failureReporter, __configure: configure)"
+            witness = """
+            let attempt = construction.__scope.beginInfallibleConstruction(
+                of: endpoint, reporter: construction.__reporter, source: source
+            )
+            self.init(failureReporter: construction.__reporter, scope: attempt.instanceScope) { stubs in
+                construction.__configure(seed, stubs)
+            }
+            attempt.complete()
+            """.replacingOccurrences(of: "\n", with: "\n        ")
+        }
         output += """
 
             @TaskLocal private static var __constructionScope: ConstructionScope?
@@ -2536,7 +2607,7 @@ func generate(
             public struct ConstructionScope: Swift.Sendable {
                 fileprivate let __scope: BlueprintMocking.MockScope
                 fileprivate let __reporter: BlueprintMocking.FailureReporter
-                fileprivate let __configure: @Sendable (Swift.Int, Stubs) -> Swift.Void
+                fileprivate let __configure: @Sendable (Swift.Int, Stubs) -> \(configureResult)
 
                 public func withValue<Value>(_ body: () throws -> Value) rethrows -> Value {
                     try \(name).$__constructionScope.withValue(self, operation: body)
@@ -2566,24 +2637,18 @@ func generate(
 
             public static func makeConstructionScope(
                 failureReporter: FailureReporter, session: MockSession = MockSession(),
-                _ configure: @escaping @Sendable (Swift.Int, Stubs) -> Swift.Void
+                _ configure: @escaping @Sendable (Swift.Int, Stubs)\(constructorEffect) -> Swift.Void
             ) -> ConstructionScope {
-                ConstructionScope(__scope: session.makeEpochBoundMock(), __reporter: failureReporter, __configure: configure)
+                \(scopeSetup)
             }
 
-            public convenience init(seed: Swift.Int) {
+            public convenience init(seed: Swift.Int)\(constructorEffect) {
                 let endpoint = EndpointID(\(String(reflecting: constructorIdentity)))
                 let source = \(source)
                 guard let construction = Self.__constructionScope else {
                     fatalError(\(GeneratedContract.runtimeMarker).reportMissingTypeScope(endpoint, source: source))
                 }
-                let attempt = construction.__scope.beginInfallibleConstruction(
-                    of: endpoint, reporter: construction.__reporter, source: source
-                )
-                self.init(failureReporter: construction.__reporter, scope: attempt.instanceScope) { stubs in
-                    construction.__configure(seed, stubs)
-                }
-                attempt.complete()
+                \(witness)
             }
 
         """
@@ -2784,7 +2849,7 @@ func generate(
             return (id: member.identity, specialization: specialization, origin: member.origin)
         } + providerMethods.filter(\.isPack).map { (id: providerIdentity($0), specialization: nil, origin: $0.origin) }
             + rethrowsMethods.map { (id: rethrowsIdentity($0), specialization: nil, origin: $0.origin) }
-            + (constructor.map { [(id: constructorIdentity, specialization: nil, origin: $0)] } ?? [])
+            + (constructor.map { [(id: constructorIdentity, specialization: nil, origin: $0.origin)] } ?? [])
     )
 }
 

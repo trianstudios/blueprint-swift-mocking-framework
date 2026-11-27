@@ -308,6 +308,27 @@ final class ProtocolSourceIndex {
             + Self.candidateLocations(competitors)
     }
 
+    func requireConstructionFailureEnum(named name: String, at reference: some SyntaxProtocol) throws {
+        let site = origin(of: reference)
+        let candidates = try Self.shadows(named: name, in: load(site.module))
+        guard Self.isSimple(name), candidates.count == 1, let candidate = candidates.first,
+              !candidate.isConditional, let failure = candidate.declaration.as(EnumDeclSyntax.self),
+              failure.name.text == name, failure.attributes.isEmpty, failure.modifiers.map(\.name.text) == ["public"],
+              failure.genericParameterClause == nil, failure.genericWhereClause == nil,
+              let conformances = failure.inheritanceClause?.inheritedTypes,
+              conformances.contains(where: { ["Error", "Swift.Error"].contains($0.type.trimmedDescription) }),
+              conformances.allSatisfy({
+                  ["Error", "Swift.Error", "Equatable", "Swift.Equatable"].contains($0.type.trimmedDescription)
+              }) else {
+            throw Self.error(at: site, "Typed construction requires a public same-module non-generic enum "
+                             + "with direct Swift.Error conformance.")
+        }
+        for conformance in conformances {
+            let spelling = conformance.type.trimmedDescription
+            try requireUnshadowedQualifier(spelling.hasPrefix("Swift.") ? "Swift" : spelling, at: conformance.type)
+        }
+    }
+
     func requireTransferClass(named name: String, at reference: some SyntaxProtocol) throws {
         let site = origin(of: reference)
         let candidates = try Self.shadows(named: name, in: load(site.module))
