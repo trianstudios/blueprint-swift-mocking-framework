@@ -733,3 +733,9 @@ Recovery accepts the recorded previous or next pair, or the known dirty-marker i
 GEN-003 now resolves an inherited protocol graph in one validated compiler-emitted public Swift interface when the selected and inherited requirements match the synchronous nonthrowing scalar profile. The independent consumer receives the SDK dylib and interface in a fresh module cache. It compiles the generated mock, exercises inherited calls and checks the exact interface line of an inherited diagnostic.
 
 Fresh inspection attributes requirements to each declaring interface position. Missing, ambiguous, hidden, foreign and unsupported parents fail with the existing generated shard and index intact. Both compiler-emitted qualifier spellings pass on the selected Mac. This is configured CLI evidence. Interface ingestion through SwiftPM and Xcode, broader graphs and offline generator cache composition remain open.
+
+## Native Xcode schemes with explicit source context
+
+DX-007 and GEN-004 now exercise two shared schemes of one original arm64 macOS Xcode project. The domain compiles under an authored configuration. The phase forwards that source module's explicit condition to the canonical generator. The native XCTest target has the opposite condition. Numbers selects and executes the Int witness, and Words selects and executes String in the same DerivedData tree.
+
+The fixture adds a file to actual domain Compile Sources and the phase input list. Xcode compiles it and the generated index changes. Removing it restores the index bytes. The Swift shard stays byte-identical for the membership-only change. A missing source condition fails at the declaration and preserves the previously generated pair. This is standalone phase evidence with explicit authoring. Automatic context or membership discovery, the Xcode plugin frontend and broader profiles remain open.

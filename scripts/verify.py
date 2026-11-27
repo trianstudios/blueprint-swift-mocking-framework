@@ -2245,6 +2245,13 @@ def main():
             r"PASS: DX008 native Xcode phase, repeated install, membership and sandbox controls",
             r"SHA256 [0-9a-f]{64} xcode-phase-report\.json",
         ])
+        run("xcode-original-source-context", [
+            sys.executable, "Fixtures/XcodeContextProbe/verify.py", "--developer-dir", selected_xcode.parents[2],
+            "--tool", tool, "--runtime-products", modules, "--evidence-dir", EVIDENCE / "xcode-context",
+        ], env=swift_environment, timeout=600, patterns=[
+            r"PASS: DX007 two native Xcode test schemes use explicit source-target conditions and membership",
+            r"SHA256 [0-9a-f]{64} xcode-context-report\.json",
+        ])
     regenerated_subclass = EVIDENCE / "subclass-bootstrap/BootstrapRendererMock.swift"
     if built_subclass.read_bytes() != regenerated_subclass.read_bytes():
         raise ValueError("The committed SwiftPM subclass fixture differs from standalone generation")

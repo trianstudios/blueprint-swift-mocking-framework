@@ -59,6 +59,16 @@ if [[ ${#sources[@]} -eq 0 ]]; then
     fail "Declare the supplied Swift source files in the input .xcfilelist."
 fi
 
+# Forward only explicit source-module conditions in the canonical CLI form.
+# Test-target flags do not establish the conditions used to compile the source.
+while (( $# > 0 )); do
+    if (( $# < 4 )) || [[ "$1" != "--source-condition" || "$2" != "$BLUEPRINT_MOCKING_SOURCE_MODULE" ]]; then
+        fail "Pass --source-condition for the supplied source module followed by FLAG and true|false."
+    fi
+    sources+=("$1" "$2" "$3" "$4")
+    shift 4
+done
+
 # The CLI derives the source membership fingerprint from the resolved module/path entries.
 exec "$BLUEPRINT_MOCKING_TOOL" generate \
     --config "$BLUEPRINT_MOCKING_CONFIG" \

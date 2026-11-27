@@ -41,6 +41,10 @@ The source module must be available to the mock target as an ordinary Swift depe
 
 Update the authored input file list when the supplied source membership changes. The generator fingerprints the explicit module and paths and updates the generated index when entries are added or removed. Automatic membership discovery from project metadata, multiple configurations and schemes, conditional compiler context, and Objective-C setup are separate qualification work.
 
+## Source-target compilation conditions
+
+The phase accepts repeated `--source-condition Module FLAG true|false` arguments for its configured source module. Set each value from the authoritative configuration used by the source target. The native context fixture shares an authored `.xcconfig` value between the source compile and the phase arguments, then compiles its XCTest target with an opposing flag. Missing explicit source context fails at the conditional declaration. [Native context fixture](../Fixtures/XcodeContextProbe)
+
 ## Run the native fixture
 
 Set `BLUEPRINT_VERIFY_XCODE_PHASE=1` when running the main verifier to include this fixture.
