@@ -127,6 +127,7 @@ struct CallbackType {
         case escaping
         case mainActorEscaping
         case throwingEscaping(String)
+        case asyncEscaping
 
         var family: String {
             switch self {
@@ -134,13 +135,14 @@ struct CallbackType {
             case .escaping: "SyncEscapingCallback"
             case .mainActorEscaping: "SyncMainActorEscapingCallback"
             case .throwingEscaping: "SyncThrowingEscapingCallback"
+            case .asyncEscaping: "SyncAsyncEscapingCallback"
             }
         }
 
         var attributes: String {
             switch self {
             case .scoped: ""
-            case .escaping, .throwingEscaping: "@escaping @Sendable "
+            case .escaping, .throwingEscaping, .asyncEscaping: "@escaping @Sendable "
             case .mainActorEscaping: "@escaping @Swift.MainActor @Sendable "
             }
         }
@@ -156,7 +158,13 @@ struct CallbackType {
     }
 
     var declaration: String {
-        kind.attributes + "(\(input))" + (failure.map { " throws(\($0))" } ?? "") + " -> \(output)"
+        let effects: String
+        switch kind {
+        case .asyncEscaping: effects = " async"
+        case .throwingEscaping(let failure): effects = " throws(\(failure))"
+        default: effects = ""
+        }
+        return "\(kind.attributes)(\(input))\(effects) -> \(output)"
     }
 }
 
@@ -573,12 +581,11 @@ func generate(
                 guard isolation == .sendable, !imported, !hasBindings, !forSubscript, !isVariadic, unmodified,
                       let attributed = parameter.type.as(AttributedTypeSyntax.self), attributed.specifiers.isEmpty,
                       let function = attributed.baseType.as(FunctionTypeSyntax.self),
-                      function.effectSpecifiers?.asyncSpecifier == nil, function.parameters.count == 1,
-                      let argument = function.parameters.first, argument.inoutKeyword == nil,
+                      function.parameters.count == 1, let argument = function.parameters.first, argument.inoutKeyword == nil,
                       argument.firstName == nil, argument.ellipsis == nil,
                       let input = supportedType(argument.type),
                       let output = supportedResult(function.returnClause.type) else {
-                    try reject(parameter, "Escaping callback capture requires one synchronous function argument of supported value types")
+                    try reject(parameter, "Escaping callback capture requires one function argument of supported value types")
                 }
                 let attributes = attributed.attributes.compactMap { element -> AttributeSyntax? in
                     guard let attribute = element.as(AttributeSyntax.self),
@@ -605,7 +612,18 @@ func generate(
                 default:
                     try reject(parameter, "Escaping callback capture requires exactly @escaping and @Sendable, optionally with @MainActor")
                 }
-                if let effects = function.effectSpecifiers {
+                if let asyncSpecifier = function.effectSpecifiers?.asyncSpecifier {
+                    guard asyncSpecifier.text == "async" else {
+                        try reject(parameter, "Escaping callback capture requires async for asynchronous function arguments")
+                    }
+                    guard case .escaping = kind else {
+                        try reject(parameter, "Asynchronous escaping callbacks require a nonisolated @Sendable function")
+                    }
+                    guard function.effectSpecifiers?.throwsClause == nil else {
+                        try reject(parameter, "Asynchronous throwing escaping callbacks are not supported")
+                    }
+                    kind = .asyncEscaping
+                } else if let effects = function.effectSpecifiers {
                     guard case .escaping = kind else {
                         try reject(parameter, "Typed-throwing escaping callbacks require a nonisolated @Sendable function")
                     }

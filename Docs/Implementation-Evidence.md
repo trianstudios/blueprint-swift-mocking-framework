@@ -309,3 +309,12 @@ GEN-016 supports one final nonisolated, synchronous `@escaping @Sendable` callba
 The independent SwiftPM consumer exercises a success, a declared failure, and a subsequent success after registration. The registration history retains one admission and one returned event. Reset and finish release the retained payload and invalidate old handles. Compiler fixtures reject a foreign typed error, replay without `try`, and a throwing stub for the nonthrowing registration. Configured generation publishes the checked witness and preserves prior artifacts on actor-plus-typed-throws, async-plus-typed-throws, untyped throws, and explicit `throws(Never)` rejections.
 
 The consumer executable with the replay path links for macOS 13. Execution on the available newer macOS host is separate from deployment-target verification. Additional callback effects, isolation combinations, scheduled delivery, and other qualified toolchain and platform profiles remain open.
+
+
+## Asynchronous escaping callback replay
+
+GEN-016 supports a final unary, nonisolated `@escaping @Sendable (Input) async -> Output` callback on a synchronous, nonthrowing Sendable protocol method. The witness captures the original function type through a winning rule. The typed handle acquires the callback under the session gate and awaits it in the caller's task after releasing the locks.
+
+The independent SwiftPM consumer checks that both registrations return before replay begins. An actor-controlled gate confirms the replay suspends. Separate reset and finish cases clear the captor, release an idle payload, and reject new replays on both retired handles. The acquired replay still holds its payload, then returns the typed result when the gate opens and releases that payload. Session history records registrations, and the acquired replay can outlive quiescent finish. The compiler rejects synchronous replay. Configured generation rejects explicitly MainActor async and async-throwing callbacks before replacing either generated file.
+
+Scheduled delivery, async-throwing callbacks, actor-isolated async callbacks, and other qualified toolchain and platform profiles remain open.

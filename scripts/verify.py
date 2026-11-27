@@ -368,6 +368,9 @@ def main():
     run("throwing-escaping-callback-generation", generate(
         tool, source.with_name("ThrowingEscapingCallbackDirectory.swift"),
         generated.with_name("ThrowingEscapingCallbackDirectoryMock.swift"), "ThrowingEscapingCallbackDirectory"))
+    run("async-escaping-callback-generation", generate(
+        tool, source.with_name("AsyncEscapingCallbackDirectory.swift"),
+        generated.with_name("AsyncEscapingCallbackDirectoryMock.swift"), "AsyncEscapingCallbackDirectory"))
     run("escaping-callback-configured-rejection", [
         sys.executable, "scripts/verify_escaping_callback_generation.py", "--tool", tool, "--evidence-dir", EVIDENCE,
     ], env=swift_environment, timeout=60,
@@ -375,6 +378,7 @@ def main():
                   r"PASS: GEN016 main-actor creates two verified owned outputs",
                   r"PASS: GEN016 qualified-main-actor creates two verified owned outputs",
                   r"PASS: GEN016 typed-throws creates two verified owned outputs",
+                  r"PASS: GEN016 async-callback creates two verified owned outputs",
                   r"EVIDENCE: escaping-callback-generation-report\.json SHA-256 [0-9a-f]{64}"])
     type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
@@ -1070,7 +1074,9 @@ def main():
                   r"GEN016_actorEscapingCallbackReplaysOnMainActorAfterDetachedRegistration\(\) passed",
                   r"GEN016_actorEscapingCallbackReleasesPayloadAcrossResetAndFinish\(\) passed",
                   r"GEN016_throwingEscapingCallbackPreservesItsDeclaredFailureDuringReplay\(\) passed",
-                  r"GEN016_throwingEscapingCallbackRetiresCapturesOnResetAndFinish\(\) passed"])
+                  r"GEN016_throwingEscapingCallbackRetiresCapturesOnResetAndFinish\(\) passed",
+                  r"GEN016_asyncEscapingCallbackReplaySurvivesResetAfterAcquisition\(\) passed",
+                  r"GEN016_asyncEscapingCallbackReplaySurvivesFinishAfterAcquisition\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     run_swift("typed-throwing-callback-consumer-demo", [
@@ -1165,6 +1171,10 @@ def main():
         ),
         "ThrowingEscapingCallbackEffects": (
             r"ThrowingEscapingCallbackEffects\.swift:8:\d+: error: call can throw, but it is not marked with 'try'"
+        ),
+        "AsyncEscapingCallbackSynchronousReplay": (
+            r"AsyncEscapingCallbackSynchronousReplay\.swift:\d+:\d+: error: "
+            r"'async' call in a function that does not support concurrency"
         ),
         "CallbackSpyDeferredCapture": r"passing non-escaping parameter 'callback'.*'@escaping'",
         "CallbackSpyDetachedCapture": r"escaping closure captures non-escaping value",

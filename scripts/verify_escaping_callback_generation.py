@@ -15,14 +15,16 @@ from verify_inspection import OUTPUT_NAMES, require_unchanged, sha256, snapshot
 MODULE = "ConsumerDomain"
 PROTOCOL = "EscapingCallbackDirectory"
 CALLBACK = "@escaping @Sendable (Int) -> String"
+ASYNC_CALLBACK = CALLBACK.replace("(Int) ->", "(Int) async ->")
 TYPED_CALLBACK = CALLBACK.replace("(Int) ->", "(Int) throws(CallbackFixtureError) ->")
 CANONICAL_ACTOR_CALLBACK = CALLBACK.replace("@Sendable ", "@Swift.MainActor @Sendable ")
 SUPPORTED = f"func register(id: String, using callback: {CALLBACK}) -> String"
 TYPED_SUPPORTED = SUPPORTED.replace(CALLBACK, TYPED_CALLBACK)
+ASYNC_SUPPORTED = SUPPORTED.replace(CALLBACK, ASYNC_CALLBACK)
 ACTOR_SUPPORTED = SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
 QUALIFIED_ACTOR_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_CALLBACK)
 TYPED_ENDPOINT = "SyncThrowingEscapingCallbackEndpoint<String, Int, String, String, CallbackFixtureError>"
-SHAPE_DIAGNOSTIC = "Escaping callback capture requires one synchronous function argument of supported value types"
+ASYNC_ENDPOINT = "SyncAsyncEscapingCallbackEndpoint<String, Int, String, String>"
 ATTRIBUTES_DIAGNOSTIC = (
     "Escaping callback capture requires exactly @escaping and @Sendable, optionally with @MainActor"
 )
@@ -31,13 +33,19 @@ METHOD_DIAGNOSTIC = (
     "in the final position"
 )
 ACTOR_THROWS_DIAGNOSTIC = "Typed-throwing escaping callbacks require a nonisolated @Sendable function"
+ACTOR_ASYNC_DIAGNOSTIC = "Asynchronous escaping callbacks require a nonisolated @Sendable function"
+ASYNC_THROWS_DIAGNOSTIC = "Asynchronous throwing escaping callbacks are not supported"
 FAILURE_DIAGNOSTIC = "Escaping callback capture requires throws with a named failure type other than Never"
 REJECTIONS = (
     ("bare-escaping", SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
     ("non-sendable-main-actor", ACTOR_SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
     ("other-global-actor", ACTOR_SUPPORTED.replace("@MainActor ", "@WorkerActor "), ATTRIBUTES_DIAGNOSTIC),
-    ("effectful-callback", SUPPORTED.replace("(Int) ->", "(Int) async ->"), SHAPE_DIAGNOSTIC),
-    ("async-typed-callback", TYPED_SUPPORTED.replace("(Int) throws", "(Int) async throws"), SHAPE_DIAGNOSTIC),
+    ("effectful-callback", ASYNC_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable "), ACTOR_ASYNC_DIAGNOSTIC),
+    (
+        "async-typed-callback",
+        TYPED_SUPPORTED.replace("(Int) throws", "(Int) async throws"),
+        ASYNC_THROWS_DIAGNOSTIC,
+    ),
     ("main-actor-typed-callback", TYPED_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable "),
      ACTOR_THROWS_DIAGNOSTIC),
     ("untyped-throwing-callback", TYPED_SUPPORTED.replace("throws(CallbackFixtureError)", "throws"), FAILURE_DIAGNOSTIC),
@@ -150,6 +158,12 @@ def verify(tool, evidence):
         require_generated(
             tool, request, evidence, "typed-throws", checks, staged, output,
             callback=TYPED_CALLBACK, endpoint=TYPED_ENDPOINT,
+        )
+
+        write_source(source, ASYNC_SUPPORTED)
+        require_generated(
+            tool, request, evidence, "async-callback", checks, staged, output,
+            callback=ASYNC_CALLBACK, endpoint=ASYNC_ENDPOINT,
         )
 
         write_source(source, ACTOR_SUPPORTED)

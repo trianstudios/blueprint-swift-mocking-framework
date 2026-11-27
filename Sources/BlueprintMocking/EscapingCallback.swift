@@ -417,3 +417,107 @@ public final class SyncThrowingEscapingCallbackEndpoint<
         dispatch.verification(matching: matcher, phase: phase)
     }
 }
+
+private typealias AsyncCallback<Input, Output> = @Sendable (Input) async -> Output
+
+/// A typed handle for an asynchronous callback captured by a winning stub.
+public struct AsyncEscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendable {
+    public let invocation: SessionEvent
+    fileprivate weak var storage: CallbackCaptureStorage<AsyncCallback<Input, Output>>?
+
+    /// Acquires the callback before suspension and runs it in the caller's task.
+    /// Reset and finish refuse later acquisitions. A replay that already acquired its
+    /// callback can finish, and the session does not track it as an active invocation.
+    public func invoke(_ input: Input) async throws(CallbackDeliveryError) -> Output {
+        guard let callback = storage?.callback(for: invocation) else { throw .unavailable }
+        return await callback(input)
+    }
+}
+
+/// Retains an opted-in async callback until reset, finish, or deallocation.
+public final class AsyncEscapingCallbackCaptor<Input: Sendable, Output: Sendable>: Sendable, CallbackCapturing {
+    fileprivate let storage: CallbackCaptureStorage<AsyncCallback<Input, Output>>
+
+    public init(session: MockSession) {
+        storage = CallbackCaptureStorage(session: session)
+    }
+
+    /// Returns handles ordered by the originating mock call's admission.
+    public var captures: [AsyncEscapingCallbackCapture<Input, Output>] {
+        storage.admissions.map { AsyncEscapingCallbackCapture(invocation: $0, storage: storage) }
+    }
+}
+
+public struct SyncAsyncEscapingCallbackConfiguration<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+>: Sendable {
+    fileprivate typealias Callback = AsyncCallback<CallbackInput, CallbackResult>
+    fileprivate let rules: [EscapingCallbackRule<Input, Callback, Output>]
+}
+
+/// Builds immutable rules for a synchronous nonthrowing method with an async callback.
+public final class SyncAsyncEscapingCallbackStubbing<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+> {
+    fileprivate typealias Callback = AsyncCallback<CallbackInput, CallbackResult>
+    fileprivate let builder = EffectRulesBuilder<Input, EscapingCallbackBehavior<Input, Callback, Output>>()
+
+    public init() {}
+
+    public func matching(
+        _ matcher: Matcher<Input>
+    ) -> SyncAsyncEscapingCallbackStub<Input, CallbackInput, CallbackResult, Output> {
+        SyncAsyncEscapingCallbackStub(owner: self, matcher: matcher, captor: nil)
+    }
+
+    public func finish() -> SyncAsyncEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output> {
+        SyncAsyncEscapingCallbackConfiguration(rules: builder.finish())
+    }
+}
+
+public struct SyncAsyncEscapingCallbackStub<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+> {
+    fileprivate let owner: SyncAsyncEscapingCallbackStubbing<Input, CallbackInput, CallbackResult, Output>
+    fileprivate let matcher: Matcher<Input>
+    fileprivate let captor: AsyncEscapingCallbackCaptor<CallbackInput, CallbackResult>?
+
+    /// Captures only when this rule wins. The mock and captor must share a session.
+    public func capturingCallback(into captor: AsyncEscapingCallbackCaptor<CallbackInput, CallbackResult>) -> Self {
+        Self(owner: owner, matcher: matcher, captor: captor)
+    }
+
+    public func willReturn(_ output: Output) { willAnswer { _ in output } }
+
+    public func willAnswer(_ answer: @escaping @Sendable (Input) -> Output) {
+        owner.builder.add(matcher, EscapingCallbackBehavior(captor: captor, answer: answer))
+    }
+}
+
+/// Journals registration and retains the callback only for an explicitly selected captor.
+public final class SyncAsyncEscapingCallbackEndpoint<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+>: Sendable {
+    private typealias Callback = AsyncCallback<CallbackInput, CallbackResult>
+    private let dispatch: EscapingCallbackDispatch<Input, Callback, Output>
+
+    public init(
+        id: EndpointID, configuration: SyncAsyncEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output>,
+        failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+        fallback: (@Sendable (MockIssue) -> Output)? = nil
+    ) {
+        dispatch = EscapingCallbackDispatch(id: id, rules: configuration.rules, failureReporter: failureReporter,
+                                            scope: scope, fallback: fallback)
+    }
+
+    public func invoke(
+        _ input: Input, _ callback: @escaping @Sendable (CallbackInput) async -> CallbackResult,
+        source: SourceLocation = SourceLocation()
+    ) -> Output {
+        dispatch.invoke(input, callback, source: source)
+    }
+
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
+        dispatch.verification(matching: matcher, phase: phase)
+    }
+}
