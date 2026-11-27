@@ -374,6 +374,8 @@ Call `session.snapshot().matchOrder(_:mode:phase:)` to read cross-mock order by 
 
 Await `session.waitForQuiescence(until: deadline, clock: clock)` to observe a snapshot with no active calls, including calls in detached epochs. Waiting is cancellable, and the deadline is exclusive. Producers can admit new calls after the snapshot.
 
+Use `try await endpoint.withScopedConfiguration(plan) { ... }` to layer rules on a checked `AsyncThrowingEndpoint` for one lexical operation. Calls use the innermost matching layer. A miss consults outer layers, then the base and forwarding. An exhausted winning sequence reports exhaustion and follows the endpoint's failure mapping. Scope exit restores the previous layer after a return, throw or cancellation. Calls retain the layers they received at admission, including during a detached reset. An inherited scope token from a closed or reset scope rejects new calls. Detached tasks begin without inherited layers.
+
 Use `try endpoint.replaceConfigurationIfQuiescent(plan)` on a direct `AsyncThrowingEndpoint` when replacing its stubs requires an idle session. The idle check and publication are atomic. The check includes active calls from earlier epochs. It throws `QuiescentConfigurationError` for active calls, a finished session, or a stale epoch-bound scope.
 
 Use `try await endpoint.replaceConfigurationWhenQuiescent(plan, within: .seconds(2))` to let existing calls finish. It publishes before the next admission at an eligible idle boundary. The deadline uses the session clock and is exclusive. A timeout or cancellation before publication leaves the current plan intact. Request the update outside calls the update needs to drain.

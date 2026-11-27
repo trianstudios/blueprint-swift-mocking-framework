@@ -179,6 +179,12 @@ The native SwiftPM fixture waits for A’s `testCaseDidFinish` observation, rele
 
 The checked profile is Apple Swift 6.4 on arm64 macOS 27.0.1. Exercising an active suite on other native XCTest profiles and a portable transport after the runner exits remains outstanding.
 
+## Lexical rule scopes
+
+RUN-013 adds `withScopedConfiguration` on a checked Sendable `AsyncThrowingEndpoint`. The session gate pins the current base plan and the task's applicable overlays at admission. Selection checks matching layers from the innermost scope outward. Exhaustion belongs to the selected rule and uses the endpoint's existing typed failure mapping. The task-local token carries endpoint identity and epoch metadata. The journal keeps the typed plans until their scopes close or the session resets or finishes.
+
+Runtime fixtures cover nested misses, restoration on success, throw and cancellation, independent endpoint and task isolation, and rejection of expired scope tokens. A gated matcher proves an admitted call retains its scoped answer across a detached reset. The independent SwiftPM consumer drives the same public endpoint through a `UserRepository` adapter and confirms typed history and the single exhaustion issue. Explicit rule priority, detached rebinding, generated setup and native qualification remain open.
+
 ## Deadline-based quiescent replacement
 
 `AsyncThrowingEndpoint.replaceConfigurationWhenQuiescent(_:within:)` prepares the replacement before entering the session gate. A registered plan publishes at a zero-active boundary before the next admission. The exclusive deadline is checked under the session and endpoint locks, and uses the session’s continuous or manual clock.

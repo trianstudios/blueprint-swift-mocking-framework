@@ -222,6 +222,46 @@ fileprivate enum UnansweredCallReason: Sendable {
     case forwardingTargetReleased
 }
 
+/// The requested lexical configuration no longer belongs to a live session epoch.
+public enum ScopedConfigurationError: Error, Equatable {
+    case finishedSession
+    case staleScope
+    case closedScope
+
+    fileprivate func message(for endpoint: EndpointID) -> String {
+        switch self {
+        case .finishedSession: "Cannot configure \(endpoint.diagnosticName) in a finished mock session"
+        case .staleScope: "Cannot call \(endpoint.diagnosticName) with a stale scoped configuration"
+        case .closedScope: "Cannot call \(endpoint.diagnosticName) with a closed scoped configuration"
+        }
+    }
+}
+
+fileprivate struct ScopedConfigurationKey: Sendable {
+    let epoch: SessionEpoch
+    let serial: UInt64
+}
+
+fileprivate struct ScopedConfigurationToken: Sendable {
+    let owner: AsyncForwardingInstance
+    let key: ScopedConfigurationKey
+}
+
+fileprivate enum ScopedConfigurations {
+    // A task that outlives its lexical scope may retain the token, never the rules.
+    @TaskLocal static var current: [ScopedConfigurationToken] = []
+
+    static func keys(for owner: AsyncForwardingInstance) -> [ScopedConfigurationKey] {
+        current.reversed().compactMap { $0.owner === owner ? $0.key : nil }
+    }
+}
+
+fileprivate enum ScopedJournalAdmission<Configuration: Sendable>: Sendable {
+    case admitted(JournalAdmission, base: Configuration, overlays: [Configuration])
+    case refused
+    case invalidScope(ScopedConfigurationError)
+}
+
 typealias Journal<Input: Sendable> = ConfiguredJournal<Input, Void>
 
 final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: VerificationJournal, SessionJournalRegistration {
@@ -232,6 +272,8 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
         var calls: [Invocation<Input>] = []
         var projectionEvents: [ProjectionJournalEvent<Input>] = []
         var issues: [MockIssue] = []
+        var nextScopedConfigurationID: UInt64 = 0
+        var scopedConfigurations: [UInt64: Configuration] = [:]
     }
 
     private let state: CriticalState<State>
@@ -254,29 +296,81 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
     }
 
     func admit(_ input: Input) -> (admission: JournalAdmission, configuration: Configuration)? {
+        guard case .admitted(let admission, let configuration, _) = admit(input, scoped: []) else { return nil }
+        return (admission, configuration)
+    }
+
+    fileprivate func admit(_ input: Input, scoped keys: [ScopedConfigurationKey])
+        -> ScopedJournalAdmission<Configuration> {
         // Lock order is session, then this endpoint. No operation holds two endpoint locks.
+        // Only typed plan references are pinned here. Matchers and reservation run after release.
         let (result, wake) = scope.session.withLock {
-            session -> ((admission: JournalAdmission, configuration: Configuration)?, SessionObservationDelivery?) in
-            guard scope.admissionRejection(in: session) == nil else { return (nil, nil) }
-            let result = state.withLock {
-                $0.nextID += 1
-                let id = $0.nextID
+            session -> (ScopedJournalAdmission<Configuration>, SessionObservationDelivery?) in
+            guard scope.admissionRejection(in: session) == nil else { return (.refused, nil) }
+            let result = state.withLock { state -> ScopedJournalAdmission<Configuration> in
+                let overlays: [Configuration]
+                switch Self.pinScopedConfigurations(keys, epoch: session.epoch, state: state) {
+                case .success(let plans): overlays = plans
+                case .failure(let error): return .invalidScope(error)
+                }
+                state.nextID += 1
+                let id = state.nextID
                 let event = session.admit(mockID: scope.id, endpoint: endpoint,
-                                          configurationRevision: $0.revision)
-                $0.calls.append(Invocation(id: id, input: input, configurationRevision: $0.revision,
-                                          sessionInvocationID: event.invocationID, epoch: event.epoch,
-                                          phase: .admitted, origin: nil))
+                                          configurationRevision: state.revision)
+                state.calls.append(Invocation(id: id, input: input, configurationRevision: state.revision,
+                                             sessionInvocationID: event.invocationID, epoch: event.epoch,
+                                             phase: .admitted, origin: nil))
                 if !tracksProjectionTimeline.isEmpty {
-                    $0.projectionEvents.append(ProjectionJournalEvent(
+                    state.projectionEvents.append(ProjectionJournalEvent(
                         ordinal: event.ordinal, elapsed: event.elapsed, invocationID: event.invocationID, change: .admitted
                     ))
                 }
-                return (JournalAdmission(id: id, event: event), $0.configuration)
+                return .admitted(JournalAdmission(id: id, event: event), base: state.configuration, overlays: overlays)
             }
-            return (result, session.observationWake())
+            if case .admitted = result { return (result, session.observationWake()) }
+            return (result, nil)
         }
         wake?.publish()
         return result
+    }
+
+    private static func pinScopedConfigurations(
+        _ keys: [ScopedConfigurationKey], epoch: SessionEpoch, state: State
+    ) -> Result<[Configuration], ScopedConfigurationError> {
+        var plans: [Configuration] = []
+        plans.reserveCapacity(keys.count)
+        for key in keys {
+            guard key.epoch == epoch else { return .failure(.staleScope) }
+            guard let plan = state.scopedConfigurations[key.serial] else { return .failure(.closedScope) }
+            plans.append(plan)
+        }
+        return .success(plans)
+    }
+
+    fileprivate func openScopedConfiguration(_ configuration: Configuration, parents: [ScopedConfigurationKey])
+        throws(ScopedConfigurationError) -> ScopedConfigurationKey {
+        try scope.session.withLock { session throws(ScopedConfigurationError) in
+            switch scope.admissionRejection(in: session) {
+            case .finished: throw .finishedSession
+            case .staleTypeScope: throw .staleScope
+            case nil: break
+            }
+            return try state.withLock { state throws(ScopedConfigurationError) in
+                _ = try Self.pinScopedConfigurations(parents, epoch: session.epoch, state: state).get()
+                state.nextScopedConfigurationID += 1
+                let serial = state.nextScopedConfigurationID
+                state.scopedConfigurations[serial] = configuration
+                return ScopedConfigurationKey(epoch: session.epoch, serial: serial)
+            }
+        }
+    }
+
+    fileprivate func closeScopedConfiguration(_ key: ScopedConfigurationKey) {
+        let retired = scope.session.withLock { session in
+            guard key.epoch == session.epoch else { return nil as Configuration? }
+            return state.withLock { $0.scopedConfigurations.removeValue(forKey: key.serial) }
+        }
+        withExtendedLifetime(retired) {}
     }
 
     func replaceConfiguration(_ configuration: Configuration) -> RuleRevision {
@@ -449,8 +543,32 @@ final class ConfiguredJournal<Input: Sendable, Configuration: Sendable>: Verific
                 state.configuration = forkConfigurationOnReset(previous, restartingSequences)
                 retiredConfiguration = previous
             }
-            return (retiredHistory, retiredConfiguration)
+            let retiredScopes = state.scopedConfigurations
+            state.scopedConfigurations = [:]
+            return (retiredHistory, retiredConfiguration, retiredScopes)
         }
+    }
+
+    // Session finish takes the same lock order and releases retired plans after leaving the gate.
+    func discardCapturesOnFinish() -> (any Sendable)? {
+        state.withLock { state in
+            guard !state.scopedConfigurations.isEmpty else { return nil }
+            let retired = state.scopedConfigurations
+            state.scopedConfigurations = [:]
+            return retired
+        }
+    }
+
+    fileprivate func reportInvalidScopedCall(
+        _ error: ScopedConfigurationError, source: SourceLocation, terminating: Bool
+    ) -> MockIssue {
+        let closedEpoch = scope.session.withLock { $0.isFinished ? $0.epoch : nil }
+        let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint, message: error.message(for: endpoint),
+                              source: source, watermark: state.withLock { $0.nextID })
+        if !scope.bufferOrphan(issue, closedEpoch: closedEpoch, terminating: terminating) {
+            report(issue)
+        }
+        return issue
     }
 
     func verification(matching matcher: Matcher<Input>, phase: CallPhase, origin: CallOrigin? = nil)
@@ -947,6 +1065,25 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         try await journal.replaceConfigurationWhenQuiescent(configuration.publish(for: session.id), within: timeout)
     }
 
+    func withScopedConfiguration<Value>(
+        _ configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
+        isolation: isolated (any Actor)? = #isolation,
+        _ body: () async throws -> Value
+    ) async throws -> Value {
+        let plan = configuration.publish(for: session.id)
+        let key = try journal.openScopedConfiguration(plan, parents: ScopedConfigurations.keys(for: forwardingInstance))
+        defer { journal.closeScopedConfiguration(key) }
+        let token = ScopedConfigurationToken(owner: forwardingInstance, key: key)
+        #if compiler(>=6.2)
+        let operation: nonisolated(nonsending) () async throws -> Value = { try await body() }
+        return try await ScopedConfigurations.$current.withValue(ScopedConfigurations.current + [token],
+                                                                  operation: operation)
+        #else
+        return try await ScopedConfigurations.$current.withValue(ScopedConfigurations.current + [token],
+                                                                  operation: body, isolation: isolation)
+        #endif
+    }
+
     func snapshot() -> JournalSnapshot<History> { journal.snapshot() }
 
     func prepareArgumentStability<Result: Sendable>(
@@ -980,14 +1117,26 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         argumentProjection: @Sendable (Input) -> History? = { _ in nil },
         completionProjection: @Sendable (History, Output?) -> History? = { _, _ in nil }
     ) async throws(Failure) -> Output {
-        guard let (admission, configuration) = journal.admit(initialHistory) else {
+        let admission: JournalAdmission
+        let configuration: PublishedAsyncThrowingConfiguration<Input, Output, Failure>
+        let overlays: [PublishedAsyncThrowingConfiguration<Input, Output, Failure>]
+        switch journal.admit(initialHistory, scoped: ScopedConfigurations.keys(for: forwardingInstance)) {
+        case .admitted(let admitted, let base, let scoped):
+            admission = admitted
+            configuration = base
+            overlays = scoped
+        case .refused:
             let issue = journal.reportFinishedCall(source: source, terminating: failureMapping == nil)
+            if let failureMapping { throw failureMapping(issue) }
+            fatalError(issue.message)
+        case .invalidScope(let error):
+            let issue = journal.reportInvalidScopedCall(error, source: source, terminating: failureMapping == nil)
             if let failureMapping { throw failureMapping(issue) }
             fatalError(issue.message)
         }
         let result = await withTaskCancellationHandler {
             await invokeAdmitted(
-                input, admission: admission, configuration: configuration,
+                input, admission: admission, configuration: configuration, overlays: overlays,
                 initialHistory: initialHistory, source: source, forwardingPath: forwardingPath,
                 argumentProjection: argumentProjection, completionProjection: completionProjection
             )
@@ -1000,11 +1149,12 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
     private func invokeAdmitted(
         _ input: Input, admission: JournalAdmission,
         configuration: PublishedAsyncThrowingConfiguration<Input, Output, Failure>,
+        overlays: [PublishedAsyncThrowingConfiguration<Input, Output, Failure>],
         initialHistory: History, source: SourceLocation, forwardingPath: [AsyncForwardingInstance],
         argumentProjection: @Sendable (Input) -> History?,
         completionProjection: @Sendable (History, Output?) -> History?
     ) async -> Result<Output, Failure> {
-        defer { withExtendedLifetime(configuration) {} }
+        defer { withExtendedLifetime((configuration, overlays)) {} }
 
         // User projections, rule matching, answer execution, and error mapping all run
         // after admission, outside journal and sequence locks.
@@ -1012,7 +1162,9 @@ struct AsyncThrowingDispatch<Input: Sendable, Output: Sendable, Failure: Error, 
         if let projected { journal.update(admission, replacing: projected) }
         let history = projected ?? initialHistory
 
-        let winningRule = configuration.rules.reversed().first { $0.matcher.matches(input) }
+        let winningRule = (overlays + [configuration]).lazy
+            .flatMap { $0.rules.reversed() }
+            .first { $0.matcher.matches(input) }
         let outcome: AsyncDispatchOutcome<Output, Failure>
         if let winningRule {
             if let answer = winningRule.answer.plan.reserve(in: session) {
@@ -1098,6 +1250,19 @@ public final class AsyncThrowingEndpoint<Input: Sendable, Output: Sendable, Fail
         _ configuration: AsyncThrowingConfiguration<Input, Output, Failure>, within timeout: Duration
     ) async throws -> RuleRevision {
         try await dispatch.replaceConfigurationWhenQuiescent(configuration, within: timeout)
+    }
+
+    /// Runs an operation with an endpoint-local rule overlay. The innermost matching
+    /// configuration wins, followed by its enclosing scopes and the base rules.
+    /// Child tasks inherit the lexical binding. Detached tasks have no overlay.
+    /// A rule whose sequence is exhausted reports the failure without falling through.
+    /// This operation does not replace the base configuration or its revision.
+    public func withScopedConfiguration<Value>(
+        _ configuration: AsyncThrowingConfiguration<Input, Output, Failure>,
+        isolation: isolated (any Actor)? = #isolation,
+        _ operation: () async throws -> Value
+    ) async throws -> Value {
+        try await dispatch.withScopedConfiguration(configuration, isolation: isolation, operation)
     }
 
     /// Supplies a typed handle for a structural forwarding link.
