@@ -134,13 +134,15 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
         guard let storage else { throw .unavailable }
         let delivery = ScheduledCallbackDelivery<Output>(session: storage.session)
         let occurrence = scheduledOccurrence(input, after: delay) { delivery.resolve($0) }
-        try registerScheduledCallbacks([occurrence], id: delivery.id, storage: storage, allowsContinuous: true)
+        try registerScheduledCallbacks([occurrence], id: delivery.id, storage: storage)
         return delivery
     }
 
-    /// Schedules a finite series of invocations on the capture's manual session clock.
-    /// All delays are relative to the same registration time. Zero delays deliver
-    /// immediately. An empty list schedules no work.
+    /// Schedules a finite series on the capture's session clock. All delays share
+    /// one registration time. Zero delays deliver immediately. An empty list schedules no work.
+    /// A manual advance acquires all due work at once. A continuous series acquires
+    /// positive-delay occurrences one at a time, by deadline and then supplied order.
+    /// Cancellation, reset, or finish can retire occurrences that are still queued.
     @discardableResult
     public func scheduleRepeating(
         _ input: Input, after delays: [Duration]
@@ -177,17 +179,17 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
     private func registerScheduledCallbacks(
         _ occurrences: [ScheduledCallbackOccurrence],
         id: ScheduledCallbackID,
-        storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>,
-        allowsContinuous: Bool = false
+        storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>
     ) throws(CallbackSchedulingError) {
         defer { withExtendedLifetime(storage) {} }
-        let immediate = try storage.session.withLock { state throws(CallbackSchedulingError) in
+        let session = storage.session
+        let immediate = try session.withLock { state throws(CallbackSchedulingError) in
             guard !state.isFinished, state.epoch == invocation.epoch,
                   storage.storedCallback(for: invocation) != nil else { throw .unavailable }
-            return try state.scheduleCallbacks(id: id, occurrences: occurrences,
-                                               continuousOwner: allowsContinuous ? storage.session : nil)
+            return state.scheduleCallbacks(id: id, occurrences: occurrences)
         }
         for action in immediate { action() }
+        session.armNextContinuousCallback(id: id)
     }
 }
 

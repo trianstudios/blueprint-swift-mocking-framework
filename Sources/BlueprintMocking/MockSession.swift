@@ -174,8 +174,8 @@ public final class MockSession: Sendable {
     }
 
     deinit {
-        let pending = state.withLock { $0.retirePendingCallbacks() }
-        for request in pending where request.timer != nil { request.retire() }
+        let pending = state.withLock { $0.retirePendingContinuousCallbacks() }
+        for request in pending { request.retire() }
     }
 
     public func makeMock() -> MockScope {
@@ -213,8 +213,12 @@ public final class MockSession: Sendable {
         return removed
     }
 
+    func armNextContinuousCallback(id: ScheduledCallbackID) {
+        state.withLock { $0.armNextContinuousCallback(id: id, owner: self) }
+    }
+
     private func makeScheduledCallbackTimer(
-        id: ScheduledCallbackID, until deadline: ContinuousClock.Instant
+        id: ScheduledCallbackID, occurrence: Int, until deadline: ContinuousClock.Instant
     ) -> Task<Void, Never> {
         Task { [weak self] in
             do {
@@ -223,13 +227,15 @@ public final class MockSession: Sendable {
             } catch {
                 return
             }
-            self?.deliverScheduledCallback(id: id)
+            self?.deliverScheduledCallback(id: id, occurrence: occurrence)
         }
     }
 
-    private func deliverScheduledCallback(id: ScheduledCallbackID) {
-        let acquired = state.withLock { $0.acquireContinuousCallback(id: id) }
-        acquired?.publish()
+    private func deliverScheduledCallback(id: ScheduledCallbackID, occurrence: Int) {
+        let delivery = state.withLock { $0.acquireContinuousCallback(id: id, occurrence: occurrence) }
+        guard let acquired = delivery else { return }
+        acquired.publish()
+        armNextContinuousCallback(id: id)
     }
 
     func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
@@ -365,25 +371,17 @@ public final class MockSession: Sendable {
         }
 
         mutating func scheduleCallbacks(
-            id: ScheduledCallbackID, occurrences: [ScheduledCallbackOccurrence], continuousOwner: MockSession?
-        ) throws(CallbackSchedulingError) -> [ScheduledCallbackAction] {
-            if case .continuous = clock {
-                guard continuousOwner != nil, occurrences.count == 1 else { throw .requiresManualClock }
-            }
+            id: ScheduledCallbackID, occurrences: [ScheduledCallbackOccurrence]
+        ) -> [ScheduledCallbackAction] {
             let elapsed = clock.elapsed
             var immediate: [ScheduledCallbackAction] = []
             for (index, occurrence) in occurrences.enumerated() {
                 if occurrence.delay == .zero {
                     immediate.append(occurrence.acquire())
                 } else {
-                    let deadline = elapsed + occurrence.delay
-                    // Install the timer with its request so an early wake cannot race registration.
-                    let timer = clock.continuousInstant(at: deadline).flatMap { instant in
-                        continuousOwner?.makeScheduledCallbackTimer(id: id, until: instant)
-                    }
                     pendingCallbacks.append(PendingCallbackDelivery(
-                        id: id, occurrence: index, deadline: deadline,
-                        acquire: occurrence.acquire, onRetire: occurrence.retire, timer: timer
+                        id: id, occurrence: index, deadline: elapsed + occurrence.delay,
+                        acquire: occurrence.acquire, onRetire: occurrence.retire, timer: nil
                     ))
                 }
             }
@@ -396,11 +394,30 @@ public final class MockSession: Sendable {
             return removed
         }
 
-        fileprivate mutating func acquireContinuousCallback(id: ScheduledCallbackID) -> AcquiredCallbackDeliveries? {
-            let elapsed = clock.elapsed
-            guard let index = pendingCallbacks.firstIndex(where: { $0.id === id && $0.deadline <= elapsed }) else {
-                return nil
+        fileprivate mutating func armNextContinuousCallback(id: ScheduledCallbackID, owner: MockSession) {
+            guard case .continuous(let origin) = clock else { return }
+            let next = pendingCallbacks.indices.lazy.filter { [pendingCallbacks] in
+                pendingCallbacks[$0].id === id
+            }.min {
+                let left = pendingCallbacks[$0]
+                let right = pendingCallbacks[$1]
+                return (left.deadline, left.occurrence) < (right.deadline, right.occurrence)
             }
+            guard let next, pendingCallbacks[next].timer == nil else { return }
+            // Install the sleeper under the gate so a late deadline can wake immediately.
+            let request = pendingCallbacks[next]
+            pendingCallbacks[next].timer = owner.makeScheduledCallbackTimer(
+                id: id, occurrence: request.occurrence, until: origin.advanced(by: request.deadline)
+            )
+        }
+
+        fileprivate mutating func acquireContinuousCallback(
+            id: ScheduledCallbackID, occurrence: Int
+        ) -> AcquiredCallbackDeliveries? {
+            let elapsed = clock.elapsed
+            guard let index = pendingCallbacks.firstIndex(where: {
+                $0.id === id && $0.occurrence == occurrence && $0.timer != nil && $0.deadline <= elapsed
+            }) else { return nil }
             let request = pendingCallbacks.remove(at: index)
             return AcquiredCallbackDeliveries(requests: [request], actions: [request.acquire()])
         }
@@ -410,6 +427,11 @@ public final class MockSession: Sendable {
             let due = pendingCallbacks.filter { $0.deadline <= elapsed }.sorted { $0.deadline < $1.deadline }
             pendingCallbacks.removeAll { $0.deadline <= elapsed }
             return AcquiredCallbackDeliveries(requests: due, actions: due.map { $0.acquire() })
+        }
+
+        fileprivate mutating func retirePendingContinuousCallbacks() -> [PendingCallbackDelivery] {
+            guard case .continuous = clock else { return [] }
+            return retirePendingCallbacks()
         }
 
         fileprivate mutating func retirePendingCallbacks() -> [PendingCallbackDelivery] {

@@ -91,8 +91,8 @@ func GEN016_continuousScheduledCallbackCancellationStaysRetired() throws {
     #expect(receipt.cancel())
     #expect(receipt.outcome == .cancelled)
     #expect(!receipt.cancel())
-    #expect(throws: CallbackSchedulingError.requiresManualClock) {
-        try fixture.capture.scheduleRepeating(29, after: [.seconds(3600)])
+    #expect(throws: CallbackSchedulingError.negativeDelay) {
+        try fixture.capture.scheduleRepeating(29, after: [.zero, .nanoseconds(-1)])
     }
     #expect(receipt.outcome == .cancelled)
     #expect(calls.get().isEmpty)

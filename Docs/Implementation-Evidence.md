@@ -371,7 +371,7 @@ A scheduled delivery receipt is bound to its exact request and owning session. A
 
 The independent SwiftPM consumer checks cancellation before the deadline, while a same-deadline batch is already acquired, and after reset and finish. A reentrant callback cannot cancel an acquired sibling and can cancel a later queued request. The tests use distinct sessions and new captures after reset with matching inputs and delays to show that old receipts have no effect on those requests. Subsequent advances leave completed receipts and invocation counts unchanged. All timing comes from the manual session clock.
 
-One-shot duplicate policies across independent requests, open-ended repetition, child delivery events, continuous-clock repetition, and other actor and effect profiles remain open.
+One-shot duplicate policies across independent requests, open-ended repetition, child delivery events, and other actor and effect profiles remain open.
 
 
 ## Finite callback series on the manual clock
@@ -380,13 +380,19 @@ RUN-010 and RUN-024 now cover repeating a synchronous nonisolated escaping callb
 
 The independent SwiftPM consumer starts at a nonzero elapsed time and proves there are no early calls at the nanosecond boundary. Equal and unsorted offsets produce exactly one typed value per occurrence. A callback cancels future slots while other slots already acquired by the same advance still deliver. An independently scheduled one-shot survives series cancellation. Reentrant reset and finish likewise retire future slots and leave the acquired batch intact. An invalid offset leaves the whole series unscheduled.
 
-Open-ended repeats, continuous-clock repetition, scheduling for other actor and effect profiles, delayed sequence steps, and child delivery events remain open.
+Open-ended repeats, scheduling for other actor and effect profiles, delayed sequence steps, and child delivery events remain open.
 
 
 ## Continuous-clock single callback delivery
 
-RUN-010 and RUN-024 also cover one scheduled synchronous nonisolated escaping callback on a continuous session clock. Positive delays create a monotonic sleeper tied to the exact pending request. At or after the deadline, the sleeper must acquire the closure under the session gate. Cancellation, reset, finish, or session deallocation removes queued requests and cancels their sleepers. Acquired callbacks run outside the gate. Zero delay preserves immediate delivery, and repeats remain manual-only.
+RUN-010 and RUN-024 also cover one scheduled synchronous nonisolated escaping callback on a continuous session clock. Positive delays create a monotonic sleeper tied to the exact pending request. At or after the deadline, the sleeper must acquire the closure under the session gate. Cancellation, reset, finish, or session deallocation removes queued requests and cancels their sleepers. Acquired callbacks run outside the gate. Zero delay preserves immediate delivery.
 
 The independent SwiftPM consumer samples monotonic time before scheduling and confirms the actual callback starts at or after the requested lower bound. The callback attempts cancellation while acquired, then finishes the session and retains its pending receipt until it returns the typed result. Far-future tests retire pending work through cancellation, reset, finish, or session deallocation without waiting for those deadlines. Existing manual-clock tests still cover exact deadlines and finite batches.
 
-Continuous repetition, other actor and effect profiles, one-shot duplicate policies across independent requests, child delivery events, delayed sequence steps, and broader native qualification remain open.
+## Finite callback series on the continuous clock
+
+RUN-010 and RUN-024 also cover a finite series of the same typed synchronous nonisolated callback on a continuous session clock. Offsets use one monotonic registration time. Zero offsets deliver inline. The session arms the earliest positive occurrence and acquires it under the gate at or after the deadline. After that occurrence publishes its outcome outside the gate, the session arms the next one. Equal deadlines follow supplied order within the series, and the receipt always reports outcomes in supplied order.
+
+The independent SwiftPM consumer checks unsorted and equal deadlines against the monotonic registration lower bound. Reentrant cancellation, reset, and finish retire queued siblings at the same deadline while the acquired occurrence completes. A deallocation fixture verifies that every queued occurrence retires, including those still waiting for the first timer. Manual advances still acquire entire due batches. Continuous one-shot tests continue to cover exact-receipt cancellation and lifecycle behavior.
+
+Open-ended repetition, one-shot duplicate policies across independent requests, scheduling for other actor and effect profiles, child delivery events, delayed sequence steps, and broader native qualification remain open.

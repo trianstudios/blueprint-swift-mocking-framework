@@ -1126,7 +1126,12 @@ def main():
                   r"GEN016_continuousScheduledCallbackCancellationStaysRetired\(\) passed",
                   r"GEN016_continuousScheduledCallbackResetRetiresFarFutureDelivery\(\) passed",
                   r"GEN016_continuousScheduledCallbackFinishRetiresFarFutureDelivery\(\) passed",
-                  r"GEN016_continuousScheduledCallbackDoesNotKeepSessionAlive\(\) passed"])
+                  r"GEN016_continuousScheduledCallbackDoesNotKeepSessionAlive\(\) passed",
+                  r"GEN016_continuousRepeatingScheduledCallbackUsesDeadlineAndSuppliedTieOrder\(\) passed",
+                  r"GEN016_continuousRepeatingScheduledCallbackCancelsQueuedTiesFromFirstReplay\(\) passed",
+                  r"GEN016_continuousRepeatingScheduledCallbackResetRetiresQueuedTies\(\) passed",
+                  r"GEN016_continuousRepeatingScheduledCallbackFinishRetiresQueuedTies\(\) passed",
+                  r"GEN016_continuousRepeatingScheduledCallbackDeallocationRetiresEveryReceipt\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     run_swift("typed-throwing-callback-consumer-demo", [

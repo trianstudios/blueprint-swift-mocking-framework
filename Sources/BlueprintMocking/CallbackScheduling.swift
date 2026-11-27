@@ -107,7 +107,8 @@ struct PendingCallbackDelivery: Sendable {
     /// Acquires the closure under the session gate and returns work to do after unlocking.
     let acquire: @Sendable () -> ScheduledCallbackAction
     let onRetire: ScheduledCallbackAction
-    let timer: Task<Void, Never>?
+    // Only the next queued occurrence of a continuous series has a sleeper.
+    var timer: Task<Void, Never>?
 
     func retire() {
         timer?.cancel()
