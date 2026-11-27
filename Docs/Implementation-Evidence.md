@@ -528,7 +528,7 @@ The independent consumer holds a winning call through an exclusive conflict and 
 
 RUN-017 adds immutable factory tables and checked synchronous opt-in. Lookups resolve the exact requested type and carry a bounded ancestry through factory dependencies. The direct registry tests verify independent copies, unregistered domain types, cycle paths, and a depth limit that prevents entering the next factory. The independent SwiftPM consumer uses a protocol adapter and confirms stub and forwarding precedence, a successful registered default without an issue, and safe reentry into session history from the factory.
 
-Two bounded consumer subprocesses exercise unregistered and cyclic default resolution. Each checks the admitted call was recorded as terminated before reporting one precise issue, then verifies process termination with the matching diagnostic. Built-in recipes, recursive generated child identity and broader native qualification remain open.
+Two bounded consumer subprocesses exercise unregistered and cyclic default resolution. Each checks the admitted call was recorded as terminated before reporting one precise issue, then verifies process termination with the matching diagnostic. Generated recursive child identity and broader native qualification remain open.
 
 ## Typed fluent Self witnesses
 
@@ -601,3 +601,7 @@ Swift rejects fixed-arity and mismatched returned pack shapes against the genera
 GEN-040 adds an explicit `UnsafeBufferPointer<UInt8>` adapter helper for synchronous calls. Its default captures count and base-address presence. The caller can request an owned prefix with a nonnegative byte limit. The independent SwiftPM fixture passes a domain-owned copyable value to a normal generated mock. It verifies cases above, at and below the limit, metadata-only and empty cases, and retained values after overwriting and releasing the original buffer.
 
 The selected Swift compiler rejects an attempted deferred raw address capture in the generated `@Sendable` answer. The configured and standalone generators produce matching ordinary snapshot witnesses. Direct raw-buffer generation rejects the selected protocol and preserves existing output. Broader pointer shapes, ownership policies and native qualification remain open.
+
+## Explicit primitive and empty-container default recipes
+
+RUN-017 adds an opt-in preset for `Bool`, `Int` and `String` and exact typed recipes for nil optionals and empty arrays, dictionaries and sets. Each recipe uses the existing immutable registry, so replacement affects only the returned registry. A recipe for a container leaves its element or value type unregistered. Registry tests verify exact lookups, prior copies and explicit overrides. The independent SwiftPM consumer checks a stub hit, an empty dictionary, a typed nil and an unregistered underlying domain model. The existing fatal unregistered and cyclic lookups still exercise the consumer executable. Recursive generated child identity and broader native qualification remain open.
