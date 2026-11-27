@@ -12,14 +12,25 @@ public enum BlueprintRuntimeSchemaV1 {
     }
 }
 
-/// The process-local identity and readable diagnostic name of a concrete type argument.
+/// The process-local identity and readable diagnostic name of concrete generic arguments.
 public struct EndpointSpecialization: Sendable, Equatable {
+    private enum Identity: Sendable, Equatable {
+        case scalar(ObjectIdentifier)
+        case pack([ObjectIdentifier])
+    }
+
     public let typeName: String
-    private let typeIdentity: ObjectIdentifier
+    private let typeIdentity: Identity
 
     fileprivate init<Argument>(_ type: Argument.Type) {
         self.typeName = String(reflecting: type)
-        self.typeIdentity = ObjectIdentifier(type)
+        self.typeIdentity = .scalar(ObjectIdentifier(type))
+    }
+
+    fileprivate init(pack types: [Any.Type]) {
+        let names = types.map { String(reflecting: $0) }
+        self.typeName = "pack(" + names.joined(separator: ", ") + ")"
+        self.typeIdentity = .pack(types.map { ObjectIdentifier($0) })
     }
 }
 
@@ -36,6 +47,13 @@ public struct EndpointID: Sendable, Equatable {
     public init<Argument>(_ rawValue: String, specializedFor type: Argument.Type) {
         self.rawValue = rawValue
         self.specialization = EndpointSpecialization(type)
+    }
+
+    /// Keeps each element's process-local identity and the order and length of the pack.
+    /// Even an empty pack is a specialization distinct from a scalar or unspecialized endpoint.
+    public init(_ rawValue: String, specializedForPack types: [Any.Type]) {
+        self.rawValue = rawValue
+        self.specialization = EndpointSpecialization(pack: types)
     }
 
     var diagnosticName: String {

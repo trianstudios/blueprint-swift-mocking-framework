@@ -589,3 +589,9 @@ Swift SIL checks reject replay of a captured move-only value and erasure to `Any
 GEN-034 and RUN-023 cover one direct nonthrowing async round trip with `sending` on both the input and result. The typed `@Sendable` answer preserves the transfer annotations. Synchronous projections produce `Int` metadata outside the admission gate. Only projected values enter history. The independent SwiftPM case sends two non-Sendable packets through distinct caller and provider actors, checks pending result history during reentry, and reads fresh returned results and their paired integer snapshots.
 
 Swift SIL checks reject retaining an actor-stored input alias, using a packet after transfer, retaining a returned alias, and closing over a fixed non-Sendable result in the stored answer. Standalone and configured witnesses agree. Input-only, result-only, throwing and nonfinal variants preserve both configured files on rejection. Broader signatures, release profiles and native qualification remain open.
+
+## Typed single value-pack providers
+
+GEN-021 adds a standalone checked provider for one synchronous nonthrowing Sendable value pack and the same result shape. The witness repeats the original typed arguments directly. The session records lifecycle metadata and a process-local ordered vector of element type identities. Scalar and pack identities are distinct. The independent SwiftPM fixture covers zero, one and heterogeneous many arguments, an unseen custom type, a tuple argument versus its component types, and one `Void` argument versus the empty pack.
+
+Swift rejects fixed-arity and mismatched returned pack shapes against the generated provider protocol. Six unsupported generation shapes preserve output bytes and timestamp. The existing scalar provider regenerates byte-for-byte. Concrete pack stubs, multiple packs, type-level nominal packs and broader native qualification remain open.

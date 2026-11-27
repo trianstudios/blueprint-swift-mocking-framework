@@ -91,6 +91,14 @@ public struct MockScope: Sendable {
         invokeProvider(EndpointID(declaration, specializedFor: type), reporter: reporter, source: source, answer)
     }
 
+    /// Records a nonescaping pack provider call with ordered type metadata and no retained values.
+    public func invokePackProvider<Output: Sendable>(
+        of declaration: String, types: [Any.Type], reporter: FailureReporter, source: SourceLocation,
+        _ answer: () -> Output
+    ) -> Output {
+        invokeProvider(EndpointID(declaration, specializedForPack: types), reporter: reporter, source: source, answer)
+    }
+
     /// Executes a nonescaping rethrows provider and records the terminal outcome.
     public func invokeRethrowsProvider<Output: Sendable>(
         of declaration: String, reporter: FailureReporter, source: SourceLocation,

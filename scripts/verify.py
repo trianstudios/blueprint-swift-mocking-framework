@@ -771,6 +771,13 @@ def main():
     provider = ("transform(_:)",)
     run("generic-provider-generation", generate(
         tool, provider_source, provider_generated, "GenericProviderDirectory", generic_providers=provider))
+    run("pack-provider-generation", [
+        sys.executable, ROOT / "scripts/verify_pack_generation.py", "--tool", tool,
+        "--evidence-dir", EVIDENCE / "pack-provider"],
+        patterns=[r"PASS: pack provider generation is repeatable and rejects unsupported shapes before publication"])
+    built_pack = ROOT / "Fixtures/ProtocolConsumer/Sources/ConsumerDoubles/PackProviderDirectoryMock.swift"
+    if built_pack.read_bytes() != (EVIDENCE / "pack-provider/PackProviderDirectoryMock.swift").read_bytes():
+        raise ValueError("The committed SwiftPM pack fixture differs from standalone generation")
     provider_rejected = temp / "RejectedGenericProvider.swift"
     provider_rejected.write_bytes(b"// preserve existing provider output\n")
     provider_baseline = (provider_rejected.read_bytes(), provider_rejected.stat().st_mtime_ns)
@@ -1719,6 +1726,7 @@ def main():
                   r"RUN015_closedOverlayRejectsPendingCompletionOnItsPinnedScenario\(\) passed",
                   r"RUN015_detachedCompletionAndReusablePlanPreserveIndependentCursors\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
+                  r"GEN021_generatedPackProviderPreservesTypedArgumentsAndIdentity\(\) passed",
                   r"GEN034_generatedSendingWitnessTransfersBothDirectionsAndRetainsOnlySnapshots\(\) passed",
                   r"GEN033_generatedFactoryYieldsIndependentlyOwnedResults\(\) passed",
                   r"GEN032_generatedConsumingInputProjectsBorrowAndDestroysOnce\(\) passed",
@@ -1910,6 +1918,8 @@ def main():
         "OwnedResultCapturedReplay": r"noncopyable 'previous' cannot be consumed when captured by an escaping closure",
         "OwnedResultErasure": r"return expression of type 'FreshOwnedTicket' does not conform to 'Copyable'",
         "OwnedResultFixedReturn": r"has no member 'willReturn'",
+        "PackProviderFixedArity": r"type 'FixedArityPackProvider' does not conform to protocol 'PackProviderDirectoryMockBehavior'",
+        "PackProviderWrongResultShape": r"type 'WrongResultPackProvider' does not conform to protocol 'PackProviderDirectoryMockBehavior'",
         "SendingRetainedInput": r"sending 'input' risks causing data races",
         "SendingUseAfterTransfer": r"sending 'packet' risks causing data races",
         "SendingRetainedResult": r"sending 'result' risks causing data races",

@@ -240,6 +240,7 @@ struct GenericWitness {
     let outputType: String
     let usesGenericResult: Bool
     let origin: ProtocolSourceOrigin
+    var isPack = false
 
     var descriptorName: String {
         switch kind {
@@ -251,20 +252,28 @@ struct GenericWitness {
     var selector: String { "\(descriptorName)(\(label):)" }
 
     var genericClause: String {
-        constraints.isEmpty ? "<__BlueprintKey>" : "<__BlueprintKey: \(constraints.joined(separator: " & "))>"
+        let key = isPack ? "each __BlueprintKey" : "__BlueprintKey"
+        return constraints.isEmpty ? "<\(key)>" : "<\(key): \(constraints.joined(separator: " & "))>"
     }
 
     var endpoint: String {
         let constraintClause = constraints.isEmpty ? "T" : "T:" + constraints.joined(separator: "&")
+        if isPack { return "\(descriptorName)<each \(constraintClause)>(\(label):repeat each T)" }
         switch kind {
         case .method(let name): return "\(name)<\(constraintClause)>(\(label):T)"
         case .subscriptGetter: return "subscript<\(constraintClause)>(\(label):T).get"
         }
     }
 
-    var resultIdentity: String { usesGenericResult ? "T" : outputType }
+    var resultIdentity: String {
+        if isPack { return "(repeat each T)" }
+        return usesGenericResult ? "T" : outputType
+    }
 
     var signature: String {
+        if isPack {
+            return "func \(descriptorName)\(genericClause)(\(label) input: repeat each __BlueprintKey) -> (repeat each __BlueprintKey)"
+        }
         let result = usesGenericResult ? "__BlueprintKey" : outputType
         let shape = "\(genericClause)(\(label) input: __BlueprintKey) -> \(result)"
         switch kind {
@@ -1144,7 +1153,46 @@ func generate(
     }
 
     var genericMethods: [(declaration: GenericWitness, node: FunctionDeclSyntax)] = []
+    func collectPackMethod(_ fn: FunctionDeclSyntax, key: GenericParameterSyntax, isDirect: Bool) throws {
+        let unsupported = "Pack providers require one direct synchronous nonthrowing Sendable value pack " +
+            "with an unlabeled parameter and the original pack as a tuple result"
+        let parameters = fn.signature.parameterClause.parameters
+        let name = key.name.text
+        guard isDirect, isolation == .sendable, !spy, !hasBindings, projections.isEmpty,
+              variadicForwarding.isEmpty, fn.attributes.isEmpty, fn.genericWhereClause == nil,
+              fn.signature.effectSpecifiers == nil, fn.genericParameterClause?.parameters.count == 1,
+              key.attributes.isEmpty, simple(name), let bound = key.inheritedType,
+              parameters.count == 1, let parameter = parameters.first, parameter.firstName.text == "_",
+              parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+              parameter.ellipsis == nil, parameter.defaultValue == nil,
+              parameter.type.tokens(viewMode: .sourceAccurate).map(\.text) == ["repeat", "each", name],
+              let result = fn.signature.returnClause?.type,
+              result.tokens(viewMode: .sourceAccurate).map(\.text) == ["(", "repeat", "each", name, ")"] else {
+            try reject(fn, unsupported)
+        }
+        try index.requireUnshadowedQualifier("Swift", at: fn)
+        switch bound.tokens(viewMode: .sourceAccurate).map(\.text) {
+        case ["Sendable"]:
+            guard name != "Sendable" else { try reject(bound, unsupported) }
+            try index.requireUnshadowedQualifier("Sendable", at: bound)
+        case ["Swift", ".", "Sendable"]:
+            guard name != "Swift" else { try reject(bound, unsupported) }
+        default:
+            try reject(bound, "Pack providers require an inline Sendable element constraint")
+        }
+        let declaration = GenericWitness(
+            kind: .method(fn.name.text), label: "_", constraints: ["Swift.Sendable"], outputType: name,
+            usesGenericResult: true, origin: index.origin(of: fn), isPack: true
+        )
+        genericMethods.append((declaration, fn))
+    }
+
     func collectGenericMethod(_ fn: FunctionDeclSyntax, isDirect: Bool) throws {
+        if let key = fn.genericParameterClause?.parameters.first,
+           let first = key.firstToken(viewMode: .sourceAccurate), first.id != key.name.id, first.text == "each" {
+            try collectPackMethod(fn, key: key, isDirect: isDirect)
+            return
+        }
         let parameters = fn.signature.parameterClause.parameters
         guard isDirect, isolation == .sendable, !spy, !hasBindings,
               projections.isEmpty, variadicForwarding.isEmpty,
@@ -1617,6 +1665,9 @@ func generate(
         guard candidates.count == 1 else {
             try reject(entry.node, "Ambiguous generic method selector '\(selector)'. Use distinct argument labels.")
         }
+        guard !entry.declaration.isPack else {
+            try reject(entry.node, "Value pack methods require --generic-provider; finite pack specializations are unsupported")
+        }
         let spelling = option.type.trimmingCharacters(in: .whitespaces)
         let type: String
         switch spelling {
@@ -1650,6 +1701,9 @@ func generate(
         .sorted { $0.selector < $1.selector }
     for (declaration, node) in genericMethods {
         if providerSelectors.contains(declaration.selector) { continue }
+        if declaration.isPack {
+            try reject(node, "Value pack methods require --generic-provider '\(declaration.selector)'")
+        }
         guard let types = methodTypes[declaration.selector] else {
             try reject(node, "Generic methods require explicit specialization for '\(declaration.selector)' using --specialize-method or genericMethodSpecializations, or a --generic-provider")
         }
@@ -2323,14 +2377,24 @@ func generate(
             continue
         }
     }
+    func providerIdentity(_ provider: GenericWitness) -> String {
+        endpointIdentity(provider.endpoint, effect: "", result: provider.resultIdentity)
+    }
     for provider in providerMethods {
-        let effect = Effect(isAsync: false, failure: nil)
-        let identity = endpointIdentity(provider.endpoint, effect: effect.declaration, result: provider.resultIdentity)
+        let identity = String(reflecting: providerIdentity(provider))
         let label = provider.label == "_" ? "" : provider.label + ": "
         output += "\n    public \(provider.signature) {\n"
-        output += "        __scope.invokeGenericProvider(of: \(String(reflecting: identity)), for: __BlueprintKey.self,\n"
-        output += "                                      reporter: __failureReporter, source: \(location(provider.origin))) {\n"
-        output += "            __genericBehavior.\(provider.descriptorName)(\(label)input)\n"
+        if provider.isPack {
+            output += "        var types: [Any.Type] = []\n"
+            output += "        repeat types.append((each __BlueprintKey).self)\n"
+            output += "        return __scope.invokePackProvider(of: \(identity), types: types,\n"
+            output += "                                          reporter: __failureReporter, source: \(location(provider.origin))) {\n"
+            output += "            __genericBehavior.\(provider.descriptorName)(repeat each input)\n"
+        } else {
+            output += "        __scope.invokeGenericProvider(of: \(identity), for: __BlueprintKey.self,\n"
+            output += "                                      reporter: __failureReporter, source: \(location(provider.origin))) {\n"
+            output += "            __genericBehavior.\(provider.descriptorName)(\(label)input)\n"
+        }
         output += "        }\n    }\n"
     }
     func rethrowsIdentity(_ provider: RethrowsRequirement) -> String {
@@ -2359,7 +2423,8 @@ func generate(
                 nil
             }
             return (id: member.identity, specialization: specialization, origin: member.origin)
-        } + rethrowsMethods.map { (id: rethrowsIdentity($0), specialization: nil, origin: $0.origin) }
+        } + providerMethods.filter(\.isPack).map { (id: providerIdentity($0), specialization: nil, origin: $0.origin) }
+            + rethrowsMethods.map { (id: rethrowsIdentity($0), specialization: nil, origin: $0.origin) }
     )
 }
 
