@@ -1116,7 +1116,12 @@ def main():
                   r"GEN016_scheduledCallbackCancellationCannotChangeAnAcquiredDelivery\(\) passed",
                   r"GEN016_scheduledCallbackCancellationRejectsFinishedReceipt\(\) passed",
                   r"GEN016_scheduledCallbackCancellationKeepsSessionsIndependent\(\) passed",
-                  r"GEN016_scheduledCallbackCancellationKeepsEpochsIndependent\(\) passed"])
+                  r"GEN016_scheduledCallbackCancellationKeepsEpochsIndependent\(\) passed",
+                  r"GEN016_repeatingScheduledCallbackPreservesSuppliedOrderAndExactDeadlines\(\) passed",
+                  r"GEN016_repeatingScheduledCallbackCancellationKeepsAcquiredSiblings\(\) passed",
+                  r"GEN016_repeatingScheduledCallbackRejectsInvalidOffsetsAtomically\(\) passed",
+                  r"GEN016_repeatingScheduledCallbackResetRetiresFutureOnly\(\) passed",
+                  r"GEN016_repeatingScheduledCallbackFinishRetiresFutureOnly\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     run_swift("typed-throwing-callback-consumer-demo", [

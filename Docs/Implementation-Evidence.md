@@ -362,7 +362,7 @@ RUN-010 and RUN-024 now have a manual-clock scheduling path for a captured nonis
 
 The independent SwiftPM consumer schedules against a nonzero clock reading. It checks the state one nanosecond before and at the deadline, then advances again and verifies the callback ran exactly once. Separate reset and finish tests check that pending receipts become unavailable, subsequent clock advances cannot invoke the callbacks, and stale handles reject registration. A same-deadline test reenters reset from the first acquired callback and verifies that the other acquired callback still runs while a later request retires. The tests use explicit advances and preserve ordinary call history apart from the reset they request.
 
-Continuous-clock scheduling, repeated delivery policies, child delivery events, other actor and effect profiles, and delayed sequence steps remain open.
+Continuous-clock scheduling, broader repetition policies, child delivery events, other actor and effect profiles, and delayed sequence steps remain open.
 
 
 ## Cancelling a pending manual-clock callback
@@ -371,4 +371,13 @@ A scheduled delivery receipt is bound to its exact request and owning session. A
 
 The independent SwiftPM consumer checks cancellation before the deadline, while a same-deadline batch is already acquired, and after reset and finish. A reentrant callback cannot cancel an acquired sibling and can cancel a later queued request. The tests use distinct sessions and new captures after reset with matching inputs and delays to show that old receipts have no effect on those requests. Subsequent advances leave completed receipts and invocation counts unchanged. All timing comes from the manual session clock.
 
-One-shot duplicate policies across independent requests, repeated delivery, child delivery events, continuous-clock scheduling, and other actor and effect profiles remain open.
+One-shot duplicate policies across independent requests, open-ended repetition, child delivery events, continuous-clock scheduling, and other actor and effect profiles remain open.
+
+
+## Finite callback series on the manual clock
+
+RUN-010 and RUN-024 now cover repeating a synchronous nonisolated escaping callback with the same typed input at a finite list of supplied delays. Registration validates all delays before enqueuing the series against a single manual clock reading. Empty lists schedule nothing. Zero delays run immediately outside the lock. The receipt preserves the supplied order for outcomes while a clock advance executes each acquired batch in deadline order.
+
+The independent SwiftPM consumer starts at a nonzero elapsed time and proves there are no early calls at the nanosecond boundary. Equal and unsorted offsets produce exactly one typed value per occurrence. A callback cancels future slots while other slots already acquired by the same advance still deliver. An independently scheduled one-shot survives series cancellation. Reentrant reset and finish likewise retire future slots and leave the acquired batch intact. An invalid offset leaves the whole series unscheduled.
+
+Open-ended repeats, continuous-clock scheduling, scheduling for other actor and effect profiles, delayed sequence steps, and child delivery events remain open.

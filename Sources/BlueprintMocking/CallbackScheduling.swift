@@ -18,17 +18,17 @@ public enum ScheduledCallbackOutcome<Output: Sendable>: Sendable {
 
 extension ScheduledCallbackOutcome: Equatable where Output: Equatable {}
 
+private struct WeakCallbackSession: Sendable {
+    weak var value: MockSession?
+}
+
 /// A receipt for a scheduled callback. Reading it does not run or reschedule the callback.
 public final class ScheduledCallbackDelivery<Output: Sendable>: Sendable {
-    private struct WeakSession: Sendable {
-        weak var value: MockSession?
-    }
-
-    private let owner: WeakSession
+    private let owner: WeakCallbackSession
     private let state = CriticalState<ScheduledCallbackOutcome<Output>>(.pending)
 
     init(session: MockSession) {
-        owner = WeakSession(value: session)
+        owner = WeakCallbackSession(value: session)
     }
 
     public var outcome: ScheduledCallbackOutcome<Output> {
@@ -39,12 +39,11 @@ public final class ScheduledCallbackDelivery<Output: Sendable>: Sendable {
     /// Returns false if the request is no longer queued, including after acquisition.
     @discardableResult
     public func cancel() -> Bool {
-        guard let request = owner.value?.removeScheduledCallback(id: ObjectIdentifier(self)) else {
-            return false
-        }
+        guard let requests = owner.value?.removeScheduledCallbacks(id: ObjectIdentifier(self)),
+              !requests.isEmpty else { return false }
         resolve(.cancelled)
         // Release the removed request's captured input outside the session gate.
-        withExtendedLifetime(request) {}
+        withExtendedLifetime(requests) {}
         return true
     }
 
@@ -53,11 +52,53 @@ public final class ScheduledCallbackDelivery<Output: Sendable>: Sendable {
     }
 }
 
+/// The receipt for a finite series of invocations of the same captured callback.
+public final class ScheduledCallbackSeries<Output: Sendable>: Sendable {
+    private let owner: WeakCallbackSession
+    private let state: CriticalState<[ScheduledCallbackOutcome<Output>]>
+
+    init(session: MockSession, count: Int) {
+        owner = WeakCallbackSession(value: session)
+        state = CriticalState(Array(repeating: .pending, count: count))
+    }
+
+    /// A snapshot of the outcomes in the order in which the caller supplied the delays.
+    public var outcomes: [ScheduledCallbackOutcome<Output>] {
+        state.withLock { $0 }
+    }
+
+    /// Cancels the still-queued occurrences in one transaction and returns their count.
+    /// Acquired occurrences can finish even if their outcomes are still pending.
+    @discardableResult
+    public func cancelPending() -> Int {
+        guard let requests = owner.value?.removeScheduledCallbacks(id: ObjectIdentifier(self)),
+              !requests.isEmpty else { return 0 }
+        state.withLock { outcomes in
+            for request in requests {
+                outcomes[request.occurrence] = .cancelled
+            }
+        }
+        withExtendedLifetime(requests) {}
+        return requests.count
+    }
+
+    func resolve(_ outcome: ScheduledCallbackOutcome<Output>, at occurrence: Int) {
+        state.withLock { $0[occurrence] = outcome }
+    }
+}
+
 typealias ScheduledCallbackAction = @Sendable () -> Void
+
+struct ScheduledCallbackOccurrence: Sendable {
+    let delay: Duration
+    let acquire: @Sendable () -> ScheduledCallbackAction
+    let retire: ScheduledCallbackAction
+}
 
 struct PendingCallbackDelivery: Sendable {
     // The acquire and retire actions keep this receipt alive while the request is queued.
     let id: ObjectIdentifier
+    let occurrence: Int
     let deadline: Duration
     /// Acquires the closure under the session gate and returns work to do after unlocking.
     let acquire: @Sendable () -> ScheduledCallbackAction

@@ -131,31 +131,60 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
     ) throws(CallbackSchedulingError) -> ScheduledCallbackDelivery<Output> {
         guard delay >= .zero else { throw .negativeDelay }
         guard let storage else { throw .unavailable }
-        defer { withExtendedLifetime(storage) {} }
-
         let delivery = ScheduledCallbackDelivery<Output>(session: storage.session)
-        let acquire: @Sendable () -> ScheduledCallbackAction = { [weak storage, invocation] in
+        let occurrence = scheduledOccurrence(input, after: delay) { delivery.resolve($0) }
+        try registerScheduledCallbacks([occurrence], id: ObjectIdentifier(delivery), storage: storage)
+        return delivery
+    }
+
+    /// Schedules a finite series of invocations on the capture's manual session clock.
+    /// All delays are relative to the same registration time. Zero delays deliver
+    /// immediately. An empty list schedules no work.
+    @discardableResult
+    public func scheduleRepeating(
+        _ input: Input, after delays: [Duration]
+    ) throws(CallbackSchedulingError) -> ScheduledCallbackSeries<Output> {
+        guard !delays.contains(where: { $0 < .zero }) else { throw .negativeDelay }
+        guard let storage else { throw .unavailable }
+        let series = ScheduledCallbackSeries<Output>(session: storage.session, count: delays.count)
+        let occurrences = delays.enumerated().map { index, delay in
+            scheduledOccurrence(input, after: delay) { series.resolve($0, at: index) }
+        }
+        try registerScheduledCallbacks(occurrences, id: ObjectIdentifier(series), storage: storage)
+        return series
+    }
+
+    private func scheduledOccurrence(
+        _ input: Input, after delay: Duration,
+        resolve: @escaping @Sendable (ScheduledCallbackOutcome<Output>) -> Void
+    ) -> ScheduledCallbackOccurrence {
+        ScheduledCallbackOccurrence(delay: delay, acquire: { [weak storage, invocation] in
             let owner = storage
             let callback = owner?.storedCallback(for: invocation)
             return {
                 // Keep an upgraded weak owner alive until this action leaves the session gate.
                 defer { withExtendedLifetime(owner) {} }
                 if let callback {
-                    delivery.resolve(.delivered(callback(input)))
+                    resolve(.delivered(callback(input)))
                 } else {
-                    delivery.resolve(.unavailable)
+                    resolve(.unavailable)
                 }
             }
-        }
+        }, retire: { resolve(.unavailable) })
+    }
+
+    private func registerScheduledCallbacks(
+        _ occurrences: [ScheduledCallbackOccurrence],
+        id: ObjectIdentifier,
+        storage: CallbackCaptureStorage<NonisolatedCallback<Input, Output>>
+    ) throws(CallbackSchedulingError) {
+        defer { withExtendedLifetime(storage) {} }
         let immediate = try storage.session.withLock { state throws(CallbackSchedulingError) in
             guard !state.isFinished, state.epoch == invocation.epoch,
                   storage.storedCallback(for: invocation) != nil else { throw .unavailable }
-            return try state.scheduleCallback(id: ObjectIdentifier(delivery), after: delay, acquire: acquire) {
-                delivery.resolve(.unavailable)
-            }
+            return try state.scheduleCallbacks(id: id, occurrences: occurrences)
         }
-        immediate?()
-        return delivery
+        for action in immediate { action() }
     }
 }
 

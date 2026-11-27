@@ -202,8 +202,8 @@ public final class MockSession: Sendable {
         callbacks.publish()
     }
 
-    func removeScheduledCallback(id: ObjectIdentifier) -> PendingCallbackDelivery? {
-        state.withLock { $0.removeScheduledCallback(id: id) }
+    func removeScheduledCallbacks(id: ObjectIdentifier) -> [PendingCallbackDelivery] {
+        state.withLock { $0.removeScheduledCallbacks(id: id) }
     }
 
     func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
@@ -338,23 +338,28 @@ public final class MockSession: Sendable {
             try clock.advance(by: duration)
         }
 
-        mutating func scheduleCallback(
-            id: ObjectIdentifier,
-            after delay: Duration,
-            acquire: @escaping @Sendable () -> ScheduledCallbackAction,
-            retire: @escaping ScheduledCallbackAction
-        ) throws(CallbackSchedulingError) -> ScheduledCallbackAction? {
+        mutating func scheduleCallbacks(
+            id: ObjectIdentifier, occurrences: [ScheduledCallbackOccurrence]
+        ) throws(CallbackSchedulingError) -> [ScheduledCallbackAction] {
             guard case .manual(let elapsed) = clock else { throw .requiresManualClock }
-            if delay == .zero { return acquire() }
-            pendingCallbacks.append(PendingCallbackDelivery(
-                id: id, deadline: elapsed + delay, acquire: acquire, retire: retire
-            ))
-            return nil
+            var immediate: [ScheduledCallbackAction] = []
+            for (index, occurrence) in occurrences.enumerated() {
+                if occurrence.delay == .zero {
+                    immediate.append(occurrence.acquire())
+                } else {
+                    pendingCallbacks.append(PendingCallbackDelivery(
+                        id: id, occurrence: index, deadline: elapsed + occurrence.delay,
+                        acquire: occurrence.acquire, retire: occurrence.retire
+                    ))
+                }
+            }
+            return immediate
         }
 
-        fileprivate mutating func removeScheduledCallback(id: ObjectIdentifier) -> PendingCallbackDelivery? {
-            guard let index = pendingCallbacks.firstIndex(where: { $0.id == id }) else { return nil }
-            return pendingCallbacks.remove(at: index)
+        fileprivate mutating func removeScheduledCallbacks(id: ObjectIdentifier) -> [PendingCallbackDelivery] {
+            let removed = pendingCallbacks.filter { $0.id == id }
+            pendingCallbacks.removeAll { $0.id == id }
+            return removed
         }
 
         fileprivate mutating func acquireDueCallbacks() -> AcquiredCallbackDeliveries {
