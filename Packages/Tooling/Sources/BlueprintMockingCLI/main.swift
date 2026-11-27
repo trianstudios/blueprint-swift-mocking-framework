@@ -1482,7 +1482,7 @@ func generate(
         rethrowsMethods.append(requirement)
     }
 
-    var constructor: (origin: ProtocolSourceOrigin, failure: String?, isFailable: Bool, isAsync: Bool)?
+    var constructor: (origin: ProtocolSourceOrigin, failure: FailureEffect?, isFailable: Bool, isAsync: Bool)?
     for (declarationID, item) in activeMembers.flatMap({ entry in entry.items.map { (entry.declarationID, $0) } }) {
         if let initializer = item.decl.as(InitializerDeclSyntax.self) {
             let parameters = initializer.signature.parameterClause.parameters
@@ -1490,7 +1490,7 @@ func generate(
             let isFailable = initializer.optionalMark?.text == "?"
             let isAsync = effects?.asyncSpecifier?.text == "async"
             let message = "Construction scopes support one ordinary direct Sendable init(seed: Int), init?(seed: Int), "
-                + "init(seed: Int) async, or synchronous or async init(seed: Int) throws(PublicError) without other generation modes"
+                + "init(seed: Int) async, init(seed: Int) throws, or init(seed: Int) [async] throws(PublicError) without other generation modes"
             guard constructor == nil, declarationID == proto.id, declarations.count == 1,
                   isolation == .sendable, !fromTextualInterface, !hasBindings, !spy, !specializesGenerics,
                   projections.isEmpty, variadicForwarding.isEmpty, scopedRuleSelectors.isEmpty,
@@ -1508,13 +1508,19 @@ func generate(
             try index.requireUnshadowedQualifier("Swift", at: initializer)
             try index.requireUnshadowedQualifier("BlueprintMocking", at: initializer)
             if parameter.type.trimmedDescription == "Int" { try index.requireUnshadowedQualifier("Int", at: parameter.type) }
-            var failure: String?
+            var failure: FailureEffect?
             if let clause = effects?.throwsClause {
-                guard clause.throwsSpecifier.text == "throws", let type = clause.type?.as(IdentifierTypeSyntax.self),
-                      type.genericArgumentClause == nil else { try reject(initializer, message) }
-                try index.requireConstructionFailureEnum(named: type.name.text, at: type)
-                try index.requireUnshadowedQualifier(module, at: type)
-                failure = "\(module).\(type.name.text)"
+                guard clause.throwsSpecifier.text == "throws" else { try reject(initializer, message) }
+                if let syntax = clause.type {
+                    guard let type = syntax.as(IdentifierTypeSyntax.self),
+                          type.genericArgumentClause == nil else { try reject(initializer, message) }
+                    try index.requireConstructionFailureEnum(named: type.name.text, at: type)
+                    try index.requireUnshadowedQualifier(module, at: type)
+                    failure = .typed("\(module).\(type.name.text)")
+                } else {
+                    guard !isAsync else { try reject(initializer, message) }
+                    failure = .ordinary
+                }
             }
             constructor = (index.origin(of: initializer), failure, isFailable, isAsync)
             continue
@@ -2550,7 +2556,7 @@ func generate(
     }
     output += "    }\n"
     let asyncConstructionEffect = constructor?.isAsync == true ? " async" : ""
-    let constructorEffect = asyncConstructionEffect + (constructor?.failure.map { " throws(\($0))" } ?? "")
+    let constructorEffect = asyncConstructionEffect + (constructor?.failure?.declaration ?? "")
     let optionalMark = constructor?.isFailable == true ? "?" : ""
     let constructorIdentity = endpointIdentity("init\(optionalMark)(seed:Swift.Int)", effect: constructorEffect,
                                                result: "Self\(optionalMark)")
@@ -2560,15 +2566,18 @@ func generate(
         let fileID = String(reflecting: origin.module + "/" + origin.fileName)
         let source = "SourceLocation(fileID: \(fileID), filePath: \(file), line: \(origin.line), column: \(origin.column))"
         let configuredResult = constructor.isFailable ? "BlueprintMocking.FailableConstructionDecision" : "Swift.Void"
-        let configureResult = constructor.failure.map { "Swift.Result<Swift.Void, \($0)>" } ?? configuredResult
+        let ordinaryThrowing = constructor.failure?.isOrdinary == true
+        let failureType = constructor.failure.map { ordinaryThrowing ? "any Swift.Error" : $0.type }
+        let configureResult = failureType.map { "Swift.Result<Swift.Void, \($0)>" } ?? configuredResult
         let scopeSetup: String
-        if let failure = constructor.failure {
+        if let failure = failureType {
             let prepare = constructor.isAsync ? "try await" : "try"
+            let doClause = ordinaryThrowing ? "do" : "do throws(\(failure))"
             scopeSetup = """
             return ConstructionScope(
                 __scope: session.makeEpochBoundMock(), __reporter: failureReporter,
                 __configure: { seed, stubs in
-                    do throws(\(failure)) {
+                    \(doClause) {
                         \(prepare) configure(seed, stubs)
                         return .success(())
                     } catch {
@@ -2600,7 +2609,9 @@ func generate(
                 attempt.complete()
                 """.replacingOccurrences(of: "\n", with: "\n        ")
             } else {
-                let admission = constructor.isFailable ? "beginFailableConstruction" : "beginThrowingConstruction"
+                let admission = constructor.isFailable ? "beginFailableConstruction" :
+                    (ordinaryThrowing ? "beginOrdinaryThrowingConstruction" : "beginThrowingConstruction")
+                let effectPrefix = ordinaryThrowing ? "try " : ""
                 let success = constructor.isFailable ? "initialize" : "success"
                 let decline = constructor.isFailable
                     ? "case .returnNil:\n    attempt.recordNil()\n    return nil"
@@ -2617,7 +2628,7 @@ func generate(
                     settlement = "switch construction.__configure(seed, stubs) {"
                 }
                 witness = """
-                let attempt = construction.__scope.\(admission)(
+                let attempt = \(effectPrefix)construction.__scope.\(admission)(
                     of: endpoint, reporter: construction.__reporter, source: source
                 )
                 let stubs = Stubs(\(stubs))
@@ -2641,6 +2652,9 @@ func generate(
             attempt.complete()
             """.replacingOccurrences(of: "\n", with: "\n        ")
         }
+        let missingScope = ordinaryThrowing
+            ? "throw \(GeneratedContract.runtimeMarker).reportMissingTypeScopeError(endpoint, source: source)"
+            : "fatalError(\(GeneratedContract.runtimeMarker).reportMissingTypeScope(endpoint, source: source))"
         output += """
 
             @TaskLocal private static var __constructionScope: ConstructionScope?
@@ -2687,7 +2701,7 @@ func generate(
                 let endpoint = EndpointID(\(String(reflecting: constructorIdentity)))
                 let source = \(source)
                 guard let construction = Self.__constructionScope else {
-                    fatalError(\(GeneratedContract.runtimeMarker).reportMissingTypeScope(endpoint, source: source))
+                    \(missingScope)
                 }
                 \(witness)
             }

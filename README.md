@@ -413,6 +413,8 @@ A direct checked `Sendable` protocol can declare one ordinary `init(seed: Int)` 
 
 The same construction scope supports one synchronous `init(seed: Int) throws(Failure)` requirement when `Failure` is a public same-module enum that directly conforms to `Error`. The setup closure throws that declared type. Failed attempts record a thrown phase and allocate no instance identity. Success records the new instance in the terminal event's `constructedMockID`. [Typed constructor consumer](Fixtures/TypedConstructionConsumer/IndependentConsumer.swift)
 
+A direct synchronous `init(seed: Int) throws` accepts any Swift error from the setup closure and preserves its payload. Setup failure records the attempt and allocates no instance. A missing, stale or finished scope reports the existing diagnostic and throws `UnexpectedInvocationError` before admission. [Ordinary throwing constructor consumer](Fixtures/TypedConstructionConsumer/OrdinaryThrowingIndependentConsumer.swift)
+
 For one direct synchronous `init?(seed: Int)`, the setup closure returns `FailableConstructionDecision.initialize` or `.returnNil`. A configured nil completes the attempt with no instance link. The successful terminal records the initialized mock's ID. [Failable constructor consumer](Fixtures/TypedConstructionConsumer/FailableIndependentConsumer.swift)
 
 For one direct nonthrowing `init(seed: Int) async`, the generated construction scope takes an async typed setup closure. The attempt stays active across suspension. During async setup the session records cancellation separately from completion. The generated witness attaches the initialized instance when setup returns. [Async constructor consumer](Fixtures/TypedConstructionConsumer/AsyncIndependentConsumer.swift)

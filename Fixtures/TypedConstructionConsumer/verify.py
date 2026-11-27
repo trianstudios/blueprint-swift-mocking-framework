@@ -100,7 +100,9 @@ def verify(options):
 
         declarations = original.split("\n\npublic func createTypedDirectory", 1)[0] + "\n"
         for name, source, diagnostic in [
-            ("untyped", declarations.replace("throws(ConstructionFailure)", "throws"), "ordinary direct Sendable"),
+            ("untyped-wrong-label", declarations.replace("init(seed: Int) throws(ConstructionFailure)",
+                                                           "init(value: Int) throws"),
+             "ordinary direct Sendable"),
             ("failable", declarations.replace("init(seed: Int)", "init?(seed: Int)"), "ordinary direct Sendable"),
             ("async-wrong-label", declarations.replace("init(seed: Int) throws(ConstructionFailure)",
                                                        "init(value: Int) async throws(ConstructionFailure)"),

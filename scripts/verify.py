@@ -2444,6 +2444,18 @@ def main():
         r"PASS: GEN026-async-typed reject-wrong-error-main-default",
         r"PASS: GEN026-async-typed reject-async-failable-typed",
     ])
+    run("ordinary-throwing-construction-consumer", [
+        sys.executable, "Fixtures/TypedConstructionConsumer/verify_ordinary_throwing.py", "--tool", tool,
+        "--swiftc", swiftc, "--sdk", sdk, "--runtime-modules", modules,
+        "--runtime-library", modules / "BlueprintMocking.o",
+        "--evidence-dir", EVIDENCE / "ordinary-throwing-construction",
+    ], env=swift_environment, timeout=300, patterns=[
+        r"PASS: GEN026-ordinary-throws run-metatype-consumer",
+        r"PASS: GEN026-ordinary-throws report-unbound",
+        r"PASS: GEN026-ordinary-throws report-unbound-detached",
+        r"PASS: GEN026-ordinary-throws reject-async-untyped",
+        r"PASS: GEN026-ordinary-throws reject-failable-throwing",
+    ])
     if os.environ.get("BLUEPRINT_VERIFY_XCODE_PHASE") == "1":
         selected_xcode = Path(xcrun("--find", "xcodebuild"))
         run("xcode-standalone-build-phase", [

@@ -199,6 +199,22 @@ public struct MockScope: Sendable {
         return MockThrowingConstructionAttempt(scope: self, invocation: event.invocationID)
     }
 
+    /// Admits an ordinary throwing constructor or reports and throws an unexpected invocation.
+    public func beginOrdinaryThrowingConstruction(
+        of endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation
+    ) throws -> MockThrowingConstructionAttempt {
+        switch claimProviderInvocation(endpoint) {
+        case .accepted(let admission, let wake):
+            wake?.publish()
+            return MockThrowingConstructionAttempt(scope: self, invocation: admission.invocationID)
+        case .rejected(let rejection, let closedEpoch):
+            let issue = reportRejectedValueCall(endpoint, message: rejection.message(for: endpoint), reporter: reporter,
+                                                source: source, watermark: 0, closedEpoch: closedEpoch,
+                                                terminating: false)
+            throw UnexpectedInvocationError(issue: issue)
+        }
+    }
+
     /// Admits async construction and reserves an identity without publishing an instance link.
     /// The generated witness completes the attempt after async setup and Swift initialization.
     public func beginAsyncConstruction(
@@ -284,10 +300,10 @@ public struct MockScope: Sendable {
         return result
     }
 
-    private func admitProviderInvocation(
-        _ endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation, reservesInstance: Bool = false
-    ) -> SessionEvent {
-        let claim = session.withLock { state -> ProviderAdmission in
+    private func claimProviderInvocation(
+        _ endpoint: EndpointID, reservesInstance: Bool = false
+    ) -> ProviderAdmission {
+        session.withLock { state -> ProviderAdmission in
             if let rejection = admissionRejection(in: state) {
                 return .rejected(rejection, closedEpoch: state.isFinished ? state.epoch : nil)
             }
@@ -296,7 +312,12 @@ public struct MockScope: Sendable {
                                         configurationRevision: RuleRevision(rawValue: 0))
             return .accepted(admission, state.observationWake())
         }
-        switch claim {
+    }
+
+    private func admitProviderInvocation(
+        _ endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation, reservesInstance: Bool = false
+    ) -> SessionEvent {
+        switch claimProviderInvocation(endpoint, reservesInstance: reservesInstance) {
         case .rejected(let rejection, let closedEpoch):
             terminateRejectedValueCall(endpoint, message: rejection.message(for: endpoint), reporter: reporter,
                                        source: source, watermark: 0, closedEpoch: closedEpoch)
@@ -334,12 +355,21 @@ public struct MockScope: Sendable {
         _ endpoint: EndpointID, message: String, reporter: FailureReporter, source: SourceLocation,
         watermark: UInt64, closedEpoch: SessionEpoch?
     ) -> Never {
+        let issue = reportRejectedValueCall(endpoint, message: message, reporter: reporter, source: source,
+                                            watermark: watermark, closedEpoch: closedEpoch, terminating: true)
+        fatalError(issue.message)
+    }
+
+    private func reportRejectedValueCall(
+        _ endpoint: EndpointID, message: String, reporter: FailureReporter, source: SourceLocation,
+        watermark: UInt64, closedEpoch: SessionEpoch?, terminating: Bool
+    ) -> MockIssue {
         let issue = MockIssue(kind: .unexpectedCall, endpoint: endpoint, message: message,
                               source: source, watermark: watermark)
-        if !bufferOrphan(issue, closedEpoch: closedEpoch, terminating: true) {
+        if !bufferOrphan(issue, closedEpoch: closedEpoch, terminating: terminating) {
             reporter.report(issue)
         }
-        fatalError(message)
+        return issue
     }
 }
 

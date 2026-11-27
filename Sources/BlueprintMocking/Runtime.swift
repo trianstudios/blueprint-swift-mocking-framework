@@ -10,6 +10,14 @@ public enum BlueprintRuntimeSchemaV1 {
         try? FileHandle.standardError.write(contentsOf: Data(diagnostic.utf8))
         return message
     }
+
+    /// Reports an unbound ordinary throwing requirement without assigning an owner or session.
+    public static func reportMissingTypeScopeError(_ id: EndpointID, source: SourceLocation) -> UnexpectedInvocationError {
+        let message = reportMissingTypeScope(id, source: source)
+        let issue = MockIssue(kind: .unexpectedCall, endpoint: id, message: message,
+                              source: source, watermark: 0)
+        return UnexpectedInvocationError(issue: issue)
+    }
 }
 
 /// The process-local identity and readable diagnostic name of concrete generic arguments.
