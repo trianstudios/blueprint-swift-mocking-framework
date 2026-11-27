@@ -189,15 +189,17 @@ public final class MockSession: Sendable {
         state.withLock { $0.snapshot(epoch: $0.epoch)! }
     }
 
-    /// Moves a manual session clock forward without adding an event. Observers are
-    /// notified after the new clock reading is published.
+    /// Moves a manual session clock forward without adding an event. The session acquires due
+    /// callback deliveries at the new clock reading and runs them before this call returns.
     public func advanceClock(by duration: Duration) throws(SessionClockError) {
-        let (wake, replacements) = try state.withLock { (state: inout State) throws(SessionClockError) in
+        let (wake, replacements, callbacks) = try state.withLock { (state: inout State) throws(SessionClockError) in
             try state.advanceClock(by: duration)
-            return (state.observationWake(), state.resolveQuiescentReplacements(publishAtIdle: false))
+            return (state.observationWake(), state.resolveQuiescentReplacements(publishAtIdle: false),
+                    state.acquireDueCallbacks())
         }
         for replacement in replacements { replacement.publish() }
         wake?.publish()
+        callbacks.publish()
     }
 
     func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
@@ -218,11 +220,13 @@ public final class MockSession: Sendable {
     @discardableResult
     public func resetHistory(_ mode: SessionResetMode = .requireQuiescence)
         throws(SessionResetError) -> SessionEpoch {
-        let (retirement, wake, replacements) = try state.withLock {
+        let (retirement, wake, replacements, callbacks) = try state.withLock {
             (state: inout State) throws(SessionResetError) in
             let retirement = try state.resetHistory(mode)
-            return (retirement, state.closeObservations(), state.resolveQuiescentReplacements(publishAtIdle: false))
+            return (retirement, state.closeObservations(), state.resolveQuiescentReplacements(publishAtIdle: false),
+                    state.retirePendingCallbacks())
         }
+        for callback in callbacks { callback.retire() }
         for replacement in replacements { replacement.publish() }
         wake?.publish()
         // User destructors and last-owner journal destruction may reenter this session.
@@ -234,10 +238,12 @@ public final class MockSession: Sendable {
     /// Repeated calls return the same final snapshot. The caller owns teardown of its tasks.
     @discardableResult
     public func finishIfQuiescent() throws(SessionFinishError) -> SessionSnapshot {
-        let (snapshot, wake, retirement) = try state.withLock { (state: inout State) throws(SessionFinishError) in
+        let (snapshot, wake, retirement, callbacks) = try state.withLock {
+            (state: inout State) throws(SessionFinishError) in
             let (snapshot, retirement) = try state.finishIfQuiescent()
-            return (snapshot, state.closeObservations(), retirement)
+            return (snapshot, state.closeObservations(), retirement, state.retirePendingCallbacks())
         }
+        for callback in callbacks { callback.retire() }
         wake?.publish()
         withExtendedLifetime(retirement) {}
         return snapshot
@@ -265,6 +271,7 @@ public final class MockSession: Sendable {
         private(set) var epoch: SessionEpoch
         private var clock: SessionClockState
         private var finishedElapsed: Duration?
+        private var pendingCallbacks: [PendingCallbackDelivery] = []
 
         var isFinished: Bool { finishedElapsed != nil }
         private var nextMockNumber: UInt64 = 0
@@ -325,6 +332,32 @@ public final class MockSession: Sendable {
 
         fileprivate mutating func advanceClock(by duration: Duration) throws(SessionClockError) {
             try clock.advance(by: duration)
+        }
+
+        mutating func scheduleCallback(
+            after delay: Duration,
+            acquire: @escaping @Sendable () -> ScheduledCallbackAction,
+            retire: @escaping ScheduledCallbackAction
+        ) throws(CallbackSchedulingError) -> ScheduledCallbackAction? {
+            guard case .manual(let elapsed) = clock else { throw .requiresManualClock }
+            if delay == .zero { return acquire() }
+            pendingCallbacks.append(PendingCallbackDelivery(
+                deadline: elapsed + delay, acquire: acquire, retire: retire
+            ))
+            return nil
+        }
+
+        fileprivate mutating func acquireDueCallbacks() -> AcquiredCallbackDeliveries {
+            let elapsed = clock.elapsed
+            let due = pendingCallbacks.filter { $0.deadline <= elapsed }.sorted { $0.deadline < $1.deadline }
+            pendingCallbacks.removeAll { $0.deadline <= elapsed }
+            return AcquiredCallbackDeliveries(requests: due, actions: due.map { $0.acquire() })
+        }
+
+        fileprivate mutating func retirePendingCallbacks() -> [PendingCallbackDelivery] {
+            let retired = pendingCallbacks
+            pendingCallbacks.removeAll()
+            return retired
         }
 
         /// Returns true when the retained prefix changed. Call only under the session gate.

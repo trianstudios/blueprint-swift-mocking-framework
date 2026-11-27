@@ -29,8 +29,13 @@ private final class CallbackCaptureStorage<Callback: Sendable>: SessionJournalRe
     func callback(for invocation: SessionEvent) -> Callback? {
         session.withLock { state -> Callback? in
             guard !state.isFinished, state.epoch == invocation.epoch else { return nil }
-            return storage.withLock { $0[invocation.invocationID]?.callback }
+            return storedCallback(for: invocation)
         }
+    }
+
+    // Call under the session gate when validating or acquiring a scheduled delivery.
+    func storedCallback(for invocation: SessionEvent) -> Callback? {
+        storage.withLock { $0[invocation.invocationID]?.callback }
     }
 
     func publish(_ callback: Callback, recording invocation: SessionEvent) {
@@ -114,6 +119,43 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
     public func invoke(_ input: Input) throws(CallbackDeliveryError) -> Output {
         guard let callback = storage?.callback(for: invocation) else { throw .unavailable }
         return callback(input)
+    }
+
+    /// Schedules one invocation on the capture's manual session clock. A positive delay
+    /// is measured from registration. A zero delay acquires and delivers immediately.
+    /// As the clock reaches the deadline, the session acquires the callback under its gate
+    /// and runs it after unlocking. Earlier reset or finish makes the receipt unavailable.
+    @discardableResult
+    public func schedule(
+        _ input: Input, after delay: Duration
+    ) throws(CallbackSchedulingError) -> ScheduledCallbackDelivery<Output> {
+        guard delay >= .zero else { throw .negativeDelay }
+        guard let storage else { throw .unavailable }
+        defer { withExtendedLifetime(storage) {} }
+
+        let delivery = ScheduledCallbackDelivery<Output>()
+        let acquire: @Sendable () -> ScheduledCallbackAction = { [weak storage, invocation] in
+            let owner = storage
+            let callback = owner?.storedCallback(for: invocation)
+            return {
+                // Keep an upgraded weak owner alive until this action leaves the session gate.
+                defer { withExtendedLifetime(owner) {} }
+                if let callback {
+                    delivery.resolve(.delivered(callback(input)))
+                } else {
+                    delivery.resolve(.unavailable)
+                }
+            }
+        }
+        let immediate = try storage.session.withLock { state throws(CallbackSchedulingError) in
+            guard !state.isFinished, state.epoch == invocation.epoch,
+                  storage.storedCallback(for: invocation) != nil else { throw .unavailable }
+            return try state.scheduleCallback(after: delay, acquire: acquire) {
+                delivery.resolve(.unavailable)
+            }
+        }
+        immediate?()
+        return delivery
     }
 }
 

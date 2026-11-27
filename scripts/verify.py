@@ -1106,7 +1106,12 @@ def main():
                   r"GEN016_mainActorThrowingEscapingCallbackPreservesActorAndDeclaredError\(\) passed",
                   r"GEN016_mainActorThrowingEscapingCallbackRetiresPayloadOnResetAndFinish\(\) passed",
                   r"GEN016_mainActorAsyncThrowingEscapingCallbackReturnsAcrossResetAfterAcquisition\(\) passed",
-                  r"GEN016_mainActorAsyncThrowingEscapingCallbackThrowsItsDeclaredErrorAcrossFinish\(\) passed"])
+                  r"GEN016_mainActorAsyncThrowingEscapingCallbackThrowsItsDeclaredErrorAcrossFinish\(\) passed",
+                  r"GEN016_scheduledCallbackDeliversAtExactManualDeadlineOnce\(\) passed",
+                  r"GEN016_scheduledCallbackResetRetiresPendingDelivery\(\) passed",
+                  r"GEN016_scheduledCallbackFinishRetiresPendingDelivery\(\) passed",
+                  r"GEN016_scheduledCallbackRejectsInvalidClockAndDelay\(\) passed",
+                  r"GEN016_scheduledCallbacksAcquiredTogetherFinishAfterReentrantReset\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     run_swift("typed-throwing-callback-consumer-demo", [

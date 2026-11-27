@@ -354,3 +354,12 @@ GEN-016 supports a final, unary `@escaping @MainActor @Sendable (Input) async th
 The independent SwiftPM consumer registers and replays from detached tasks. An actor gate confirms suspension after registration. The callback asserts MainActor at entry and resumption, returning the typed value after reset in one case and throwing the exact original failure after finish in the other. Later attempts on stale handles run only the supplied mapper on MainActor. The mapper can inspect the session. Teardown releases idle payloads and an acquired replay releases its payload on completion. Replay leaves registration history unchanged.
 
 Swift rejects a foreign error and retyping to a different global actor in both tested isolation modes. Configured generation verifies both files for either MainActor spelling and preserves them on unsupported declarations. The standalone consumer with this replay path links for macOS 13 and executes on the newer host. Additional actors and callback shapes, scheduled delivery, native execution at the deployment floor, and full qualification remain open.
+
+
+## Single callback deliveries on the manual session clock
+
+RUN-010 and RUN-024 now have a manual-clock scheduling path for a captured nonisolated synchronous nonthrowing callback. A request accepts typed input and returns a typed receipt. Zero delay runs immediately. A positive delay is relative to the clock reading at registration. Advance acquires due callbacks under the session gate in deadline order, then calls them outside the locks before returning. Reset and quiescent finish retire pending requests. A batch already acquired can finish even if one callback reenters teardown.
+
+The independent SwiftPM consumer schedules against a nonzero clock reading. It checks the state one nanosecond before and at the deadline, then advances again and verifies the callback ran exactly once. Separate reset and finish tests check that pending receipts become unavailable, subsequent clock advances cannot invoke the callbacks, and stale handles reject registration. A same-deadline test reenters reset from the first acquired callback and verifies that the other acquired callback still runs while a later request retires. The tests use explicit advances and preserve ordinary call history apart from the reset they request.
+
+Continuous-clock scheduling, explicit cancellation, repeated delivery policies, child delivery events, other actor and effect profiles, and delayed sequence steps remain open.
