@@ -81,7 +81,7 @@ To build mocks from source in a SwiftPM test or test-support target, add the run
 )
 ```
 
-Create `blueprint-mocking.json` at the consumer package root. Use the Swift module name and select top-level public protocols that the generator supports.
+Create `blueprint-mocking.json` at the consumer package root. Use the Swift module name and select top-level public protocols that the generator supports. The selection and supplemental source manifest files each have a 1 MiB limit, including whitespace.
 
 ```json
 {

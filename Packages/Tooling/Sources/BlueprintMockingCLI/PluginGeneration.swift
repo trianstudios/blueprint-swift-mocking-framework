@@ -29,8 +29,25 @@ private func invalid(_ message: String) -> GenerationError {
     GenerationError(description: "error: BPM002: \(message)")
 }
 
+private func readBoundedGenerationInput(_ url: URL, kind: String) throws -> Data {
+    let maximumBytes = 1_048_576
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+    var data = Data()
+    while data.count <= maximumBytes {
+        let remaining = maximumBytes + 1 - data.count
+        guard let chunk = try handle.read(upToCount: min(65_536, remaining)),
+              !chunk.isEmpty else { break }
+        data.append(chunk)
+    }
+    guard data.count <= maximumBytes else {
+        throw invalid("\(kind) exceeds \(maximumBytes) bytes: \(url.lastPathComponent)")
+    }
+    return data
+}
+
 private func loadConfiguration(_ url: URL) throws -> BuildConfiguration {
-    let data = try Data(contentsOf: url)
+    let data = try readBoundedGenerationInput(url, kind: "Generation configuration")
     let requiredSelectionKeys: Set<String> = ["module", "type", "kind"]
     let selectionKeys = requiredSelectionKeys.union(["associatedTypeBindings", "genericMethodSpecializations"])
     guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -171,7 +188,7 @@ private func mergeTrackedSources(_ supplied: [String: [String]], relativeTo conf
         throw invalid("The external source manifest must be a regular file, not a symbolic link.")
     }
 
-    let data = try Data(contentsOf: manifest)
+    let data = try readBoundedGenerationInput(manifest, kind: "External source manifest")
     guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
           Set(object.keys) == ["schemaVersion", "mode", "sources"],
           let entries = object["sources"] as? [[String: Any]],

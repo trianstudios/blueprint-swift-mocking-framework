@@ -667,3 +667,9 @@ The case and suite bridges share the same native location conversion. Existing i
 DX-005 adds an optional, schema-1 supplemental source manifest to configured SwiftPM generation. The plug-in tracks the manifest and the canonical command resolves its latest rows at execution. This keeps a cached build plan valid when a supplemental member is added or deleted. The accepted lane requires package-relative regular Swift files in an existing supplied module.
 
 In one native SwiftPM build directory, listing a file outside target membership updates the index and keeps the shard bytes and timestamp. Removing the row and file restores the baseline index bytes. An unchanged plan and unlisted file leave both outputs alone. Conflicting source, incorrect module, duplicate membership, traversal, and linked paths fail while preserving the valid outputs. An unsupported prebuild declaration also fails. The run used a local artifact containing the Xcode-linked generator. Direct tracking of supplemental byte-only edits, prebuild runners, and other parser and host profiles remain open.
+
+## Bounded configured generation inputs
+
+DX-021 now enforces a 1 MiB byte limit on the two configured generation JSON files. The reader stops at the limit plus one byte and diagnoses oversize input before JSON decoding. The CLI fixture uses literal paths with spaces and shell metacharacters. Both files work at the exact limit. Inspect, generate and verify-generated reject an additional byte with BPM002. The generated files retain their original bytes and timestamps, and a valid retry succeeds.
+
+The fixture covers these configuration inputs on the bundled Xcode parser path. Source traversal races, cache-corruption checks, invalid publication manifests and broader platform qualification remain open.

@@ -551,6 +551,53 @@ def verify_borrowed_span_generation(tool, scratch, swift, swiftc, sdk, env):
             fails=True, patterns=[diagnostic], env=env)
 
 
+def verify_bounded_generation_configuration(tool, scratch):
+    capacity = 1024 * 1024
+    with tempfile.TemporaryDirectory(prefix="Bounded Config ; $literal ", dir=scratch) as directory:
+        root = Path(directory)
+        source = root / "Lookup.swift"
+        source.write_text("public protocol Lookup: Sendable { func lookup(_ key: String) -> Int }\n", encoding="utf-8")
+        config = root / "blueprint-mocking.json"
+        output = root / "Generated Swift"
+        request = ["--config", config, "--output", output, "--input-set-id", "d021",
+                   "--source", "ConsumerDomain", source]
+        configuration = json.dumps({"schemaVersion": 1, "selections": [
+            {"module": "ConsumerDomain", "type": "Lookup", "kind": "protocol"},
+        ]}).encode("utf-8")
+        manifest = root / "blueprint-mocking.external-sources.json"
+        manifest_content = b'{"schemaVersion":1,"mode":"tracked","sources":[]}'
+        config.write_bytes(configuration)
+        files = [output / name for name in ("BlueprintMocks.generated.swift", "BlueprintMockingIndex.generated.swift")]
+
+        def snapshot():
+            return [(file.read_bytes(), file.stat().st_mtime_ns) for file in files]
+
+        for key, path, contents, diagnostic in (
+            ("config", config, configuration, "Generation configuration"),
+            ("external-manifest", manifest, manifest_content, "External source manifest"),
+        ):
+            boundary = contents.ljust(capacity, b" ")
+            path.write_bytes(boundary)
+            run(f"bounded-{key}-generate-at-limit", [tool, "generate", *request])
+            expected = snapshot()
+            if b"public final class LookupMock" not in expected[0][0]:
+                raise ValueError("Exact-limit input did not generate the selected witness")
+            run(f"bounded-{key}-verify-at-limit", [tool, "verify-generated", *request])
+
+            path.write_bytes(boundary + b" ")
+            for action in ("inspect", "generate", "verify-generated"):
+                run(f"bounded-{key}-reject-{action}", [tool, action, *request], fails=True, patterns=[
+                    rf"error: BPM002: {diagnostic} exceeds {capacity} bytes: {re.escape(path.name)}",
+                ])
+                if snapshot() != expected:
+                    raise ValueError(f"Rejecting oversized {key} during {action} changed a generated file")
+
+            path.write_bytes(contents)
+            run(f"bounded-{key}-valid-retry", [tool, "generate", *request])
+            if snapshot() != expected:
+                raise ValueError("A valid input retry rewrote unchanged generated files")
+
+
 def xcrun(*arguments):
     return subprocess.check_output(["xcrun", *arguments], text=True).strip()
 
@@ -778,6 +825,7 @@ def main():
         ], fails=True, env=swift_environment, patterns=[r"Expected two independent binaries, not a self-comparison"])
         if report.exists():
             raise ValueError("The rejected parser self-comparison left a passing report")
+    verify_bounded_generation_configuration(tool, EVIDENCE)
     run("declaration-inspection", [sys.executable, ROOT / "scripts/verify_inspection.py",
                                   "--tool", tool, "--evidence-dir", EVIDENCE],
         patterns=[r"PASS: DX003 read-only inspection", r"PASS: DX011 verify-generated drift checks",
