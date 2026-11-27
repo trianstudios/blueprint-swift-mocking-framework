@@ -61,6 +61,15 @@ def validate_generated_outputs(normal, offline, *, input_set=INPUT_SET):
             or re.findall(rb"(?m)^// SwiftPM input set:[^\n]*$", index) != expected_inputs):
         raise ValueError("The configured index must reference the emitted shard and exact input set")
 
+    versions = (
+        b"extension BlueprintMockingGeneratedIndex {\n"
+        b"    static let irSchemaVersion: Swift.Int = 1\n"
+        b"    static let runtimeContractVersion: Swift.Int = 1\n"
+        b"}\n"
+    )
+    if index.count(b"extension BlueprintMockingGeneratedIndex {") != 1 or not index.endswith(versions):
+        raise ValueError("The configured index must declare the exact IR and runtime contract versions")
+
 
 def read_generated(output):
     files = list(output.iterdir())

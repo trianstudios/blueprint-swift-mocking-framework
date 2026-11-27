@@ -94,6 +94,83 @@ def marker_line(mock):
     return matches[0]
 
 
+def verify_configured_manifest(tool, compiler, scratch, run):
+    config = scratch / "manifest-config.json"
+    configuration = b'{"schemaVersion":1,"selections":[]}\n'
+    config.write_bytes(configuration)
+    names = ("BlueprintMocks.generated.swift", "BlueprintMockingIndex.generated.swift")
+    input_set = "119"
+    version = 1
+    marker = f"    static let runtimeContractVersion: Swift.Int = {version}\n".encode()
+
+    def request(output):
+        return ["--config", config, "--output", output, "--input-set-id", input_set]
+
+    def read_pair(output):
+        if {path.name for path in output.iterdir()} != set(names):
+            raise ValueError("Configured manifest generation must emit exactly the two owned Swift files")
+        return {name: (output / name).read_bytes() for name in names}
+
+    output = scratch / "Configured Manifest"
+    run("generate-configured-manifest", [tool, "generate", *request(output)], scratch)
+    expected_pair = read_pair(output)
+    shard, index = (output / name for name in names)
+
+    consumer = scratch / "ManifestProbe.swift"
+    executable = scratch / "manifest-probe"
+    expected_output = f"Configured manifest versions: {version} {version}\n"
+    consumer.write_text(f"""\
+@main
+struct ManifestProbe {{
+    static func main() {{
+        let _: BlueprintMockingGeneratedIndex.Shard.Type = BlueprintMockingGeneratedIndex.Shard.self
+        let irSchemaVersion: Swift.Int = BlueprintMockingGeneratedIndex.irSchemaVersion
+        let runtimeContractVersion: Swift.Int = BlueprintMockingGeneratedIndex.runtimeContractVersion
+        precondition(irSchemaVersion == {version})
+        precondition(runtimeContractVersion == {version})
+        print("Configured manifest versions: \\(irSchemaVersion) \\(runtimeContractVersion)")
+    }}
+}}
+""", encoding="utf-8")
+    run("build-configured-manifest-consumer", [
+        *compiler, "-parse-as-library", "-module-name", "ManifestProbe",
+        shard, index, consumer, "-o", executable,
+    ], scratch)
+    _, stdout, stderr = run("run-configured-manifest-consumer", [executable], scratch)
+    if (stdout, stderr) != (expected_output, ""):
+        raise ValueError("The configured manifest consumer did not report both version values")
+
+    expected_index = expected_pair[index.name]
+    if expected_index.count(marker) != 1:
+        raise ValueError("The generated index does not have exactly one runtime contract version entry")
+    index.write_bytes(expected_index.replace(
+        marker, f"    static let runtimeContractVersion: Swift.Int = {version + 1}\n".encode(), 1,
+    ))
+    edited_pair = read_pair(output)
+    edited_mtimes = (shard.stat().st_mtime_ns, index.stat().st_mtime_ns)
+    exit_code, stdout, stderr = run(
+        "verify-configured-manifest-drift", [tool, "verify-generated", *request(output)], scratch,
+        require_success=False,
+    )
+    if (exit_code, stdout, stderr) != (3, "", f"error: BPM003: Generated files differ:\n  {index}\n"):
+        raise ValueError("Changing the runtime contract version must report BPM003 for only the index")
+    if read_pair(output) != edited_pair or (shard.stat().st_mtime_ns, index.stat().st_mtime_ns) != edited_mtimes:
+        raise ValueError("Checking manifest drift changed the shard or edited index")
+
+    fresh = scratch / "Fresh Configured Manifest"
+    run("regenerate-configured-manifest", [tool, "generate", *request(fresh)], scratch)
+    run("verify-fresh-configured-manifest", [tool, "verify-generated", *request(fresh)], scratch)
+    if read_pair(fresh) != expected_pair or config.read_bytes() != configuration:
+        raise ValueError("Fresh configured generation changed the original pair bytes or authored configuration")
+    return {
+        "inputSetID": input_set,
+        "irSchemaVersion": version,
+        "runtimeContractVersion": version,
+        "outputSHA256": {name: digest(fresh / name) for name in names},
+        "indexDriftExit": exit_code,
+    }
+
+
 def verify(repository, tool, swiftc, sdk, evidence):
     checks = {}
     floor = (repository / "scripts/macos-deployment-target").read_text().strip()
@@ -117,10 +194,15 @@ def verify(repository, tool, swiftc, sdk, evidence):
         }
         if require_success and result.returncode != 0:
             raise ValueError(f"{label} exited {result.returncode}. See {stderr_path}")
-        return result.returncode, stderr_path.read_text(encoding="utf-8", errors="replace")
+        return (
+            result.returncode,
+            stdout_path.read_text(encoding="utf-8", errors="replace"),
+            stderr_path.read_text(encoding="utf-8", errors="replace"),
+        )
 
     with tempfile.TemporaryDirectory(prefix="Generated Runtime Schema ", dir=evidence) as temporary:
         scratch = Path(temporary)
+        manifest = verify_configured_manifest(tool, compiler, scratch, run)
         source = scratch / "SchemaProbes.swift"
         source.write_text(PROTOCOLS, encoding="utf-8")
         lookalike = scratch / "ConsumerSchemaLookalike.swift"
@@ -163,7 +245,7 @@ def verify(repository, tool, swiftc, sdk, evidence):
         diagnosed = {}
         # A Swift compiler may stop after the first primary file fails type checking.
         for mock in mocks:
-            exit_code, diagnostic = typecheck(
+            exit_code, _, diagnostic = typecheck(
                 f"incompatible-{mock.stem}", incompatible, [mock], require_success=False,
             )
             if exit_code == 0:
@@ -198,6 +280,7 @@ def verify(repository, tool, swiftc, sdk, evidence):
             "generatorSHA256": digest(tool),
             "generatedSHA256": {mock.name: digest(mock) for mock in mocks},
             "missingRuntimeMarkerDiagnostics": diagnosed,
+            "configuredManifest": manifest,
             "checks": checks,
         }
 
@@ -224,6 +307,7 @@ def main():
         return 1
     print(f"EVIDENCE: {REPORT} SHA-256 {digest(report_path)}")
     print("PASS: GEN007 emitted witnesses reject an incompatible runtime despite a consumer-local schema lookalike")
+    print("PASS: GEN007 configured manifest compiles and detects runtime contract version drift")
     return 0
 
 

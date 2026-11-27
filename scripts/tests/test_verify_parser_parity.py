@@ -25,7 +25,11 @@ SUCCESS = Observation(
     outputs={
         SHARD: b"enum BlueprintMockingShard_91a {}\n",
         INDEX: b"// SwiftPM input set: 91\n"
-        b"enum BlueprintMockingGeneratedIndex { typealias Shard = BlueprintMockingShard_91a }\n",
+        b"enum BlueprintMockingGeneratedIndex { typealias Shard = BlueprintMockingShard_91a }\n"
+        b"extension BlueprintMockingGeneratedIndex {\n"
+        b"    static let irSchemaVersion: Swift.Int = 1\n"
+        b"    static let runtimeContractVersion: Swift.Int = 1\n"
+        b"}\n",
     },
 )
 REJECTION = Observation(exit=1, stdout=b"", stderr=DIAGNOSTIC, outputs={})

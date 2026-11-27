@@ -233,6 +233,7 @@ def main():
         "--swiftc", swiftc, "--sdk", sdk, "--evidence-dir", EVIDENCE,
     ], env=swift_environment, timeout=360, patterns=[
         r"PASS: GEN007 emitted witnesses reject an incompatible runtime despite a consumer-local schema lookalike",
+        r"PASS: GEN007 configured manifest compiles and detects runtime contract version drift",
         r"EVIDENCE: runtime-schema-report\.json SHA-256 [0-9a-f]{64}",
     ])
     publication_fixture = ROOT / "Fixtures/OfflineGenerationConsumer"
