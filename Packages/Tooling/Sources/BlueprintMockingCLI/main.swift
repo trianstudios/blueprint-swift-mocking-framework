@@ -129,6 +129,7 @@ struct CallbackType {
         case throwingEscaping(String)
         case asyncEscaping
         case asyncThrowingEscaping(String)
+        case mainActorAsyncEscaping
 
         var family: String {
             switch self {
@@ -138,6 +139,7 @@ struct CallbackType {
             case .throwingEscaping: "SyncThrowingEscapingCallback"
             case .asyncEscaping: "SyncAsyncEscapingCallback"
             case .asyncThrowingEscaping: "SyncAsyncThrowingEscapingCallback"
+            case .mainActorAsyncEscaping: "SyncMainActorAsyncEscapingCallback"
             }
         }
 
@@ -145,7 +147,7 @@ struct CallbackType {
             switch self {
             case .scoped: ""
             case .escaping, .throwingEscaping, .asyncEscaping, .asyncThrowingEscaping: "@escaping @Sendable "
-            case .mainActorEscaping: "@escaping @Swift.MainActor @Sendable "
+            case .mainActorEscaping, .mainActorAsyncEscaping: "@escaping @Swift.MainActor @Sendable "
             }
         }
     }
@@ -164,7 +166,7 @@ struct CallbackType {
     var declaration: String {
         let effects: String
         switch kind {
-        case .asyncEscaping: effects = " async"
+        case .asyncEscaping, .mainActorAsyncEscaping: effects = " async"
         case .throwingEscaping(let failure): effects = " throws(\(failure))"
         case .asyncThrowingEscaping(let failure): effects = " async throws(\(failure))"
         default: effects = ""
@@ -622,11 +624,11 @@ func generate(
                         try reject(parameter, "Escaping callback capture requires async for asynchronous function arguments")
                     }
                     let isAsync = effects.asyncSpecifier != nil
-                    guard case .escaping = kind else {
-                        let subject = isAsync ? "Asynchronous" : "Typed-throwing"
-                        try reject(parameter, "\(subject) escaping callbacks require a nonisolated @Sendable function")
-                    }
                     if let clause = effects.throwsClause {
+                        guard case .escaping = kind else {
+                            let subject = isAsync ? "Asynchronous throwing" : "Typed-throwing"
+                            try reject(parameter, "\(subject) escaping callbacks require a nonisolated @Sendable function")
+                        }
                         guard clause.throwsSpecifier.text == "throws",
                               let failureType = clause.type?.as(IdentifierTypeSyntax.self),
                               failureType.genericArgumentClause == nil, simple(failureType.name.text),
@@ -636,7 +638,11 @@ func generate(
                         let failure = failureType.name.text
                         kind = isAsync ? .asyncThrowingEscaping(failure) : .throwingEscaping(failure)
                     } else if isAsync {
-                        kind = .asyncEscaping
+                        if case .mainActorEscaping = kind {
+                            kind = .mainActorAsyncEscaping
+                        } else {
+                            kind = .asyncEscaping
+                        }
                     }
                 }
                 let callback = CallbackType(input: input, output: output, kind: kind)

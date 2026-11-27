@@ -19,14 +19,19 @@ ASYNC_CALLBACK = CALLBACK.replace("(Int) ->", "(Int) async ->")
 ASYNC_TYPED_CALLBACK = ASYNC_CALLBACK.replace("async ->", "async throws(AsyncCallbackFixtureError) ->")
 TYPED_CALLBACK = CALLBACK.replace("(Int) ->", "(Int) throws(CallbackFixtureError) ->")
 CANONICAL_ACTOR_CALLBACK = CALLBACK.replace("@Sendable ", "@Swift.MainActor @Sendable ")
+CANONICAL_ACTOR_ASYNC_CALLBACK = CANONICAL_ACTOR_CALLBACK.replace("(Int) ->", "(Int) async ->")
 SUPPORTED = f"func register(id: String, using callback: {CALLBACK}) -> String"
 TYPED_SUPPORTED = SUPPORTED.replace(CALLBACK, TYPED_CALLBACK)
 ASYNC_SUPPORTED = SUPPORTED.replace(CALLBACK, ASYNC_CALLBACK)
 ASYNC_TYPED_SUPPORTED = SUPPORTED.replace(CALLBACK, ASYNC_TYPED_CALLBACK)
 ACTOR_SUPPORTED = SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
 QUALIFIED_ACTOR_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_CALLBACK)
+ACTOR_ASYNC_SUPPORTED = ASYNC_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
+QUALIFIED_ACTOR_ASYNC_SUPPORTED = SUPPORTED.replace(CALLBACK, CANONICAL_ACTOR_ASYNC_CALLBACK)
+ACTOR_ASYNC_TYPED_SUPPORTED = ASYNC_TYPED_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable ")
 TYPED_ENDPOINT = "SyncThrowingEscapingCallbackEndpoint<String, Int, String, String, CallbackFixtureError>"
 ASYNC_ENDPOINT = "SyncAsyncEscapingCallbackEndpoint<String, Int, String, String>"
+ACTOR_ASYNC_ENDPOINT = "SyncMainActorAsyncEscapingCallbackEndpoint<String, Int, String, String>"
 ASYNC_TYPED_ENDPOINT = (
     "SyncAsyncThrowingEscapingCallbackEndpoint<String, Int, String, String, AsyncCallbackFixtureError>"
 )
@@ -38,16 +43,21 @@ METHOD_DIAGNOSTIC = (
     "in the final position"
 )
 ACTOR_THROWS_DIAGNOSTIC = "Typed-throwing escaping callbacks require a nonisolated @Sendable function"
-ACTOR_ASYNC_DIAGNOSTIC = "Asynchronous escaping callbacks require a nonisolated @Sendable function"
+ACTOR_ASYNC_DIAGNOSTIC = "Asynchronous throwing escaping callbacks require a nonisolated @Sendable function"
 FAILURE_DIAGNOSTIC = "Escaping callback capture requires throws with a named failure type other than Never"
 REJECTIONS = (
     ("bare-escaping", SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
     ("non-sendable-main-actor", ACTOR_SUPPORTED.replace("@Sendable ", ""), ATTRIBUTES_DIAGNOSTIC),
     ("other-global-actor", ACTOR_SUPPORTED.replace("@MainActor ", "@WorkerActor "), ATTRIBUTES_DIAGNOSTIC),
-    ("effectful-callback", ASYNC_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable "), ACTOR_ASYNC_DIAGNOSTIC),
     (
-        "main-actor-async-typed-callback",
-        ASYNC_TYPED_SUPPORTED.replace("@Sendable ", "@MainActor @Sendable "),
+        "effectful-callback",
+        ACTOR_ASYNC_TYPED_SUPPORTED.replace("throws(AsyncCallbackFixtureError)", "throws"),
+        ACTOR_ASYNC_DIAGNOSTIC,
+    ),
+    ("main-actor-async-typed-callback", ACTOR_ASYNC_TYPED_SUPPORTED, ACTOR_ASYNC_DIAGNOSTIC),
+    (
+        "main-actor-async-never-callback",
+        ACTOR_ASYNC_TYPED_SUPPORTED.replace("throws(AsyncCallbackFixtureError)", "throws(Never)"),
         ACTOR_ASYNC_DIAGNOSTIC,
     ),
     (
@@ -197,6 +207,19 @@ def verify(tool, evidence):
         )
         if bare != qualified:
             raise ValueError("Bare and Swift-qualified MainActor spellings produced different owned outputs")
+
+        write_source(source, ACTOR_ASYNC_SUPPORTED)
+        bare_async = require_generated(
+            tool, request, evidence, "main-actor-async-callback", checks, staged, output,
+            callback=CANONICAL_ACTOR_ASYNC_CALLBACK, endpoint=ACTOR_ASYNC_ENDPOINT,
+        )
+        write_source(source, QUALIFIED_ACTOR_ASYNC_SUPPORTED)
+        qualified_async = require_generated(
+            tool, request, evidence, "qualified-main-actor-async-callback", checks, staged, output,
+            callback=CANONICAL_ACTOR_ASYNC_CALLBACK, endpoint=ACTOR_ASYNC_ENDPOINT,
+        )
+        if bare_async != qualified_async:
+            raise ValueError("Bare and Swift-qualified async MainActor spellings produced different owned outputs")
 
         location = rb"(?m)^.*" + re.escape(source.name.encode("utf-8")) + rb":[1-9]\d*:[1-9]\d*: error: BPM001: "
         for label, method, diagnostic in REJECTIONS:

@@ -258,11 +258,13 @@ if let callback = captor.captures.first {
 
 Delivery is synchronous and repeatable. Resetting or finishing the session releases stored closures and makes earlier handles throw `CallbackDeliveryError.unavailable`. A delivery that already acquired its closure can finish. This captor handles synchronous, nonthrowing callback types.
 
-If the callback is also `@MainActor`, use `MainActorEscapingCallbackCaptor` with the same stub syntax. Registration stays nonisolated. `invoke(_:)` runs on MainActor. Use `try await callback.invoke(value)` from another actor or a detached task. The actor-qualified name `@Swift.MainActor` can identify the standard actor explicitly in the protocol source.
+For a synchronous, nonthrowing `@MainActor` callback, use `MainActorEscapingCallbackCaptor` with the same stub syntax. Registration stays nonisolated. `invoke(_:)` runs on MainActor. Use `try await callback.invoke(value)` from another actor or a detached task. The actor-qualified name `@Swift.MainActor` can identify the standard actor explicitly in the protocol source.
 
 For a nonisolated callback declared `@escaping @Sendable (Input) throws(DeclaredFailure) -> Output`, use `ThrowingEscapingCallbackCaptor<Input, Output, DeclaredFailure>`. The registration method stays nonthrowing. Replay with `try callback.invoke(input, onUnavailable: { .captureExpired })`, substituting a case of your own failure type. Replay propagates the callback's exact declared failure. The supplied mapping runs only when the handle has expired, such as after session reset or finish.
 
 For a nonisolated callback declared `@escaping @Sendable (Input) async -> Output`, use `AsyncEscapingCallbackCaptor<Input, Output>` and replay with `try await callback.invoke(input)`. Registration stays synchronous. Replay runs in the caller's task and may suspend. Reset or finish clears stored callbacks and makes new replay attempts on old handles throw `CallbackDeliveryError.unavailable`. A replay that already acquired its callback can finish, even after session teardown. Replay does not count as an active mock call.
+
+For `@escaping @MainActor @Sendable (Input) async -> Output`, use `MainActorAsyncEscapingCallbackCaptor<Input, Output>`. Registration still stays synchronous and can run off actor. Replay uses `try await callback.invoke(input)` and acquires the closure on MainActor. The callback runs on MainActor before and after suspension. Reset or finish rejects later acquisitions. An acquired replay can resume on MainActor after teardown.
 
 For `@escaping @Sendable (Input) async throws(DeclaredFailure) -> Output`, use `AsyncThrowingEscapingCallbackCaptor<Input, Output, DeclaredFailure>` and `try await callback.invoke(input, onUnavailable: { .captureExpired })`. The `@Sendable` mapping supplies your failure value only for an expired handle. An acquired replay returns its value or throws its original declared failure even if reset or finish happens while it is suspended.
 

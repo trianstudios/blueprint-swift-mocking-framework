@@ -639,3 +639,112 @@ public final class SyncAsyncThrowingEscapingCallbackEndpoint<
         dispatch.verification(matching: matcher, phase: phase)
     }
 }
+
+private typealias MainActorAsyncCallback<Input, Output> = @MainActor @Sendable (Input) async -> Output
+
+/// A typed handle for a MainActor async callback captured by a winning stub.
+public struct MainActorAsyncEscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendable {
+    public let invocation: SessionEvent
+    fileprivate weak var storage: CallbackCaptureStorage<MainActorAsyncCallback<Input, Output>>?
+
+    /// Acquires the callback on MainActor before awaiting it in the caller's task.
+    /// Reset and finish refuse later acquisitions. A replay that already acquired its
+    /// callback can finish, and the session does not track it as an active invocation.
+    @MainActor
+    public func invoke(_ input: Input) async throws(CallbackDeliveryError) -> Output {
+        guard let callback = storage?.callback(for: invocation) else { throw .unavailable }
+        return await callback(input)
+    }
+}
+
+/// Retains an opted-in MainActor async callback until reset, finish, or deallocation.
+public final class MainActorAsyncEscapingCallbackCaptor<Input: Sendable, Output: Sendable>:
+    Sendable, CallbackCapturing {
+    fileprivate let storage: CallbackCaptureStorage<MainActorAsyncCallback<Input, Output>>
+
+    public init(session: MockSession) {
+        storage = CallbackCaptureStorage(session: session)
+    }
+
+    /// Returns handles ordered by the originating mock call's admission.
+    public var captures: [MainActorAsyncEscapingCallbackCapture<Input, Output>] {
+        storage.admissions.map { MainActorAsyncEscapingCallbackCapture(invocation: $0, storage: storage) }
+    }
+}
+
+public struct SyncMainActorAsyncEscapingCallbackConfiguration<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+>: Sendable {
+    fileprivate typealias Callback = MainActorAsyncCallback<CallbackInput, CallbackResult>
+    fileprivate let rules: [EscapingCallbackRule<Input, Callback, Output>]
+}
+
+/// Builds immutable rules for a synchronous nonthrowing method with a MainActor async callback.
+public final class SyncMainActorAsyncEscapingCallbackStubbing<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+> {
+    fileprivate typealias Callback = MainActorAsyncCallback<CallbackInput, CallbackResult>
+    fileprivate let builder = EffectRulesBuilder<Input, EscapingCallbackBehavior<Input, Callback, Output>>()
+
+    public init() {}
+
+    public func matching(
+        _ matcher: Matcher<Input>
+    ) -> SyncMainActorAsyncEscapingCallbackStub<Input, CallbackInput, CallbackResult, Output> {
+        SyncMainActorAsyncEscapingCallbackStub(owner: self, matcher: matcher, captor: nil)
+    }
+
+    public func finish() -> SyncMainActorAsyncEscapingCallbackConfiguration<
+        Input, CallbackInput, CallbackResult, Output
+    > {
+        SyncMainActorAsyncEscapingCallbackConfiguration(rules: builder.finish())
+    }
+}
+
+public struct SyncMainActorAsyncEscapingCallbackStub<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+> {
+    fileprivate let owner: SyncMainActorAsyncEscapingCallbackStubbing<Input, CallbackInput, CallbackResult, Output>
+    fileprivate let matcher: Matcher<Input>
+    fileprivate let captor: MainActorAsyncEscapingCallbackCaptor<CallbackInput, CallbackResult>?
+
+    /// Captures only when this rule wins. The mock and captor must share a session.
+    public func capturingCallback(into captor: MainActorAsyncEscapingCallbackCaptor<CallbackInput, CallbackResult>) -> Self {
+        Self(owner: owner, matcher: matcher, captor: captor)
+    }
+
+    public func willReturn(_ output: Output) { willAnswer { _ in output } }
+
+    public func willAnswer(_ answer: @escaping @Sendable (Input) -> Output) {
+        owner.builder.add(matcher, EscapingCallbackBehavior(captor: captor, answer: answer))
+    }
+}
+
+/// Journals nonisolated registration and preserves MainActor isolation on the retained callback.
+public final class SyncMainActorAsyncEscapingCallbackEndpoint<
+    Input: Sendable, CallbackInput: Sendable, CallbackResult: Sendable, Output: Sendable
+>: Sendable {
+    private typealias Callback = MainActorAsyncCallback<CallbackInput, CallbackResult>
+    private let dispatch: EscapingCallbackDispatch<Input, Callback, Output>
+
+    public init(
+        id: EndpointID,
+        configuration: SyncMainActorAsyncEscapingCallbackConfiguration<Input, CallbackInput, CallbackResult, Output>,
+        failureReporter: FailureReporter, scope: MockScope = MockSession().makeMock(),
+        fallback: (@Sendable (MockIssue) -> Output)? = nil
+    ) {
+        dispatch = EscapingCallbackDispatch(id: id, rules: configuration.rules, failureReporter: failureReporter,
+                                            scope: scope, fallback: fallback)
+    }
+
+    public func invoke(
+        _ input: Input, _ callback: @escaping @MainActor @Sendable (CallbackInput) async -> CallbackResult,
+        source: SourceLocation = SourceLocation()
+    ) -> Output {
+        dispatch.invoke(input, callback, source: source)
+    }
+
+    public func verification(matching matcher: Matcher<Input>, phase: CallPhase = .admitted) -> Verification<Input> {
+        dispatch.verification(matching: matcher, phase: phase)
+    }
+}

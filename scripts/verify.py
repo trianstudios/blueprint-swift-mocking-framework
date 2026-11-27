@@ -374,6 +374,10 @@ def main():
     run("async-throwing-escaping-callback-generation", generate(
         tool, source.with_name("AsyncThrowingEscapingCallbackDirectory.swift"),
         generated.with_name("AsyncThrowingEscapingCallbackDirectoryMock.swift"), "AsyncThrowingEscapingCallbackDirectory"))
+    run("main-actor-async-escaping-callback-generation", generate(
+        tool, source.with_name("MainActorAsyncEscapingCallbackDirectory.swift"),
+        generated.with_name("MainActorAsyncEscapingCallbackDirectoryMock.swift"),
+        "MainActorAsyncEscapingCallbackDirectory"))
     run("escaping-callback-configured-rejection", [
         sys.executable, "scripts/verify_escaping_callback_generation.py", "--tool", tool, "--evidence-dir", EVIDENCE,
     ], env=swift_environment, timeout=60,
@@ -383,6 +387,8 @@ def main():
                   r"PASS: GEN016 typed-throws creates two verified owned outputs",
                   r"PASS: GEN016 async-callback creates two verified owned outputs",
                   r"PASS: GEN016 async-typed-throws creates two verified owned outputs",
+                  r"PASS: GEN016 main-actor-async-callback creates two verified owned outputs",
+                  r"PASS: GEN016 qualified-main-actor-async-callback creates two verified owned outputs",
                   r"EVIDENCE: escaping-callback-generation-report\.json SHA-256 [0-9a-f]{64}"])
     type_subscript_source = source.with_name("TypeSubscriptDirectory.swift")
     type_subscript_generated = generated.with_name("TypeSubscriptDirectoryMock.swift")
@@ -1082,7 +1088,9 @@ def main():
                   r"GEN016_asyncEscapingCallbackReplaySurvivesResetAfterAcquisition\(\) passed",
                   r"GEN016_asyncEscapingCallbackReplaySurvivesFinishAfterAcquisition\(\) passed",
                   r"GEN016_asyncThrowingEscapingCallbackReturnsAcrossResetAfterAcquisition\(\) passed",
-                  r"GEN016_asyncThrowingEscapingCallbackThrowsItsDeclaredErrorAcrossFinish\(\) passed"])
+                  r"GEN016_asyncThrowingEscapingCallbackThrowsItsDeclaredErrorAcrossFinish\(\) passed",
+                  r"GEN016_mainActorAsyncEscapingCallbackReplaySurvivesResetAfterAcquisition\(\) passed",
+                  r"GEN016_mainActorAsyncEscapingCallbackReplaySurvivesFinishAfterAcquisition\(\) passed"])
     run_swift("consumer-demo", ["run", "--package-path", "Fixtures/ProtocolConsumer", "consumer-demo"],
         patterns=[r"PASS: generated protocol"])
     run_swift("typed-throwing-callback-consumer-demo", [
@@ -1187,6 +1195,10 @@ def main():
             r"AsyncThrowingEscapingCallbackWrongError\.swift:\d+:\d+: error: invalid conversion of thrown error type "
             r"'ForeignAsyncCallbackError' to 'AsyncCallbackFixtureError'"
         ),
+        "MainActorAsyncEscapingCallbackNonisolatedReplay": (
+            r"MainActorAsyncEscapingCallbackNonisolatedReplay\.swift:\d+:\d+: error: "
+            r"cannot convert value actor-isolated to 'MainActor' to specified type actor-isolated to 'ReplayFixtureActor'"
+        ),
         "CallbackSpyDeferredCapture": r"passing non-escaping parameter 'callback'.*'@escaping'",
         "CallbackSpyDetachedCapture": r"escaping closure captures non-escaping value",
         "InoutSpyRetainsAccess": r"escaping closure captures 'inout' parameter 'value'",
@@ -1228,7 +1240,8 @@ def main():
             fails=True, patterns=diagnostic_patterns)
         if fixture.stem in {"MainActorWitnessAccess", "MainActorStubbingAccess", "MainActorVerificationAccess",
                             "MainActorSpyWitnessAccess", "MainActorSpyAsyncTransport", "CallbackSpyDetachedCapture",
-                            "EscapingCallbackMainActorConversion", "MainActorEscapingCallbackNonisolatedReplay"}:
+                            "EscapingCallbackMainActorConversion", "MainActorEscapingCallbackNonisolatedReplay",
+                            "MainActorAsyncEscapingCallbackNonisolatedReplay"}:
             run(check_name + "-DefaultIsolation",
                 [*compiler_command, "-default-isolation", "MainActor", fixture],
                 env=swift_environment, fails=True, patterns=diagnostic_patterns)
