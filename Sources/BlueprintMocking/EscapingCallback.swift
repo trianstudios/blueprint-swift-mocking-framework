@@ -133,7 +133,7 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
         guard let storage else { throw .unavailable }
         defer { withExtendedLifetime(storage) {} }
 
-        let delivery = ScheduledCallbackDelivery<Output>()
+        let delivery = ScheduledCallbackDelivery<Output>(session: storage.session)
         let acquire: @Sendable () -> ScheduledCallbackAction = { [weak storage, invocation] in
             let owner = storage
             let callback = owner?.storedCallback(for: invocation)
@@ -150,7 +150,7 @@ public struct EscapingCallbackCapture<Input: Sendable, Output: Sendable>: Sendab
         let immediate = try storage.session.withLock { state throws(CallbackSchedulingError) in
             guard !state.isFinished, state.epoch == invocation.epoch,
                   storage.storedCallback(for: invocation) != nil else { throw .unavailable }
-            return try state.scheduleCallback(after: delay, acquire: acquire) {
+            return try state.scheduleCallback(id: ObjectIdentifier(delivery), after: delay, acquire: acquire) {
                 delivery.resolve(.unavailable)
             }
         }

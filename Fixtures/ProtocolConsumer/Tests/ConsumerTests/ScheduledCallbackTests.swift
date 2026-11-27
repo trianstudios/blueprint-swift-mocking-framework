@@ -4,7 +4,7 @@ import ConsumerDomain
 import ConsumerDoubles
 import Testing
 
-private func scheduledCallbackFixture(
+func scheduledCallbackFixture(
     session: MockSession, using callback: @escaping @Sendable (Int) -> String
 ) throws -> (captor: EscapingCallbackCaptor<Int, String>, capture: EscapingCallbackCapture<Int, String>) {
     let captor = EscapingCallbackCaptor<Int, String>(session: session)

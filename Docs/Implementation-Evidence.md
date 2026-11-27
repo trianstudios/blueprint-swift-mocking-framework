@@ -362,4 +362,13 @@ RUN-010 and RUN-024 now have a manual-clock scheduling path for a captured nonis
 
 The independent SwiftPM consumer schedules against a nonzero clock reading. It checks the state one nanosecond before and at the deadline, then advances again and verifies the callback ran exactly once. Separate reset and finish tests check that pending receipts become unavailable, subsequent clock advances cannot invoke the callbacks, and stale handles reject registration. A same-deadline test reenters reset from the first acquired callback and verifies that the other acquired callback still runs while a later request retires. The tests use explicit advances and preserve ordinary call history apart from the reset they request.
 
-Continuous-clock scheduling, explicit cancellation, repeated delivery policies, child delivery events, other actor and effect profiles, and delayed sequence steps remain open.
+Continuous-clock scheduling, repeated delivery policies, child delivery events, other actor and effect profiles, and delayed sequence steps remain open.
+
+
+## Cancelling a pending manual-clock callback
+
+A scheduled delivery receipt is bound to its exact request and owning session. A cancellation and a clock advance compete for that request under the session gate. Successful cancellation removes queued work and records `.cancelled`. The removed request releases its captured input outside the lock. Cancellation returns false if acquisition, another cancellation, reset, or finish has already removed the request. The outcome of an acquired callback remains readable after it completes.
+
+The independent SwiftPM consumer checks cancellation before the deadline, while a same-deadline batch is already acquired, and after reset and finish. A reentrant callback cannot cancel an acquired sibling and can cancel a later queued request. The tests use distinct sessions and new captures after reset with matching inputs and delays to show that old receipts have no effect on those requests. Subsequent advances leave completed receipts and invocation counts unchanged. All timing comes from the manual session clock.
+
+One-shot duplicate policies across independent requests, repeated delivery, child delivery events, continuous-clock scheduling, and other actor and effect profiles remain open.

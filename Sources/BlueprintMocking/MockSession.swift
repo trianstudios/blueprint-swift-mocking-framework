@@ -202,6 +202,10 @@ public final class MockSession: Sendable {
         callbacks.publish()
     }
 
+    func removeScheduledCallback(id: ObjectIdentifier) -> PendingCallbackDelivery? {
+        state.withLock { $0.removeScheduledCallback(id: id) }
+    }
+
     func timedSnapshot() -> (snapshot: SessionSnapshot, elapsed: Duration) {
         state.withLock { $0.timedSnapshot() }
     }
@@ -335,6 +339,7 @@ public final class MockSession: Sendable {
         }
 
         mutating func scheduleCallback(
+            id: ObjectIdentifier,
             after delay: Duration,
             acquire: @escaping @Sendable () -> ScheduledCallbackAction,
             retire: @escaping ScheduledCallbackAction
@@ -342,9 +347,14 @@ public final class MockSession: Sendable {
             guard case .manual(let elapsed) = clock else { throw .requiresManualClock }
             if delay == .zero { return acquire() }
             pendingCallbacks.append(PendingCallbackDelivery(
-                deadline: elapsed + delay, acquire: acquire, retire: retire
+                id: id, deadline: elapsed + delay, acquire: acquire, retire: retire
             ))
             return nil
+        }
+
+        fileprivate mutating func removeScheduledCallback(id: ObjectIdentifier) -> PendingCallbackDelivery? {
+            guard let index = pendingCallbacks.firstIndex(where: { $0.id == id }) else { return nil }
+            return pendingCallbacks.remove(at: index)
         }
 
         fileprivate mutating func acquireDueCallbacks() -> AcquiredCallbackDeliveries {
