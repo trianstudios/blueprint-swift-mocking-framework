@@ -739,3 +739,9 @@ Fresh inspection attributes requirements to each declaring interface position. M
 DX-007 and GEN-004 now exercise two shared schemes of one original arm64 macOS Xcode project. The domain compiles under an authored configuration. The phase forwards that source module's explicit condition to the canonical generator. The native XCTest target has the opposite condition. Numbers selects and executes the Int witness, and Words selects and executes String in the same DerivedData tree.
 
 The fixture adds a file to actual domain Compile Sources and the phase input list. Xcode compiles it and the generated index changes. Removing it restores the index bytes. The Swift shard stays byte-identical for the membership-only change. A missing source condition fails at the declaration and preserves the previously generated pair. This is standalone phase evidence with explicit authoring. Automatic context or membership discovery, the Xcode plugin frontend and broader profiles remain open.
+
+## Configured generator reproducibility
+
+DX-014 verifies exact Swift shard and index bytes across five fresh checkout variants with spaces, Unicode, C and Turkish locales, and reordered source and selection inputs. Repeat generation preserves both files. Missing and ambiguous parent diagnostics compare after replacing the actual checkout root and retaining file, line and column.
+
+Source diagnostics drop redundant dot path components and order ambiguous candidates by displayed location. File reads use the original path spelling. A symlink and parent-traversal control verifies that the source opened is the authored path's real target. Existing inspection and drift checks still pass. Persistent cache and cross-OS qualification remain open.

@@ -176,16 +176,19 @@ final class ProtocolSourceIndex {
                 }
                 swiftText = try String(contentsOfFile: path, encoding: .utf8)
             }
+            // Only erase no-op components for source locations. Parent traversal can cross a symbolic link.
+            let displayPath = path.split(separator: "/", omittingEmptySubsequences: false)
+                .filter { $0 != "." }.joined(separator: "/")
             let tree = Parser.parse(source: swiftText)
             guard !tree.hasError else {
                 if importedInterface != nil {
                     throw IncompatibleImporterContext(path: path, reason: "The installed SwiftSyntax parser cannot read this interface syntax")
                 }
-                let origin = ProtocolSourceOrigin(module: module, path: path, line: 1, column: 1)
+                let origin = ProtocolSourceOrigin(module: module, path: displayPath, line: 1, column: 1)
                 throw Self.error(at: origin, "Malformed Swift source. Fix parser errors before generation")
             }
-            var file = SourceFile(module: module, path: path, tree: tree,
-                                  converter: SourceLocationConverter(fileName: path, tree: tree))
+            var file = SourceFile(module: module, path: displayPath, tree: tree,
+                                  converter: SourceLocationConverter(fileName: displayPath, tree: tree))
             var hasComplexInterfaceImport = false
             Self.visitTopLevel(in: tree.statements) { declaration, conditional in
                 let origin = file.origin(of: declaration)
@@ -698,7 +701,10 @@ final class ProtocolSourceIndex {
     }
 
     private static func candidateLocations(_ candidates: [Candidate]) -> String {
-        candidates.map { "\($0.origin)" + ($0.isConditional ? " (#if)" : "") }.joined(separator: ", ")
+        let ordered = candidates.sorted {
+            ($0.origin.path, $0.origin.line, $0.origin.column) < ($1.origin.path, $1.origin.line, $1.origin.column)
+        }
+        return ordered.map { "\($0.origin)" + ($0.isConditional ? " (#if)" : "") }.joined(separator: ", ")
     }
 
     private static func error(at origin: ProtocolSourceOrigin, _ message: String) -> GenerationError {

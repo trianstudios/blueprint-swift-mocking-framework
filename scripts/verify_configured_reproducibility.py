@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""Verify configured CLI reproducibility across checkout roots and locales."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unicodedata
+
+from verify_inspection import (
+    BASE_PROTOCOL, MODULE, OUTPUT_NAMES, ROOT_PROTOCOL, arguments, fixture, require_unchanged, snapshot,
+)
+
+
+LANE = "configured-reproducibility"
+STAMP = b"Blueprint Mocking: generated 2 protocol mock(s)\n"
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
+
+
+def digest(content):
+    return hashlib.sha256(content).hexdigest()
+
+
+def normalized_diagnostic(contents, staged):
+    roots = {str(staged), str(staged.resolve())}
+    prefixes = {os.fsencode(unicodedata.normalize(form, root)) + b"/"
+                for root in roots for form in ("NFC", "NFD")}
+    normalized = contents
+    for prefix in sorted(prefixes):
+        normalized = normalized.replace(prefix, b"$CHECKOUT/")
+    require(normalized != contents, "The diagnostic must contain the actual checkout location")
+    return normalized
+
+
+def qualify(tool, repository, evidence, alternate_locale):
+    records = {}
+    tool_digest = digest(tool.read_bytes())
+
+    def save(label, suffix, contents):
+        path = evidence / f"{LANE}-{label}.{suffix}"
+        path.write_bytes(contents)
+        return {"path": path.name, "sha256": digest(contents)}
+
+    def invoke(label, command, environment, cwd):
+        process = subprocess.run(command, cwd=cwd, env=environment, capture_output=True, timeout=30, check=False)
+        records[label] = {
+            "exit": process.returncode,
+            "stdout": save(label, "stdout", process.stdout),
+            "stderr": save(label, "stderr", process.stderr),
+        }
+        return process
+
+    def outputs(output_directory):
+        require({path.name for path in output_directory.iterdir()} == set(OUTPUT_NAMES),
+                "Expected exactly the two configured Swift outputs")
+        return {name: (output_directory / name).read_bytes() for name in OUTPUT_NAMES}
+
+    with tempfile.TemporaryDirectory(prefix="Reproducible Configured CLI ", dir=evidence) as temporary:
+        outer = Path(temporary)
+        cases = (
+            ("baseline", "Primary Î checkout", "C", False, False),
+            ("relocated", "Deep/Second/Checkout é", "C", False, False),
+            ("alternate-locale", "Locale Ö checkout", alternate_locale, False, False),
+            ("reordered", "Inputs İ checkout", alternate_locale, True, False),
+            ("dotted-paths", "Paths Å checkout", alternate_locale, True, True),
+        )
+        baseline = None
+        reference_diagnostics = {}
+        for label, root, locale, reordered, dotted in cases:
+            staged = outer / root
+            configuration, sources = fixture(repository, staged)
+            if reordered:
+                document = json.loads(configuration.read_bytes())
+                document["selections"].reverse()
+                configuration.write_text(json.dumps(document, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+            def request(paths):
+                listed = list(paths)
+                if reordered:
+                    listed.reverse()
+                aliases = {f"{BASE_PROTOCOL}.swift", f"{ROOT_PROTOCOL}ReadBranch.swift"} if dotted else set()
+                spelled = [f"{path.parent}/./{path.name}" if path.name in aliases else path for path in listed]
+                return arguments(configuration, output, spelled)
+
+            output = configuration.parent / "Generated Swift"
+            env = {**os.environ, "LC_ALL": locale, "LANG": locale}
+            locale_tool = shutil.which("locale", path=os.defpath)
+            require(locale_tool is not None, "The local profile must provide locale(1)")
+            locale_info = invoke(f"{label}-locale", [locale_tool, "charmap"], env, staged)
+            require(locale_info.returncode == 0 and not locale_info.stderr and locale_info.stdout.strip(),
+                    f"Locale {locale} did not activate")
+            if locale == alternate_locale:
+                require(locale_info.stdout.strip() == b"UTF-8", f"{alternate_locale} did not select a UTF-8 locale")
+            authored = {path: path.read_bytes() for path in [configuration, *sources.values()]}
+            generated = invoke(f"{label}-generate", [tool, "generate", *request(sources.values())], env, staged)
+            require(generated.returncode == 0 and generated.stdout == STAMP and not generated.stderr,
+                    f"{label} generation did not report the configured pair")
+            current = outputs(output)
+            if baseline is None:
+                baseline = current
+                for name, content in current.items():
+                    save("reference", name, content)
+            require(current == baseline, f"{label} generated bytes differ between equivalent inputs")
+            records[f"{label}-generate"]["outputs"] = {name: digest(body) for name, body in current.items()}
+            require(all(path.read_bytes() == data for path, data in authored.items()),
+                    f"{label} generation changed source or configuration")
+            before_repeat = snapshot(staged)
+            repeated = invoke(f"{label}-repeat", [tool, "generate", *request(sources.values())], env, staged)
+            require(repeated.returncode == 0 and repeated.stdout == STAMP and not repeated.stderr,
+                    f"{label} no-op generation failed")
+            require_unchanged(staged, before_repeat, f"{label}-repeat")
+
+            base = sources[BASE_PROTOCOL]
+            duplicate = base.with_name("A Candidate İ.swift")
+            duplicate.write_bytes(base.read_bytes())
+            branch = sources[f"{ROOT_PROTOCOL}ReadBranch"]
+            branch_line = branch.read_text(encoding="utf-8").splitlines()[0]
+            column = branch_line.index(BASE_PROTOCOL) + 1
+            branch_name = branch.relative_to(staged).as_posix()
+            base_name = base.relative_to(staged).as_posix()
+            duplicate_name = duplicate.relative_to(staged).as_posix()
+            site = f"$CHECKOUT/{branch_name}:1:{column}: error: BPM001: "
+            parent = f"{MODULE}.{BASE_PROTOCOL}"
+            negative_cases = (
+                ("missing-parent", [path for path in sources.values() if path != base],
+                 f"{site}Missing inherited protocol {parent} in the supplied source inputs\n"),
+                ("ambiguous-parent", [*sources.values(), duplicate],
+                 f"{site}Ambiguous inherited protocol {parent}. Candidates: "
+                 f"$CHECKOUT/{duplicate_name}:5:1, $CHECKOUT/{base_name}:5:1\n"),
+            )
+            for subject, paths, expected in negative_cases:
+                step = f"{label}-{subject}"
+                unchanged = snapshot(staged)
+                rejected = invoke(step, [tool, "generate", *request(paths)], env, staged)
+                require_unchanged(staged, unchanged, step)
+                require(rejected.returncode == 1 and not rejected.stdout and rejected.stderr,
+                        f"{step}: expected a source-located BPM001 failure")
+                normalized = normalized_diagnostic(rejected.stderr, staged)
+                records[step]["normalizedStderr"] = save(step, "normalized.stderr", normalized)
+                # Preserve any canonical name spelling produced by the macOS filesystem.
+                actual_line = unicodedata.normalize("NFC", normalized.decode("utf-8"))
+                require(actual_line == expected, f"{step}: unexpected diagnostic {actual_line!r}")
+                if subject in reference_diagnostics:
+                    raw_reference, normalized_reference = reference_diagnostics[subject]
+                    require(rejected.stderr != raw_reference, f"{step}: raw diagnostic lost its own root")
+                    require(normalized == normalized_reference, f"{step}: normalized diagnostics differ byte-for-byte")
+                else:
+                    reference_diagnostics[subject] = rejected.stderr, normalized
+            print(f"PASS: DX014 {label} configured output and source diagnostics", flush=True)
+
+        verify_relative_symlink(tool, outer / "Relative source", invoke)
+
+    require(digest(tool.read_bytes()) == tool_digest, "The prepared generator changed during verification")
+    report = {
+        "generatorSHA256": tool_digest,
+        "cases": [
+            {"label": label, "checkout": root, "locale": locale,
+             "sourceAndSelectionOrderReversed": reordered, "dotPathSegments": dotted}
+            for label, root, locale, reordered, dotted in cases
+        ],
+        "outputs": {name: digest(contents) for name, contents in baseline.items()},
+        "normalizedDiagnostics": {label: digest(normalized) for label, (_, normalized) in reference_diagnostics.items()},
+        "checks": records,
+    }
+    body = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode()
+    report_path = evidence / f"{LANE}-report.json"
+    report_path.write_bytes(body)
+    print(f"EVIDENCE: {report_path.name} SHA-256 {digest(body)}")
+    print("PASS: DX014 configured generation reproduced exact bytes and normalized source diagnostics")
+
+
+def verify_relative_symlink(tool, staged, invoke):
+    authored = staged / "Sources"
+    authored.mkdir(parents=True)
+    target = staged / "Relocated SDK" / "Nested"
+    target.mkdir(parents=True)
+    (authored / "Link").symlink_to(target, target_is_directory=True)
+    (authored / "Witness.swift").write_text(
+        "public protocol SymlinkProbe: Sendable { func decoy() -> Int }\n", encoding="utf-8",
+    )
+    real_source = target.parent / "Witness.swift"
+    configuration = staged / "blueprint-mocking.json"
+    configuration.write_text(json.dumps({"schemaVersion": 1, "selections": [
+        {"module": "SymlinkDomain", "type": "SymlinkProbe", "kind": "protocol"},
+    ]}) + "\n", encoding="utf-8")
+    command = [
+        tool, "generate", "--config", configuration, "--output", staged / "Generated", "--input-set-id", "a014",
+        "--source", "SymlinkDomain", "./Sources/Link/.././Witness.swift",
+    ]
+    for label, source, diagnostic in (
+        ("relative-symlink-parent", "public protocol SymlinkProbe: MissingParent, Sendable {}\n",
+         ":1:31: error: BPM001: Missing inherited protocol SymlinkDomain.MissingParent in the supplied source inputs\n"),
+        ("relative-symlink-malformed", "public protocol SymlinkProbe {\n",
+         ":1:1: error: BPM001: Malformed Swift source. Fix parser errors before generation\n"),
+    ):
+        real_source.write_text(source, encoding="utf-8")
+        before = snapshot(staged)
+        rejected = invoke(label, command, os.environ, staged)
+        require_unchanged(staged, before, label)
+        expected = f"Sources/Link/../Witness.swift{diagnostic}".encode()
+        require(rejected.returncode == 1 and not rejected.stdout and rejected.stderr == expected,
+                f"{label}: expected original traversal with normalized display, got {rejected.stderr!r}")
+    print("PASS: DX014 relative source diagnostics preserve symlink parent traversal", flush=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--tool", required=True, type=Path)
+    parser.add_argument("--evidence-dir", required=True, type=Path)
+    parser.add_argument("--repository", default=Path(__file__).resolve().parents[1], type=Path)
+    parser.add_argument("--alternate-locale", default="tr_TR.UTF-8")
+    args = parser.parse_args()
+    try:
+        require(args.alternate_locale not in {"C", "POSIX", "C.UTF-8"}, "Select a distinct UTF-8 locale")
+        args.evidence_dir.mkdir(parents=True, exist_ok=True)
+        (args.evidence_dir / f"{LANE}-report.json").unlink(missing_ok=True)
+        qualify(args.tool.resolve(strict=True), args.repository.resolve(strict=True),
+                args.evidence_dir.resolve(strict=True), args.alternate_locale)
+        return 0
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"Configured reproducibility verification failed: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

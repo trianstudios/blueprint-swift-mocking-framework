@@ -881,6 +881,12 @@ def main():
                                   "--tool", tool, "--evidence-dir", EVIDENCE],
         patterns=[r"PASS: DX003 read-only inspection", r"PASS: DX011 verify-generated drift checks",
                   r"PASS: DX012 source membership validates listed files and updates only index provenance"])
+    run("configured-reproducibility", [
+        sys.executable, "scripts/verify_configured_reproducibility.py", "--tool", tool, "--evidence-dir", EVIDENCE,
+    ], env=swift_environment, timeout=180, patterns=[
+        r"PASS: DX014 configured generation reproduced exact bytes and normalized source diagnostics",
+        r"EVIDENCE: configured-reproducibility-report\.json SHA-256 [0-9a-f]{64}",
+    ])
     run("endpoint-inspection", [sys.executable, ROOT / "scripts/verify_endpoint_inspection.py",
                                "--tool", tool, "--evidence-dir", EVIDENCE],
         patterns=[r"PASS: SYS007 configured inspection reports stable and effect-sensitive endpoint IDs",
