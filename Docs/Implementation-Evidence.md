@@ -647,3 +647,11 @@ Swift SIL rejects reading the document across the actor boundary with either def
 DX-025 adds a checked, typed registry for a test request in a dedicated child process. Its synchronous and asynchronous lexical scopes clear registration on return or throw. Lookups acquire a value under the registry lock. A caller with an acquired value may finish using it after the scope ends. A new lookup requires an active registration. Join work before replacing a scope in the same process.
 
 The independent SwiftPM fixture holds two child registrations at the same time using readiness and release gates. A detached caller reaches the child-local typed stub without mock task context. Each child reports its own result and confirms cleanup after normal and throwing exits. The POSIX parent associates the result with the launched PID and request, bounds each stream, and enforces one deadline through exit. A plausible result from a nonzero child is rejected while the peer succeeds. Transport tests also reject malformed, duplicated and mismatched results and exercise timeout and overflow. Other native runner profiles and portability remain open.
+
+## A3.4 static factory workflow
+
+The independent SwiftPM fixture injects a protocol metatype into the shipment workflow. Its generated type scope provides two static rules. The workflow reads a typed shipping policy and requests construction of a fresh shipment through a separate static factory subscript. An independently generated audit collaborator receives the original shipment. Typed verification and the shared session prove strict returned order across the static and instance mocks. Reversed order fails, and the policy-to-audit subsequence passes relative order while failing strict order.
+
+Two detached workflows overlap after binding separate scopes for the same generated metatype and shipment ID. Each observes its own policy, fresh product and audit history. One workflow also enters an inheriting child task while the scope is bound. A test-first control reverses the two static calls while preserving the shipment and fails the strict-order assertion.
+
+This fixture exercises the explicit metatype factory seam in SYS-006. Native initializer witnesses and construction-attempt histories remain under GEN-026. Four other A3.4 scenarios and broader native qualification remain open.

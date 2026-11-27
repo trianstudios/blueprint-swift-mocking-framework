@@ -111,6 +111,18 @@ def verify_legacy_process_consumer(swift, env):
     ])
 
 
+def verify_static_factory_generation(tool, source, doubles, scratch):
+    for test, selected in (
+        ("static-factory-workflow-generation", "ScopedShipmentFactory"),
+        ("static-factory-audit-generation", "ShipmentFactoryAudit"),
+    ):
+        baseline = doubles / (selected + "Mock.swift")
+        regenerated = scratch / baseline.name
+        run(test, generate(tool, source, regenerated, selected))
+        if regenerated.read_bytes() != baseline.read_bytes():
+            raise ValueError(f"The committed {selected} fixture differs from standalone generation")
+
+
 def verify_fluent_self_generation(tool, source, generated, fixed, scratch):
     run("fluent-self-generation", generate(tool, source, generated, "FluentDirectory"))
     with tempfile.TemporaryDirectory(prefix="FluentSelf-", dir=scratch) as directory:
@@ -1066,6 +1078,8 @@ def main():
         tool, source.with_name("DraftEditorViewModel.swift"), ui_mock, "DraftEditorSurface"))
     if ui_mock.read_bytes() != generated.with_name(ui_mock.name).read_bytes():
         raise ValueError("The committed UI view-model fixture differs from standalone generation")
+    verify_static_factory_generation(
+        tool, source.with_name("ScopedShipmentWorkflow.swift"), generated.parent, temp)
     run("resource-transfer-generation", generate(
         tool, resource_source, resource_mock, "ResourceTransferCheckout",
         sources=[("ConsumerDomain", source.with_name("FreshOwnedTicketSource.swift"))]))
@@ -1943,6 +1957,8 @@ def main():
                   r"RUN015_detachedCompletionAndReusablePlanPreserveIndependentCursors\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
                   r"SYS006_uiViewModelRendersStatefulNonSendableDocuments\(\) passed",
+                  r"SYS006_staticFactoryOrdersScopedConstructionBeforeGeneratedAudit\(\) passed",
+                  r"SYS006_parallelStaticFactoryScopesIsolateTheSameMetatype\(\) passed",
                   r"SYS006_resourceTransferIssuesFreshTicketsAndConsumesEachExactlyOnce\(\) passed",
                   r"GEN031_ownerFilePrivateSeamUsesLiveAndGeneratedAdapters\(\) passed",
                   r"SYS006_concurrentRepositoryRetryComposesProjectionRevisionCancellationAndDeadlines\(\) passed",
