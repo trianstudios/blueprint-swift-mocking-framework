@@ -3,6 +3,8 @@
   "files": [
     "Package.swift",
     "Plugins/BlueprintMockingBuildPlugin/plugin.swift",
+    "Plugins/BlueprintMockingGenerateCommand/plugin.swift",
+    "Plugins/BlueprintMockingReadCommand/plugin.swift",
     "Sources/BlueprintMockingCLI/AssociatedTypeBindings.swift",
     "Sources/BlueprintMockingCLI/ImportedInterface.swift",
     "Sources/BlueprintMockingCLI/PluginGeneration.swift",

@@ -178,6 +178,19 @@ The report includes the resolved selections, supplied sources, planned output fi
 
 Use `verify-generated` with the configuration, output directory, input-set ID and source arguments to check the existing shard and index. Exit 0 confirms both files match the plan. Exit 3 reports each missing or changed path with `BPM003`. The check preserves existing files and leaves missing paths absent. A retained recovery journal exits 1 with `BPM004`. Rerun configured generation with valid inputs to recover the pair.
 
+### SwiftPM command plugins
+
+With the tooling package declared as a dependency, `swift package plugin --list` lists the Blueprint Mocking command verbs. Pass the same configuration, output and source arguments to both verbs.
+
+```sh
+swift package blueprint-mocking-read inspect --config blueprint-mocking.json \
+  --output Generated --input-set-id 1 --source AppDomain Sources/AppDomain/Repository.swift --format json
+swift package --allow-writing-to-package-directory blueprint-mocking-generate --config blueprint-mocking.json \
+  --output Generated --input-set-id 1 --source AppDomain Sources/AppDomain/Repository.swift
+```
+
+Use `verify-generated` with `blueprint-mocking-read` to check an existing pair without package-write permission. Generation takes a fresh package-relative directory under an existing parent. The wrapper reports the canonical invocation. For automation that needs a pure JSON stream, use direct CLI inspection.
+
 ### Local tooling source export
 
 The authoring repository can produce a standalone `blueprint-swift-mocking-tools` source archive. Use the full SHA of a commit that includes the tooling export manifest.

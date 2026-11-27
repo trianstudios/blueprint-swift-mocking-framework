@@ -895,6 +895,13 @@ def main():
     ], env=swift_environment, timeout=360, patterns=[
         r"PASS: tracked external Swift file membership regenerates through the SwiftPM build graph",
     ])
+    run("swiftpm-command-plugin", [
+        sys.executable, "Fixtures/PluginConsumer/verify_command_plugin.py", "--swift", swift,
+        "--host-tool", tool, "--evidence-dir", EVIDENCE / "command-plugin",
+    ], env=swift_environment, timeout=360, patterns=[
+        r"PASS: Native SwiftPM command plugin permission separation and canonical output parity",
+        r"EVIDENCE: swiftpm-command-plugin-report\.json SHA-256 [0-9a-f]{64}",
+    ])
     baseline = generated.read_bytes()
     inherited_source = source.with_name("InheritedDirectory.swift")
     inherited_generated = generated.with_name("InheritedDirectoryMock.swift")
