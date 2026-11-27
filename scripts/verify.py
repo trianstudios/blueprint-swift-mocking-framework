@@ -898,6 +898,11 @@ def main():
     run(performance_suite, [sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p",
                             performance_suite, "-v"],
         patterns=[r"(?m)^Ran [1-9]\d* tests? in ", r"(?m)^OK$"])
+    generation_performance_suite = "test_verify_generation_performance.py"
+    run(generation_performance_suite, [
+        sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p",
+        generation_performance_suite, "-v",
+    ], patterns=[r"(?m)^Ran 4 tests in ", r"(?m)^OK$"])
     if os.environ.get("BLUEPRINT_VERIFY_RUNTIME_PERFORMANCE") == "1":
         run("runtime-performance-local", [
             sys.executable, "scripts/verify_runtime_performance.py",

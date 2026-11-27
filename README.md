@@ -239,6 +239,18 @@ Choose an empty evidence directory, either ignored by Git or outside the checkou
 
 The local report shows how the latency samples compare with the published 2 µs target. Release approval requires the declared reference hardware, compatible baseline comparisons and the rest of D4.3, including generation, build, lock-wait and cancellation evidence.
 
+### Report-only configured generation performance on macOS
+
+Run against an independently built Xcode-linked generator and its bundled build receipt for the current clean revision. Use the bundled receipt fields below under Prepared parser parity. The default run generates 10,000 scalar requirements across 1,000 protocols for the cold sample and repeats a populated 1,000-protocol output for the warm samples. It records process wall and CPU time, peak memory, generated sizes and exact output preservation.
+
+```sh
+python3 scripts/verify_generation_performance.py \
+  --tool "$bundled_tool" --bundled-receipt "$bundled_receipt" \
+  --evidence-dir "$artifact_dir/generation-performance"
+```
+
+Use an empty evidence directory. Add `--smoke` to exercise the fixture with three protocols. The measured wall includes process launch. Approved reference hardware, launch-excluded timing and downstream compile impact are separate release checks.
+
 ### Optional source facts cache
 
 Configured `generate` can take `--source-facts-cache DIRECTORY` with the tool that links Xcode's bundled parser. Choose a dedicated owner-private directory outside the generated output directory. The cache skips indexing regular UTF-8 Swift source files when the same bytes were previously parsed and found to contain only top-level free functions or no declarations. The generator still opens and hashes the current source and indexes participating declarations normally. A malformed, oversize, or incompatible cache record triggers parsing again. Cache use is optional and does not require a network connection.

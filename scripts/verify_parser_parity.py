@@ -114,6 +114,13 @@ def verify_receipt(path, common, route, binary, additional):
     return receipt
 
 
+def compiler_receipt_context(revision, environment):
+    compiler = str(Path(environment["SWIFT_EXEC"]))
+    version = subprocess.check_output([compiler, "--version"], env=environment, text=True).strip()
+    return {"sourceRevision": revision, "swiftCompiler": compiler, "compilerVersion": version,
+            "sdk": environment["SDKROOT"]}
+
+
 def inspect_provenance(args, environment, artifacts):
     if sys.platform != "darwin":
         raise ValueError("Parser provenance checks currently require macOS Mach-O and dyld tools")
@@ -122,10 +129,8 @@ def inspect_provenance(args, environment, artifacts):
         raise ValueError("Expected two independent binaries, not a self-comparison")
     if not all(os.access(tool, os.X_OK) for tool in (args.bundled_tool, args.packaged_tool)):
         raise ValueError("Both generator paths must be executable")
-    compiler = Path(environment["SWIFT_EXEC"])
-    compiler_version = subprocess.check_output([str(compiler), "--version"], env=environment, text=True).strip()
-    common = {"sourceRevision": args.revision, "swiftCompiler": str(compiler),
-              "compilerVersion": compiler_version, "sdk": environment["SDKROOT"]}
+    common = compiler_receipt_context(args.revision, environment)
+    compiler = Path(common["swiftCompiler"])
     host = compiler.parent.parent / "lib/swift/host"
     dylibs = {name: (host / name).resolve(strict=True) for name in sorted(PARSER_LIBRARIES)}
     bundled = verify_receipt(args.bundled_receipt, common, "bundled", args.bundled_tool,

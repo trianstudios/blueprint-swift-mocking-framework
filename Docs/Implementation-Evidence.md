@@ -817,3 +817,9 @@ The generated endpoint identity and the existing missing-await and scope checks 
 RUN-012 now uses the shared sequence reservation path for checked synchronous typed-throwing selectors. An independent consumer runs finite immediate return, throw and answer steps through the generated spy protocol. A winning finite sequence reports one exhaustion before typed failure mapping and keeps its precedence over earlier matches and the injected real dependency. Explicit repeat-last and cycle policies preserve their configured order.
 
 The consumer holds an already reserved answer, invokes two peers and then cancels the held task. Its answer throws the declared error without rolling back the reserved step. A separate matcher pauses before reservation across both inherited-position and restarting detach-active resets. Each epoch retains its own cursor and typed history. Other effect families and native release qualification remain open.
+
+## Report-only configured generator scale
+
+DX-032 now exercises the canonical configured generator with the published declaration counts. A cold process starts with an absent output directory and selects 10,000 scalar requirements across 1,000 protocols. A second corpus selects one requirement per protocol. Its seed starts in an empty directory, then warm subprocesses reuse the complete output. The verifier checks each generated witness and both files' bytes, identities and modification times.
+
+The run records the exact bundled build receipt, selected compiler and parser libraries, source revision, process wall and CPU time, peak resident size and generated sizes. The fixture can run with three protocols as a structural smoke. Process launch remains in the wall measurement and the driver leaves OS caches in their existing state. Launch-excluded timing, a reviewed reference baseline and downstream compile impact remain open.
