@@ -20,7 +20,7 @@ def run(*command, env=None):
 
 
 def test(swift, test_name, env):
-    return run(swift, "test", "--package-path", str(FIXTURE), "--filter", test_name, env=env)
+    return run(swift, "test", "--package-path", str(FIXTURE), "--jobs", "1", "--filter", test_name, env=env)
 
 
 def xcrun(*arguments):
@@ -41,6 +41,7 @@ def main():
     environment.pop("BLUEPRINT_XCTEST_EXPECT_FAILURE", None)
     environment.pop("BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE", None)
     environment.pop("BLUEPRINT_XCTEST_ORPHAN_MODE", None)
+    environment.pop("BLUEPRINT_XCTEST_DYNAMIC_SOURCE_FAILURE", None)
     generated = run(
         "bash", "scripts/generate.sh",
         "--input", str(FIXTURE / "Sources/LookupDomain/Lookup.swift"),
@@ -71,6 +72,21 @@ def main():
             raise SystemExit(f"XCTest {kind} failure was not attributed to ReporterTests.swift:{invocation_line}")
     print("PASS: XCTest reports sync and async verification failures at their caller lines")
 
+    dynamic = test(swift, "DynamicSourceReporterTests.testRecordsDynamicSourceOnExplicitActiveCase", {
+        **environment, "BLUEPRINT_XCTEST_DYNAMIC_SOURCE_FAILURE": "1",
+    })
+    dynamic_errors = re.findall(r"(?m)^.*:\d+:\s+error:.*$", dynamic.stdout)
+    dynamic_issue = (
+        r"DynamicOrigin\.swift:147:\s+error:.*testRecordsDynamicSourceOnExplicitActiveCase"
+        r".*Expected exactly 1 calls; observed 0"
+    )
+    dynamic_passed = "PASS: XCTest observed the exact dynamic origin on the explicit owning case"
+    if (dynamic.returncode != 1 or len(dynamic_errors) != 1
+            or re.search(dynamic_issue, dynamic_errors[0]) is None
+            or dynamic_passed not in dynamic.stdout
+            or not re.search(r"Executed 1 test, with 1 failure \(0 unexpected\)", dynamic.stdout)):
+        raise SystemExit("XCTest dynamic source did not reach the explicitly selected active case")
+
     late = test(swift, "LateTaskReporterTests.testLateTypeScopeTaskKeepsOwningReporter", {
         **environment, "BLUEPRINT_EXPECT_LATE_REPORTER_FAILURE": "1",
     })
@@ -94,7 +110,7 @@ def main():
         r" in a finished mock session"
     )
     for mode, count in (("wrong-owner", 1), ("suite", 1), ("overflow", 2)):
-        runner = run(swift, "test", "--package-path", str(FIXTURE), "--disable-swift-testing",
+        runner = run(swift, "test", "--package-path", str(FIXTURE), "--jobs", "1", "--disable-swift-testing",
                      env={**environment, "BLUEPRINT_XCTEST_ORPHAN_MODE": mode})
         native_errors = re.findall(r"(?m)^.*:\d+:\s+error:.*$", runner.stdout)
         case_a = "BLUEPRINT XCTEST CASE FINISHED -[OrphanSuiteReporterTests testAOwnerSchedulesOrphan] failures=0"

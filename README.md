@@ -440,6 +440,8 @@ Share an `OrphanFailureBuffer` with `MockSession(orphanFailures: buffer)` to col
 
 On macOS XCTest, import `BlueprintMockingXCTest` and call `try FailureReporter.flushXCTestOrphans(buffer, in: suiteRun)` on the runner’s path for an active suite. Pass the suite run explicitly, for example from an `XCTestObservation` hook. The flush records issues at suite level. An inactive suite throws before it claims the buffer.
 
+On macOS XCTest, an explicit case owner can record a collected `MockIssue` with `try FailureReporter.recordXCTestIssue(issue, in: testCase)` on the active case's runner path. XCTest receives the original file and line, including paths supplied as dynamic strings. Callers supply the owning case and record the issue before that case finishes.
+
 Use `try session.discardEvents(through: checkpoint)` to discard a current epoch's session metadata prefix. A checkpoint that misses a discarded event reports unavailable history. A gap in global ordinals alone is valid because another epoch can receive events. Endpoint argument histories are separate.
 
 Use `try session.verifyNoInteractions(in: .session)` to check for admissions through the current snapshot, or pass `.mock(mockID)` to check one mock. Use `since:` to start after a checkpoint and `ignoring:` to exclude explicit mock-and-endpoint pairs. A retained admission disproves absence. A pruned prefix can leave the result unavailable.

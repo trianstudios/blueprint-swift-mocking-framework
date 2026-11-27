@@ -655,3 +655,9 @@ The independent SwiftPM fixture injects a protocol metatype into the shipment wo
 Two detached workflows overlap after binding separate scopes for the same generated metatype and shipment ID. Each observes its own policy, fresh product and audit history. One workflow also enters an inheriting child task while the scope is bound. A test-first control reverses the two static calls while preserving the shipment and fails the strict-order assertion.
 
 This fixture exercises the explicit metatype factory seam in SYS-006. Native initializer witnesses and construction-attempt histories remain under GEN-026. Four other A3.4 scenarios and broader native qualification remain open.
+
+## Explicit XCTest case attribution for dynamic source locations
+
+DX-022 adds an explicit macOS XCTest case bridge for neutral mock issues. A generated verification in the external consumer supplies a dynamic path and original line. The native observation callback sees exactly one issue on the supplied active case with the original full path, line and message, and the run exits unsuccessfully. The bridge rejects an inactive case before reporting. The test-first ambient control attributed the native event to the reporter source.
+
+The case and suite bridges share the same native location conversion. Existing intentional sync and async caller-line, late-owner and suite orphan checks still exercise the native runner. This evidence covers the selected macOS XCTest profile.

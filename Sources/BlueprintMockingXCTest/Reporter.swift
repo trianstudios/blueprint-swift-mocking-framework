@@ -15,3 +15,16 @@ extension FailureReporter {
         }
     }
 }
+
+#if os(macOS)
+func nativeXCTestIssue(_ issue: MockIssue, detailPrefix: String = "") -> XCTIssue {
+    let source = issue.source
+    let location = source.line > 0 && !source.filePath.isEmpty
+        ? XCTSourceCodeLocation(filePath: source.filePath, lineNumber: source.line) : nil
+    let detail = detailPrefix + "source=\(source.fileID) line=\(source.line) column=\(source.column)"
+    return XCTIssue(
+        type: .assertionFailure, compactDescription: issue.message, detailedDescription: detail,
+        sourceCodeContext: XCTSourceCodeContext(location: location), associatedError: nil, attachments: []
+    )
+}
+#endif

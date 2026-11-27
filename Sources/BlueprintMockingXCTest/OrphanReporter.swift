@@ -19,18 +19,9 @@ extension FailureReporter {
 
         let batch = buffer.drain()
         for failure in batch.failures {
-            let issue = failure.issue
-            let source = issue.source
-            let location = source.line > 0 && !source.filePath.isEmpty
-                ? XCTSourceCodeLocation(filePath: source.filePath, lineNumber: source.line) : nil
             let owner = "session=\(failure.epoch.sessionID.rawValue.uuidString) epoch=\(failure.epoch.rawValue)"
-                + " mock=\(failure.mockID.rawValue) ordinal=\(failure.ordinal)"
-            let details = "\(owner) source=\(source.fileID) line=\(source.line) column=\(source.column)"
-            suiteRun.record(XCTIssue(
-                type: .assertionFailure, compactDescription: issue.message,
-                detailedDescription: details, sourceCodeContext: XCTSourceCodeContext(location: location),
-                associatedError: nil, attachments: []
-            ))
+                + " mock=\(failure.mockID.rawValue) ordinal=\(failure.ordinal) "
+            suiteRun.record(nativeXCTestIssue(failure.issue, detailPrefix: owner))
         }
         if batch.droppedCount > 0 {
             suiteRun.record(XCTIssue(
