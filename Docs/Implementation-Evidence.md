@@ -306,6 +306,12 @@ The independent SwiftPM consumer targets macOS 13. Its guarded test configures a
 This evidence covers compilation for the macOS 13 deployment target and execution on the available newer macOS host. Execution on macOS 13, iOS, per-member mock availability, protocol-level and mixed-platform attributes, and qualification of the packaged parser remain open. The automatic SwiftPM compiler context and original Xcode project checks retain their own gates.
 
 
+## Immediate nonescaping callback plans
+
+RUN-011 and GEN-017 cover ordinary Sendable mocks with one final unary nonescaping callback on a synchronous, nonthrowing instance method. The external consumer verifies that an answer invokes the original callback during the admission, a return stub skips it, and the callback’s local payload is released after the call. Typed verification exposes only the ordinary arguments. Swift rejects passing the callback from the answer into escaping storage under nonisolated and MainActor default isolation.
+
+Configured generation emits the same witness as the standalone CLI. Generator guards diagnose actor-isolated requirements, async effects, and a callback before the final position in this profile. The existing checked spy uses the same call-scoped runtime. Further callback shapes and applicable release profile certification remain open.
+
 ## Typed escaping callback capture
 
 GEN-016 adds a final unary `@escaping @Sendable` callback to an ordinary, synchronous and nonthrowing instance method on a Sendable protocol supplied in the same module. The generated witness retains the callback type. Stubbing and verification match only ordinary arguments. A winning stub that opts into `EscapingCallbackCaptor` holds the closure outside the general journal. The typed handle exposes the originating admission and an explicit synchronous invocation with the callback's input and result types.

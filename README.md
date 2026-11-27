@@ -260,7 +260,7 @@ Generate a Sendable or `@MainActor` protocol spy with `--spy` and pass the real 
 
 Checked Sendable spies also support synchronous methods with a single `inout Int` parameter. Pass the caller's value to the mock with `&` as usual. Real providers and `willAnswer` stubs can change it before returning or throwing a typed error. Pass `after:` to verification to match the final integer in addition to the entry value.
 
-Checked Sendable spies can also forward a final, unary nonescaping callback on a synchronous nonthrowing method. A `willAnswer` stub receives the ordinary input and callback separately. Stubbing and verification match the ordinary arguments, and the journal stores only those arguments. Swift enforces the callback lifetime at the witness and answer boundaries.
+Ordinary Sendable mocks and checked spies support one final unary nonescaping callback on a synchronous, nonthrowing instance method. A `willAnswer` stub receives the ordinary input and can invoke the original callback while the witness is active. A `willReturn` stub skips the callback. Stubbing, verification, and call history use only the ordinary arguments. Swift enforces the callback lifetime at the answer boundary. A checked spy can also pass the callback to its real provider.
 
 An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
 

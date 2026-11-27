@@ -3,3 +3,8 @@ public protocol CallbackSpyDirectory: Sendable {
     func withoutMetadata(_ callback: (Int) -> String) -> String
     func summarize(_ id: String, offset: Int, using callback: (Int) -> String) -> String
 }
+
+public protocol ImmediateCallbackDirectory: Sendable {
+    func process(scope: String, _ value: Int, using callback: (Int) -> String) -> String
+    func ignore(_ callback: (Int) -> String) -> String
+}

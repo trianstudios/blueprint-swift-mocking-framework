@@ -588,17 +588,22 @@ func generate(
                     }
                     return Parameter(label: label, type: "Swift.Int", isInout: true)
                 }
-                if tokens.contains("->") {
-                    guard isolation == .sendable, !forSubscript, unmodified,
-                          let function = parameter.type.as(FunctionTypeSyntax.self),
-                          function.effectSpecifiers == nil, function.parameters.count == 1,
-                          let input = function.parameters.first.flatMap({ supportedType($0.type) }),
-                          let output = supportedResult(function.returnClause.type) else {
-                        try reject(parameter, "Direct spy callbacks require one unannotated, nonescaping, synchronous nonthrowing function argument of supported value types")
-                    }
-                    let callback = CallbackType(input: input, output: output, kind: .scoped)
-                    return Parameter(label: label, type: callback.declaration, callback: callback)
+            }
+            let directFunction = parameter.type.as(FunctionTypeSyntax.self)
+            if tokens.contains("->"), spy || directFunction != nil {
+                guard isolation == .sendable, !forSubscript, unmodified,
+                      let function = directFunction, function.effectSpecifiers == nil,
+                      function.parameters.count == 1, let argument = function.parameters.first,
+                      spy || (!imported && !hasBindings && !isVariadic && argument.inoutKeyword == nil &&
+                              argument.firstName == nil && argument.ellipsis == nil),
+                      let input = supportedType(argument.type),
+                      let output = supportedResult(function.returnClause.type) else {
+                    try reject(parameter, spy
+                        ? "Direct spy callbacks require one unannotated, nonescaping, synchronous nonthrowing function argument of supported value types"
+                        : "Nonescaping callback plans require an unannotated unary synchronous nonthrowing function argument of supported value types in a Sendable method")
                 }
+                let callback = CallbackType(input: input, output: output, kind: .scoped)
+                return Parameter(label: label, type: callback.declaration, callback: callback)
             }
             if tokens.contains("->") {
                 guard isolation == .sendable, !imported, !hasBindings, !forSubscript, !isVariadic, unmodified,
@@ -925,12 +930,18 @@ func generate(
         if effect.isAsync && parameters.contains(where: \.isInout) {
             try reject(fn, "Direct spy inout forwarding requires a synchronous method")
         }
-        let callbacks = parameters.filter { $0.callback != nil }
+        let callbacks = parameters.compactMap(\.callback)
         if !callbacks.isEmpty && (callbacks.count != 1 || parameters.last?.callback == nil ||
                                   effect.isAsync || effect.failure != nil) {
-            try reject(fn, spy
-                ? "Direct spy callbacks require a synchronous nonthrowing method with one callback in the final position"
-                : "Escaping callback capture requires a synchronous nonthrowing Sendable method with one callback in the final position")
+            let message: String
+            if spy {
+                message = "Direct spy callbacks require a synchronous nonthrowing method with one callback in the final position"
+            } else if case .some(.scoped) = callbacks.first?.kind {
+                message = "Nonescaping callback plans require a synchronous nonthrowing Sendable method with one callback in the final position"
+            } else {
+                message = "Escaping callback capture requires a synchronous nonthrowing Sendable method with one callback in the final position"
+            }
+            try reject(fn, message)
         }
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
                       effect: effect, kind: .method, at: fn)
