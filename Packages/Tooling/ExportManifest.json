@@ -6,6 +6,7 @@
     "Sources/BlueprintMockingCLI/AssociatedTypeBindings.swift",
     "Sources/BlueprintMockingCLI/PluginGeneration.swift",
     "Sources/BlueprintMockingCLI/ProtocolSourceIndex.swift",
+    "Sources/BlueprintMockingCLI/SubclassGeneration.swift",
     "Sources/BlueprintMockingCLI/main.swift"
   ],
   "compatibility": {

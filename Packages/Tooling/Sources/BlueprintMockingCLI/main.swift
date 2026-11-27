@@ -2129,7 +2129,17 @@ func generate(
     )
 }
 
+private func writeStandaloneMock(_ source: String, to path: String) throws {
+    try source.write(toFile: path, atomically: true, encoding: .utf8)
+}
+
 private func run(_ arguments: [String]) throws {
+    if arguments.first == "subclass" {
+        let request = try SubclassGenerationRequest(arguments: arguments.dropFirst())
+        let source = try generateSubclass(request)
+        try writeStandaloneMock(source, to: request.output)
+        return
+    }
     if arguments.first == "inspect" {
         try inspectBuildOutputs(arguments: arguments.dropFirst())
         return
@@ -2235,7 +2245,7 @@ private func run(_ arguments: [String]) throws {
                               materializedAutoclosureSelectors: materializedAutoclosureSelectors, spy: spy,
                               associatedTypeBindings: associatedTypeBindings)
     // Parsing and validation finish before publication. No partial output on unsupported input.
-    try output.source.write(toFile: arguments[7], atomically: true, encoding: .utf8)
+    try writeStandaloneMock(output.source, to: arguments[7])
 }
 
 do {

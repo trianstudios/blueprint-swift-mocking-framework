@@ -1632,6 +1632,17 @@ def main():
                   r"PASS: GEN016 executable replayed a MainActor async typed callback success and failure"])
     modules = Path(run_swift("consumer-bin-path", [
         "build", "--package-path", "Fixtures/ProtocolConsumer", "--show-bin-path"]).strip())
+    run_swift("subclass-swiftpm-consumer", [
+        "run", "--package-path", "Fixtures/ProtocolConsumer", "SubclassBootstrapProbe"],
+        patterns=[r"PASS: initializer reentry reached the override"])
+    run("subclass-native-bootstrap", [
+        sys.executable, "scripts/verify_subclass_bootstrap.py", "--tool", tool, "--swiftc", swiftc,
+        "--sdk", sdk, "--runtime-build", modules, "--evidence-dir", EVIDENCE / "subclass-bootstrap"],
+        env=swift_environment, patterns=[r"PASS: cross-module MainActor subclass bootstrap"])
+    built_subclass = ROOT / "Fixtures/ProtocolConsumer/Sources/SubclassBootstrapProbe/BootstrapRendererMock.swift"
+    regenerated_subclass = EVIDENCE / "subclass-bootstrap/BootstrapRendererMock.swift"
+    if built_subclass.read_bytes() != regenerated_subclass.read_bytes():
+        raise ValueError("The committed SwiftPM subclass fixture differs from standalone generation")
     run("typed-throwing-callback-deployment-floor", ["xcrun", "vtool", "-show-build", modules / "consumer-demo"],
         env=swift_environment, patterns=[r"platform MACOS", r"minos 13\.0\b"])
     compiler_floor = [

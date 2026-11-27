@@ -19,5 +19,6 @@ fi
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/AssociatedTypeBindings.swift" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/PluginGeneration.swift" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/ProtocolSourceIndex.swift" \
+  "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/SubclassGeneration.swift" \
   -o "$TOOL"
 "$TOOL" "$@"
