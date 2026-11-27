@@ -43,6 +43,28 @@ public enum GenericSpyDecision<Output: Sendable>: Sendable {
     case forward
 }
 
+/// An admitted infallible construction awaiting a fully initialized instance.
+/// Dropping an uncompleted attempt records a terminated outcome.
+public struct MockConstructionAttempt: ~Copyable, Sendable {
+    public let instanceScope: MockScope
+    fileprivate let invocation: SessionInvocationID
+
+    fileprivate var isCompleted = false
+
+    /// Generated initializer witnesses call this after initializing all stored state.
+    public consuming func complete() {
+        var attempt = consume self
+        attempt.isCompleted = true
+        attempt.instanceScope.completeProviderInvocation(attempt.invocation, phase: .returned)
+    }
+
+    deinit {
+        if !isCompleted {
+            instanceScope.completeProviderInvocation(invocation, phase: .terminated)
+        }
+    }
+}
+
 /// The explicitly selected session and identity for a mock's endpoints.
 public struct MockScope: Sendable {
     public let id: MockID
@@ -89,6 +111,15 @@ public struct MockScope: Sendable {
         case rejected(ScopeAdmissionRejection, closedEpoch: SessionEpoch?)
     }
 
+    /// Reserves a new instance identity and admits its infallible constructor atomically.
+    public func beginInfallibleConstruction(
+        of endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation
+    ) -> MockConstructionAttempt {
+        let event = admitProviderInvocation(endpoint, reporter: reporter, source: source, reservesInstance: true)
+        return MockConstructionAttempt(instanceScope: MockScope(id: event.mockID, session: session),
+                                       invocation: event.invocationID)
+    }
+
     /// Records an immediate generic provider call without retaining its values.
     public func invokeGenericProvider<Argument: Sendable>(
         of declaration: String, for type: Argument.Type, reporter: FailureReporter, source: SourceLocation,
@@ -104,7 +135,7 @@ public struct MockScope: Sendable {
         forwarding: @Sendable () async -> Output
     ) async -> Output {
         let endpoint = EndpointID(declaration, specializedFor: type)
-        let invocation = admitProviderInvocation(endpoint, reporter: reporter, source: source)
+        let invocation = admitProviderInvocation(endpoint, reporter: reporter, source: source).invocationID
         switch await select() {
         case .handled(let result):
             completeProviderInvocation(invocation, phase: .returned)
@@ -137,7 +168,7 @@ public struct MockScope: Sendable {
         of declaration: String, reporter: FailureReporter, source: SourceLocation,
         _ answer: @Sendable () async throws -> Output
     ) async rethrows -> Output {
-        let invocation = admitProviderInvocation(EndpointID(declaration), reporter: reporter, source: source)
+        let invocation = admitProviderInvocation(EndpointID(declaration), reporter: reporter, source: source).invocationID
         var phase = CallPhase.threw
         defer { completeProviderInvocation(invocation, phase: phase) }
         let result = try await answer()
@@ -149,7 +180,7 @@ public struct MockScope: Sendable {
         _ endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation,
         _ answer: () throws -> Output
     ) rethrows -> Output {
-        let invocation = admitProviderInvocation(endpoint, reporter: reporter, source: source)
+        let invocation = admitProviderInvocation(endpoint, reporter: reporter, source: source).invocationID
         var phase = CallPhase.threw
         defer { completeProviderInvocation(invocation, phase: phase) }
         let result = try answer()
@@ -158,13 +189,14 @@ public struct MockScope: Sendable {
     }
 
     private func admitProviderInvocation(
-        _ endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation
-    ) -> SessionInvocationID {
+        _ endpoint: EndpointID, reporter: FailureReporter, source: SourceLocation, reservesInstance: Bool = false
+    ) -> SessionEvent {
         let claim = session.withLock { state -> ProviderAdmission in
             if let rejection = admissionRejection(in: state) {
                 return .rejected(rejection, closedEpoch: state.isFinished ? state.epoch : nil)
             }
-            let admission = state.admit(mockID: id, endpoint: endpoint,
+            let admittedMockID = reservesInstance ? state.makeMockID() : id
+            let admission = state.admit(mockID: admittedMockID, endpoint: endpoint,
                                         configurationRevision: RuleRevision(rawValue: 0))
             return .accepted(admission, state.observationWake())
         }
@@ -174,11 +206,11 @@ public struct MockScope: Sendable {
                                        source: source, watermark: 0, closedEpoch: closedEpoch)
         case .accepted(let admission, let wake):
             wake?.publish()
-            return admission.invocationID
+            return admission
         }
     }
 
-    private func completeProviderInvocation(
+    fileprivate func completeProviderInvocation(
         _ invocation: SessionInvocationID, phase: CallPhase, origin: CallOrigin? = nil
     ) {
         let (delivery, wake) = session.withLock { state in

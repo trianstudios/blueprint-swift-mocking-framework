@@ -2215,6 +2215,14 @@ def main():
         r"PASS: SDK integration run-source-less-consumer",
         r"PASS: SDK integration reject-final-subclass",
     ])
+    run("scoped-construction-consumer", [
+        sys.executable, "Fixtures/ConstructionConsumer/verify.py", "--tool", tool, "--swiftc", swiftc,
+        "--sdk", sdk, "--runtime-modules", modules, "--runtime-library", modules / "BlueprintMocking.o",
+        "--evidence-dir", EVIDENCE / "construction",
+    ], env=swift_environment, timeout=300, patterns=[
+        r"PASS: GEN026 run-metatype-consumer",
+        r"PASS: GEN026 reject-double-construction-completion",
+    ])
     if os.environ.get("BLUEPRINT_VERIFY_XCODE_PHASE") == "1":
         selected_xcode = Path(xcrun("--find", "xcodebuild"))
         run("xcode-standalone-build-phase", [

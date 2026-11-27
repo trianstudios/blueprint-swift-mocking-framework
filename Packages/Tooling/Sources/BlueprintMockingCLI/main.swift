@@ -1480,7 +1480,29 @@ func generate(
         rethrowsMethods.append(requirement)
     }
 
+    var constructor: ProtocolSourceOrigin?
     for (declarationID, item) in activeMembers.flatMap({ entry in entry.items.map { (entry.declarationID, $0) } }) {
+        if let initializer = item.decl.as(InitializerDeclSyntax.self) {
+            let parameters = initializer.signature.parameterClause.parameters
+            guard constructor == nil, declarationID == proto.id, declarations.count == 1,
+                  isolation == .sendable, !fromTextualInterface, !hasBindings, !spy, !specializesGenerics,
+                  projections.isEmpty, variadicForwarding.isEmpty, scopedRuleSelectors.isEmpty,
+                  rethrowsSelections.isEmpty, lazyAutoclosureSelections.isEmpty, materializedAutoclosureSelections.isEmpty,
+                  initializer.attributes.isEmpty, initializer.modifiers.isEmpty, initializer.body == nil,
+                  initializer.optionalMark == nil, initializer.genericParameterClause == nil,
+                  initializer.genericWhereClause == nil, initializer.signature.effectSpecifiers == nil,
+                  parameters.count == 1, let parameter = parameters.first,
+                  parameter.firstName.text == "seed", parameter.attributes.isEmpty, parameter.modifiers.isEmpty,
+                  parameter.defaultValue == nil, parameter.ellipsis == nil,
+                  ["Int", "Swift.Int"].contains(parameter.type.trimmedDescription) else {
+                try reject(initializer, "Construction scopes support one ordinary direct Sendable init(seed: Int) without other generation modes")
+            }
+            try index.requireUnshadowedQualifier("Swift", at: initializer)
+            try index.requireUnshadowedQualifier("BlueprintMocking", at: initializer)
+            if parameter.type.trimmedDescription == "Int" { try index.requireUnshadowedQualifier("Int", at: parameter.type) }
+            constructor = index.origin(of: initializer)
+            continue
+        }
         if fromTextualInterface {
             guard let fn = item.decl.as(FunctionDeclSyntax.self), fn.attributes.isEmpty,
                   fn.genericParameterClause == nil, fn.genericWhereClause == nil,
@@ -1837,6 +1859,17 @@ func generate(
         try addMember(name: fn.name.text, parameters: parameters, outputType: outputType,
                       effect: effect, kind: .method, declaredResult: returnsBareSelf ? "Self" : nil, at: fn)
     }
+    if constructor != nil {
+        let ordinarySiblings = members.allSatisfy { member in
+            guard case .method = member.kind, member.family == "Sync", member.effect.failure == nil,
+                  member.outputType != selected + "Mock",
+                  !["ConstructionScope", "makeConstructionScope"].contains(member.name) else { return false }
+            return !member.parameters.contains(where: \.isVariadic)
+        }
+        guard !members.isEmpty, mockAvailability == nil, ordinarySiblings else {
+            try reject(proto, "Scoped construction requires ordinary synchronous nonthrowing instance methods")
+        }
+    }
     if members.contains(where: \.usesBorrowedSpan) {
         let ordinarySiblings = members.allSatisfy { member in
             if member.usesBorrowedSpan { return true }
@@ -2068,6 +2101,9 @@ func generate(
     }
     if !forwardingIndices.isEmpty, memberTypeNames.contains("VariadicForwarding") {
         try reject(proto, "A requirement type collides with the generated 'VariadicForwarding' setup type")
+    }
+    if constructor != nil, memberTypeNames.contains("ConstructionScope") {
+        try reject(proto, "A requirement type collides with the generated 'ConstructionScope'")
     }
     if !typeIndices.isEmpty, !memberTypeNames.isDisjoint(with: ["TypeScope", "TypeStubs", "TypeVerification"]) {
         try reject(proto, "A requirement type collides with a generated type-level scope or descriptor type")
@@ -2350,8 +2386,12 @@ func generate(
 
         """
     }
-    output += "    public init(failureReporter: FailureReporter,\n"
-    if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
+    if constructor != nil {
+        output += "    private init(failureReporter: FailureReporter,\n                scope: MockScope,\n"
+    } else {
+        output += "    public init(failureReporter: FailureReporter,\n"
+        if isolation == .sendable { output += "                session: MockSession = MockSession(),\n" }
+    }
     if spy { output += "                forwardingTo: (any \(selected))? = nil,\n" }
     if !providerMethods.isEmpty {
         output += "                genericBehavior: any \(behaviorName),\n"
@@ -2386,7 +2426,7 @@ func generate(
     }
     let defaultConfigure = hasProviderWitness && instanceIndices.isEmpty ? " = { _ in }" : ""
     output += "                _ configure: \(isolation.annotation)(Stubs) -> Void\(defaultConfigure)) {\n"
-    if isolation == .sendable && (!instanceIndices.isEmpty || needsProviderScope) {
+    if constructor == nil && isolation == .sendable && (!instanceIndices.isEmpty || needsProviderScope) {
         output += "        let scope = session.makeMock()\n"
     }
     if needsProviderScope {
@@ -2482,6 +2522,70 @@ func generate(
         output += "        self.__endpoint\(i) = \(endpointFamily(i))Endpoint(id: \(endpointID),\n            configuration: setup\(i).finish()\(projection), failureReporter: failureReporter\(mapping))\n"
     }
     output += "    }\n"
+    let constructorIdentity = endpointIdentity("init(seed:Swift.Int)", effect: "", result: "Self")
+    if let constructor {
+        let file = String(reflecting: constructor.fileName)
+        let fileID = String(reflecting: constructor.module + "/" + constructor.fileName)
+        let source = "SourceLocation(fileID: \(fileID), filePath: \(file), line: \(constructor.line), column: \(constructor.column))"
+        output += """
+
+            @TaskLocal private static var __constructionScope: ConstructionScope?
+
+            public struct ConstructionScope: Swift.Sendable {
+                fileprivate let __scope: BlueprintMocking.MockScope
+                fileprivate let __reporter: BlueprintMocking.FailureReporter
+                fileprivate let __configure: @Sendable (Swift.Int, Stubs) -> Swift.Void
+
+                public func withValue<Value>(_ body: () throws -> Value) rethrows -> Value {
+                    try \(name).$__constructionScope.withValue(self, operation: body)
+                }
+
+                public func withValue<Value, Failure: Error>(
+                    isolation: isolated (any Actor)? = #isolation,
+                    _ body: () async throws(Failure) -> Value
+                ) async throws(Failure) -> Value {
+                    #if compiler(>=6.2)
+                    let operation: nonisolated(nonsending) () async -> Result<Value, Failure> = {
+                        do throws(Failure) { return .success(try await body()) }
+                        catch { return .failure(error) }
+                    }
+                    let result = await \(name).$__constructionScope.withValue(self, operation: operation)
+                    #else
+                    let result: Result<Value, Failure> = await \(name).$__constructionScope.withValue(
+                        self, operation: {
+                            do throws(Failure) { return .success(try await body()) }
+                            catch { return .failure(error) }
+                        }, isolation: isolation
+                    )
+                    #endif
+                    return try result.get()
+                }
+            }
+
+            public static func makeConstructionScope(
+                failureReporter: FailureReporter, session: MockSession = MockSession(),
+                _ configure: @escaping @Sendable (Swift.Int, Stubs) -> Swift.Void
+            ) -> ConstructionScope {
+                ConstructionScope(__scope: session.makeEpochBoundMock(), __reporter: failureReporter, __configure: configure)
+            }
+
+            public convenience init(seed: Swift.Int) {
+                let endpoint = EndpointID(\(String(reflecting: constructorIdentity)))
+                let source = \(source)
+                guard let construction = Self.__constructionScope else {
+                    fatalError(\(GeneratedContract.runtimeMarker).reportMissingTypeScope(endpoint, source: source))
+                }
+                let attempt = construction.__scope.beginInfallibleConstruction(
+                    of: endpoint, reporter: construction.__reporter, source: source
+                )
+                self.init(failureReporter: construction.__reporter, scope: attempt.instanceScope) { stubs in
+                    construction.__configure(seed, stubs)
+                }
+                attempt.complete()
+            }
+
+        """
+    }
     if !typeIndices.isEmpty {
         output += "\n    @TaskLocal private static var __typeScope: TypeScope?\n"
         output += "\n    public struct TypeStubs {\n"
@@ -2678,6 +2782,7 @@ func generate(
             return (id: member.identity, specialization: specialization, origin: member.origin)
         } + providerMethods.filter(\.isPack).map { (id: providerIdentity($0), specialization: nil, origin: $0.origin) }
             + rethrowsMethods.map { (id: rethrowsIdentity($0), specialization: nil, origin: $0.origin) }
+            + (constructor.map { [(id: constructorIdentity, specialization: nil, origin: $0)] } ?? [])
     )
 }
 
