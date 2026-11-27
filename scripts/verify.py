@@ -44,7 +44,7 @@ def record_result(name, output, returncode, valid, *, expected_failure):
 def generate(tool, source, output, selected="UserRepository", projections=(), *,
              module="ConsumerDomain", forwarding=(), specializations=(), spy=False, sources=(),
              associated_bindings=(), method_specializations=(), generic_providers=(), rethrows_providers=(), scoped_rules=(),
-             lazy_autoclosures=()):
+             lazy_autoclosures=(), materialized_autoclosures=()):
     arguments = [tool, "--input", source, "--module", module,
                  "--protocol", selected, "--output", output]
     for projection in projections:
@@ -63,6 +63,8 @@ def generate(tool, source, output, selected="UserRepository", projections=(), *,
         arguments.extend(["--scoped-rule", selector])
     for selector in lazy_autoclosures:
         arguments.extend(["--lazy-autoclosure", selector])
+    for selector in materialized_autoclosures:
+        arguments.extend(["--materialized-autoclosure", selector])
     if spy:
         arguments.append("--spy")
     for source_module, path in sources:
@@ -98,6 +100,30 @@ def verify_lazy_autoclosure_generation(tool, source, generated, scratch):
             fails=True, patterns=[re.escape(authored.name) + r":\d+:\d+: error: BPM001:[^\n]*" + diagnostic])
         if (rejected.read_bytes(), rejected.stat().st_mtime_ns) != baseline:
             raise ValueError("Rejected lazy autoclosure generation changed valid prior output")
+
+
+def verify_materialized_autoclosure_generation(tool, source, generated, scratch):
+    selection = ("choose(id:fallback:)", "record(fallback:)")
+    run("materialized-autoclosure-generation", generate(
+        tool, source, generated, "MaterializedChoiceDirectory", materialized_autoclosures=selection))
+    rejected = scratch / "RejectedMaterializedAutoclosure.swift"
+    rejected.write_bytes(generated.read_bytes())
+    baseline = (rejected.read_bytes(), rejected.stat().st_mtime_ns)
+    unsupported = scratch / "MaterializedAutoclosure-unsupported.swift"
+    unsupported.write_text(source.read_text(encoding="utf-8").replace("() -> Int", "() -> [Int]", 1),
+                           encoding="utf-8")
+    cases = (
+        ("mixed", source, selection, (selection[0],), r"cannot request both lazy and materialized modes"),
+        ("duplicate", source, (*selection, selection[0]), (), r"Duplicate materialized autoclosure selector"),
+        ("unsupported-value", unsupported, selection, (), r"require a Bool, Int or String value"),
+    )
+    for label, authored, materialized, lazy, diagnostic in cases:
+        run("materialized-autoclosure-reject-" + label, generate(
+            tool, authored, rejected, "MaterializedChoiceDirectory",
+            materialized_autoclosures=materialized, lazy_autoclosures=lazy), fails=True,
+            patterns=[re.escape(authored.name) + r":\d+:\d+: error: BPM001:[^\n]*" + diagnostic])
+        if (rejected.read_bytes(), rejected.stat().st_mtime_ns) != baseline:
+            raise ValueError("Rejected materialized autoclosure generation changed valid prior output")
 
 
 def xcrun(*arguments):
@@ -582,6 +608,9 @@ def main():
             raise ValueError("Rejected rethrows provider settings changed the existing output")
     verify_lazy_autoclosure_generation(
         tool, source.with_name("LazyChoiceDirectory.swift"), generated.with_name("LazyChoiceDirectoryMock.swift"), temp)
+    verify_materialized_autoclosure_generation(
+        tool, source.with_name("MaterializedChoiceDirectory.swift"),
+        generated.with_name("MaterializedChoiceDirectoryMock.swift"), temp)
     scoped_source = source.with_name("ScopedUserDirectory.swift")
     scoped_generated = generated.with_name("ScopedUserDirectoryMock.swift")
     run("scoped-rule-generation", generate(
@@ -1428,6 +1457,8 @@ def main():
                   r"RUN027_RUN029_orderedConsumptionHonorsClaimedBarriersAndKeepsHistory\(\) passed",
                   r"RUN024_generatedDelayedSequenceKeepsTypedCancellationBeforeRegistration\(\) passed",
                   r"GEN018_lazyAutoclosureEvaluatesOnlyOnExplicitAnswerRequests\(\) passed",
+                  r"GEN018_materializedMatcherAndAnswerReuseOneValue\(\) passed",
+                  r"GEN018_finishedMaterializedEndpointDoesNotEvaluate\(\) passed",
                   r"RUN013_consumerRebindsDetachedServiceCallsAndRejectsStaleHandle\(\) passed",
                   r"RUN013_publicScopedRulesFollowProtocolCallsAndUnwind\(\) passed",
                   r"RUN013_generatedAsyncRulePriorityComposesWithWinningCaptures\(\) passed",
@@ -1611,6 +1642,8 @@ def main():
         "GenericMethodWrongMatcher": r"cannot convert value of type 'Matcher<String>' to expected argument type 'Matcher<Int>'",
         "GenericProviderExtraConstraint": r"type 'OverconstrainedIdentityProvider' does not conform to protocol 'GenericProviderDirectoryMockBehavior'",
         "DeferredAutoclosure": r"passing non-escaping parameter",
+        "MaterializedAutoclosureAsyncMatcher": r"cannot pass function of type.*async.*expecting synchronous function type",
+        "MaterializedAutoclosureThrowingMatcher": r"invalid conversion from throwing function of type.*non-throwing function type",
         "GeneratedRuleScopeWrongSelector": r"cannot convert value of type 'Int.Type' to expected argument type 'String.Type'",
         "RethrowingProviderUnrelatedThrow": r"may only throw if its parameter does",
         "RethrowingProviderNoThrowsStub": r"'RethrowingDirectoryMock.Stubs' has no member 'apply'",

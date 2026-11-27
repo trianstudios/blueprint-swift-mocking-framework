@@ -304,6 +304,8 @@ Ordinary Sendable mocks and checked spies support one final unary nonescaping ca
 
 For a synchronous, nonthrowing Sendable protocol method with one final nonescaping `@autoclosure`, opt in with `--lazy-autoclosure 'choose(id:fallback:)'`. Match, return a stubbed value or verify using the ordinary arguments. A typed `willAnswer { input, evaluate in ... }` lets you call `evaluate()` during the invocation. Each explicit evaluation runs the autoclosure on the calling context. Swift rejects attempts to retain the evaluator.
 
+Use `--materialized-autoclosure 'choose(id:fallback:)'` when a matcher needs the fallback value. For supported `Bool`, `Int` and `String` autoclosures, this mode evaluates once after admission and passes the cached value to every candidate matcher, the selected answer and verification. Select the fallback matcher with `fallback: .equal(value)`. An answer receives both `input` and `value`. Value-sensitive verification during evaluation reports incomplete history. A call rejected before admission skips evaluation.
+
 An ordinary Sendable protocol mock can capture one final unary callback declared `@escaping @Sendable` on a synchronous, nonthrowing instance method. Matching and call history use the ordinary arguments. A winning stub can opt into retaining the callback with `EscapingCallbackCaptor`. Use the same `MockSession` for the mock and captor.
 
 ```swift
