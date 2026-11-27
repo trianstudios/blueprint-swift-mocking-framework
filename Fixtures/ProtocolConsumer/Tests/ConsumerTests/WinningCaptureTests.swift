@@ -163,3 +163,20 @@ func RUN009_winningCapturePayloadCanReenterSessionWhenResetReleasesIt() async th
     #expect(releasedEpochs == [current])
     #expect(captor.captures.isEmpty)
 }
+
+@Test func RUN007_generatedVerificationReportsOnlyExplicitMatcherDescriptions() {
+    let reports = StoredProperty<[MockIssue]>([])
+    let mock = UserRepositoryMock(failureReporter: FailureReporter { issue in
+        reports.set(reports.get() + [issue])
+    }) { stubs in
+        stubs.greeting(for: .any).willReturn("hello")
+    }
+    #expect(mock.greeting(for: "private-customer") == "hello")
+
+    let named = Matcher<String>.satisfying { _ in true }.named("known account")
+        .and(.equal("private-comparison"))
+    #expect(!mock.verify.greeting(for: named).wasCalled(.once).passed)
+    #expect(reports.get().map(\.message) == [
+        "Expected exactly 1 calls; observed 0\nMatcher and(known account, unnamed matcher)",
+    ])
+}

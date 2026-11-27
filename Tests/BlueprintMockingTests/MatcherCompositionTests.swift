@@ -193,3 +193,56 @@ private final class ActorProjectionProbe {
     #expect(!selectedIdentity.matches(.selected(expected)))
     #expect(probe.inspected == 2)
 }
+
+@Test func RUN007_namedSendableMatchersDescribeCompositionWithoutPrintingValues() {
+    let issues = Issues()
+    let evaluations = CriticalState(0)
+    let makePredicate = Matcher<String>.satisfying
+    let approved = makePredicate { input in
+        evaluations.withLock { $0 += 1 }
+        return input.hasPrefix("sensitive")
+    }.named("approved range")
+    let disabled = makePredicate { _ in false }.named("disabled")
+    let named = Matcher.allOf(approved, .anyOf(.equal("comparison-secret"), disabled.not()))
+    let description = "allOf(approved range, anyOf(unnamed matcher, not(disabled)))"
+    #expect(named.description == description)
+    #expect(evaluations.withLock { $0 } == 0)
+    let unlabeled = Matcher<String>.equal("comparison-secret").not().and(.any)
+    #expect(unlabeled.description == nil)
+
+    let stubs = SyncStubbing<String, String>()
+    stubs.matching(.any).willReturn("accepted")
+    let endpoint = SyncEndpoint(id: EndpointID("match-label"), configuration: stubs.finish(),
+                                failureReporter: issues.reporter)
+    #expect(endpoint.invoke("sensitive-record") == "accepted")
+    #expect(!endpoint.verification(matching: named).wasCalled(.exactly(2)).passed)
+    #expect(!endpoint.verification(matching: unlabeled).wasCalled(.never).passed)
+    #expect(evaluations.withLock { $0 } == 1)
+    #expect(issues.values.map(\.message) == [
+        "Expected exactly 2 calls; observed 1\nMatcher \(description)",
+        "Expected exactly 0 calls; observed 1",
+    ])
+}
+
+@Test @MainActor func RUN007_namedMainActorMatchersDescribeActorLocalPredicates() {
+    let issues = Issues()
+    let expected = ActorLocalTag("private-name")
+    var evaluations = 0
+    let makePredicate = MainActorMatcher<ActorLocalTag>.satisfying
+    let named = makePredicate { value in
+        evaluations += 1
+        return value === expected
+    }.named("allowed tag").or(.equal(ActorLocalTag("private-comparison"))).not()
+    let description = "not(or(allowed tag, unnamed matcher))"
+    #expect(named.description == description)
+    #expect(evaluations == 0)
+
+    let stubs = MainActorSyncStubbing<ActorLocalTag, String>()
+    stubs.matching(.any).willReturn("accepted")
+    let endpoint = MainActorSyncEndpoint(id: EndpointID("actor-match-label"), configuration: stubs.finish(),
+                                         failureReporter: issues.reporter)
+    #expect(endpoint.invoke(expected) == "accepted")
+    #expect(!endpoint.verification(matching: named).wasCalled(.once).passed)
+    #expect(evaluations == 1)
+    #expect(issues.values.map(\.message) == ["Expected exactly 1 calls; observed 0\nMatcher \(description)"])
+}

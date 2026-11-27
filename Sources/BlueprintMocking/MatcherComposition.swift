@@ -13,7 +13,7 @@ public extension Matcher {
         _ extract: @escaping @Sendable (Input) -> Payload?,
         matching matcher: Matcher<Payload>
     ) -> Self {
-        Self { input in
+        Self(description: MatcherDescription.compose("projecting", [matcher.description])) { input in
             guard let payload = extract(input) else { return false }
             return matcher.matches(payload)
         }
@@ -27,7 +27,7 @@ public extension Matcher {
     /// Matches a present value and optionally applies a matcher to that value.
     static func nonNil<Wrapped: Sendable>(_ wrapped: Matcher<Wrapped> = .any) -> Self
     where Input == Wrapped? {
-        Self { input in
+        Self(description: MatcherDescription.compose("nonNil", [wrapped.description])) { input in
             guard let value = input else { return false }
             return wrapped.matches(value)
         }
@@ -40,24 +40,32 @@ public extension Matcher {
 
     /// Evaluates left to right and stops after the first mismatch. An empty list matches.
     static func allOf(_ matchers: Self...) -> Self {
-        Self { input in matchers.allSatisfy { $0.matches(input) } }
+        Self(description: MatcherDescription.compose("allOf", matchers.map(\.description))) { input in
+            matchers.allSatisfy { $0.matches(input) }
+        }
     }
 
     /// Evaluates left to right and stops after the first match. An empty list never matches.
     static func anyOf(_ matchers: Self...) -> Self {
-        Self { input in matchers.contains { $0.matches(input) } }
+        Self(description: MatcherDescription.compose("anyOf", matchers.map(\.description))) { input in
+            matchers.contains { $0.matches(input) }
+        }
     }
 
     func and(_ other: Self) -> Self {
-        Self { self.matches($0) && other.matches($0) }
+        Self(description: MatcherDescription.compose("and", [description, other.description])) {
+            self.matches($0) && other.matches($0)
+        }
     }
 
     func or(_ other: Self) -> Self {
-        Self { self.matches($0) || other.matches($0) }
+        Self(description: MatcherDescription.compose("or", [description, other.description])) {
+            self.matches($0) || other.matches($0)
+        }
     }
 
     func not() -> Self {
-        Self { !self.matches($0) }
+        Self(description: MatcherDescription.compose("not", [description])) { !self.matches($0) }
     }
 }
 
@@ -76,7 +84,7 @@ public extension MainActorMatcher {
         _ extract: @escaping @MainActor (Input) -> Payload?,
         matching matcher: MainActorMatcher<Payload>
     ) -> Self {
-        Self { input in
+        Self(description: MatcherDescription.compose("projecting", [matcher.description])) { input in
             guard let payload = extract(input) else { return false }
             return matcher.matches(payload)
         }
@@ -90,7 +98,7 @@ public extension MainActorMatcher {
     /// Matches a present value and optionally applies a matcher to that value on the main actor.
     static func nonNil<Wrapped>(_ wrapped: MainActorMatcher<Wrapped> = .any) -> Self
     where Input == Wrapped? {
-        Self { input in
+        Self(description: MatcherDescription.compose("nonNil", [wrapped.description])) { input in
             guard let value = input else { return false }
             return wrapped.matches(value)
         }
@@ -103,23 +111,44 @@ public extension MainActorMatcher {
 
     /// Evaluates left to right and stops after the first mismatch. An empty list matches.
     static func allOf(_ matchers: Self...) -> Self {
-        Self { input in matchers.allSatisfy { $0.matches(input) } }
+        Self(description: MatcherDescription.compose("allOf", matchers.map(\.description))) { input in
+            matchers.allSatisfy { $0.matches(input) }
+        }
     }
 
     /// Evaluates left to right and stops after the first match. An empty list never matches.
     static func anyOf(_ matchers: Self...) -> Self {
-        Self { input in matchers.contains { $0.matches(input) } }
+        Self(description: MatcherDescription.compose("anyOf", matchers.map(\.description))) { input in
+            matchers.contains { $0.matches(input) }
+        }
     }
 
     func and(_ other: Self) -> Self {
-        Self { self.matches($0) && other.matches($0) }
+        Self(description: MatcherDescription.compose("and", [description, other.description])) {
+            self.matches($0) && other.matches($0)
+        }
     }
 
     func or(_ other: Self) -> Self {
-        Self { self.matches($0) || other.matches($0) }
+        Self(description: MatcherDescription.compose("or", [description, other.description])) {
+            self.matches($0) || other.matches($0)
+        }
     }
 
     func not() -> Self {
-        Self { !self.matches($0) }
+        Self(description: MatcherDescription.compose("not", [description])) { !self.matches($0) }
+    }
+}
+
+enum MatcherDescription {
+    static func compose(_ operation: String, _ descriptions: [String?]) -> String? {
+        guard descriptions.contains(where: { $0 != nil }) else { return nil }
+        let operands = descriptions.map { $0 ?? "unnamed matcher" }.joined(separator: ", ")
+        return "\(operation)(\(operands))"
+    }
+
+    static func countFailure(_ message: String, description: String?) -> String {
+        guard let description else { return message }
+        return "\(message)\nMatcher \(description)"
     }
 }

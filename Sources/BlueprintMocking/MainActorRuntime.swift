@@ -2,9 +2,21 @@
 @MainActor
 public struct MainActorMatcher<Input> {
     private let predicate: @MainActor (Input) -> Bool
+    /// An explicit diagnostic description, if one was supplied or composed.
+    public let description: String?
 
     public init(_ predicate: @escaping @MainActor (Input) -> Bool) {
+        self.init(description: nil, predicate)
+    }
+
+    init(description: String?, _ predicate: @escaping @MainActor (Input) -> Bool) {
+        self.description = description
         self.predicate = predicate
+    }
+
+    /// Returns the same matcher with a label safe to include in diagnostic output.
+    public func named(_ description: String) -> Self {
+        Self(description: description, predicate)
     }
 
     public func matches(_ input: Input) -> Bool { predicate(input) }
@@ -133,7 +145,10 @@ public struct MainActorVerification<Input> {
         let observed = invocationIDs.count
         let failure = count.failureMessage(observed: observed)
         if let failure {
-            journal.reportCountMismatch(failure, watermark: watermark, source: source())
+            journal.reportCountMismatch(
+                MatcherDescription.countFailure(failure, description: matcher.description),
+                watermark: watermark, source: source()
+            )
         }
         return VerificationResult(passed: failure == nil, observed: observed,
                                   watermark: watermark, invocationIDs: invocationIDs)

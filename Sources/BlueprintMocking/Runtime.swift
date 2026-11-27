@@ -93,7 +93,23 @@ public struct FailureReporter: Sendable {
 
 public struct Matcher<Input: Sendable>: Sendable {
     private let body: @Sendable (Input) -> Bool
-    public init(_ body: @escaping @Sendable (Input) -> Bool) { self.body = body }
+    /// An explicit diagnostic description, if one was supplied or composed.
+    public let description: String?
+
+    public init(_ body: @escaping @Sendable (Input) -> Bool) {
+        self.init(description: nil, body)
+    }
+
+    init(description: String?, _ body: @escaping @Sendable (Input) -> Bool) {
+        self.description = description
+        self.body = body
+    }
+
+    /// Returns the same matcher with a label safe to include in diagnostic output.
+    public func named(_ description: String) -> Self {
+        Self(description: description, body)
+    }
+
     public func matches(_ input: Input) -> Bool { body(input) }
     public static var any: Self { Self { _ in true } }
 }
@@ -560,7 +576,7 @@ public struct Verification<Input: Sendable>: Sendable {
         if let failure {
             journal.report(MockIssue(
                 kind: .verificationFailed, endpoint: journal.endpoint,
-                message: failure,
+                message: MatcherDescription.countFailure(failure, description: matcher.description),
                 source: source(),
                 watermark: prefix.watermark))
         }
