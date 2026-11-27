@@ -97,6 +97,20 @@ def verify_ui_view_model_reporter(command, fixture, env):
         raise ValueError("Expected exactly one intentional UI view-model issue")
 
 
+def verify_legacy_process_consumer(swift, env):
+    fixture = ROOT / "Fixtures/LegacyProcessConsumer"
+    package = [swift, "build", "--package-path", fixture]
+    run("legacy-process-consumer-build", [*package, "--jobs", "1"], env=env, timeout=360)
+    products = Path(subprocess.check_output(
+        [*map(str, package), "--show-bin-path"], cwd=ROOT, env=env, text=True,
+    ).strip())
+    run("legacy-process-native-overlap", [
+        sys.executable, fixture / "verify.py", products / "LegacyProcessChild",
+    ], env=env, timeout=60, patterns=[
+        r"PASS overlapping Swift legacy scopes, detached access, cleanup and independent exit results",
+    ])
+
+
 def verify_fluent_self_generation(tool, source, generated, fixed, scratch):
     run("fluent-self-generation", generate(tool, source, generated, "FluentDirectory"))
     with tempfile.TemporaryDirectory(prefix="FluentSelf-", dir=scratch) as directory:
@@ -2389,6 +2403,10 @@ def main():
             "--swift", swift, "--evidence-dir", EVIDENCE, "--skip-build", "--context", "detached", "--dropped-only"],
             env=swift_environment, timeout=180,
             patterns=[r"PASS: Swift Testing closed-owner detached produced one dropped-only run-level issue and no case issues"])
+    run("legacy-process-transport-unit", [
+        sys.executable, "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_legacy_process.py", "-v",
+    ], env=swift_environment, patterns=[r"(?m)^Ran 5 tests in ", r"(?m)^OK$"])
+    verify_legacy_process_consumer(swift, swift_environment)
     run("xctest-consumer", [sys.executable, "Fixtures/XCTestConsumer/verify.py"],
         env=swift_environment, timeout=600,
         patterns=[r"PASS: XCTest reports sync and async verification failures at their caller lines",

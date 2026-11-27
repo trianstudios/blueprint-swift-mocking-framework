@@ -641,3 +641,9 @@ Swift SIL checks reject an array retaining the borrowed view, an extension beyon
 The UI view-model fixture injects a generated MainActor surface into a real editor model. A stateful property stores a deliberately non-Sendable document. Initial rendering, replacement and renaming preserve object identity across the asynchronous render path. The generated verification confirms the returned get, set and render calls. A test-first control that edits a new object fails the stored-document and identity assertions.
 
 Swift SIL rejects reading the document across the actor boundary with either default isolation setting. The intentional Swift Testing run records one verification failure at the marked user assertion and exits unsuccessfully. This is the third locally exercised A3.4 scenario. Five other scenarios and native release qualification remain open.
+
+## Process-isolated legacy global adapter
+
+DX-025 adds a checked, typed registry for a test request in a dedicated child process. Its synchronous and asynchronous lexical scopes clear registration on return or throw. Lookups acquire a value under the registry lock. A caller with an acquired value may finish using it after the scope ends. A new lookup requires an active registration. Join work before replacing a scope in the same process.
+
+The independent SwiftPM fixture holds two child registrations at the same time using readiness and release gates. A detached caller reaches the child-local typed stub without mock task context. Each child reports its own result and confirms cleanup after normal and throwing exits. The POSIX parent associates the result with the launched PID and request, bounds each stream, and enforces one deadline through exit. A plausible result from a nonzero child is rejected while the peer succeeds. Transport tests also reject malformed, duplicated and mismatched results and exercise timeout and overflow. Other native runner profiles and portability remain open.
