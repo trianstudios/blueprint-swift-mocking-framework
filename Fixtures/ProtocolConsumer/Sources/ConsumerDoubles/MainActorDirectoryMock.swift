@@ -65,7 +65,7 @@ import ConsumerDomain
         }
         fileprivate let __endpoint2: MainActorSyncEndpoint<(DirectoryEntry, DirectoryEntry), DirectoryEntry>
         public func merge(_ matcher0: MainActorMatcher<DirectoryEntry>, with matcher1: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<(DirectoryEntry, DirectoryEntry)> {
-            __endpoint2.verification(matching: MainActorMatcher<(DirectoryEntry, DirectoryEntry)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint2.verification(matching: BlueprintMocking.MainActorMatcher<(DirectoryEntry, DirectoryEntry)>.matchingFields([("_", matcher0.description), ("with", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
         fileprivate let __endpoint3: MainActorAsyncEndpoint<DirectoryEntry, DirectoryEntry>
         public func read(_ matcher: MainActorMatcher<DirectoryEntry>, phase: CallPhase = .admitted) -> BlueprintMocking.MainActorVerification<DirectoryEntry> {

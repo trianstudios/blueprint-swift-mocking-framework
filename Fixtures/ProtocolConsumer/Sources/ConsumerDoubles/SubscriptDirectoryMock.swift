@@ -70,15 +70,15 @@ public final class SubscriptDirectoryMock: SubscriptDirectory {
         }
         fileprivate let __endpoint3: SyncEndpoint<(Int, Int), String>
         public func get_subscript(_ matcher0: Matcher<Int>, _ matcher1: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(Int, Int)> {
-            __endpoint3.verification(matching: Matcher<(Int, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint3.verification(matching: BlueprintMocking.Matcher<(Int, Int)>.matchingFields([("_", matcher0.description), ("_", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
         fileprivate let __endpoint4: SyncEndpoint<(Int, String), String>
         public func get_subscript(_ matcher0: Matcher<Int>, column matcher1: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(Int, String)> {
-            __endpoint4.verification(matching: Matcher<(Int, String)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint4.verification(matching: BlueprintMocking.Matcher<(Int, String)>.matchingFields([("_", matcher0.description), ("column", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
         fileprivate let __endpoint5: SyncEndpoint<(Int, String, String), Void>
         public func set_subscript(_ matcher0: Matcher<Int>, column matcher1: Matcher<String>, newValue matcher2: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(Int, String, String)> {
-            __endpoint5.verification(matching: Matcher<(Int, String, String)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) && matcher2.matches(input.2) }, phase: phase)
+            __endpoint5.verification(matching: BlueprintMocking.Matcher<(Int, String, String)>.matchingFields([("_", matcher0.description), ("column", matcher1.description), ("newValue", matcher2.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) && matcher2.matches(input.2) }, phase: phase)
         }
         fileprivate let __endpoint6: SyncEndpoint<String, String>
         public func get_subscript(_ matcher: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<String> {
@@ -90,7 +90,7 @@ public final class SubscriptDirectoryMock: SubscriptDirectory {
         }
         fileprivate let __endpoint8: SyncEndpoint<(Bool, Int), Void>
         public func set_subscript(slot matcher0: Matcher<Bool>, newValue matcher1: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(Bool, Int)> {
-            __endpoint8.verification(matching: Matcher<(Bool, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint8.verification(matching: BlueprintMocking.Matcher<(Bool, Int)>.matchingFields([("slot", matcher0.description), ("newValue", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
     }
 

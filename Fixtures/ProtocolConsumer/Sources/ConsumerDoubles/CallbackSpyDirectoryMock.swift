@@ -28,7 +28,7 @@ public final class CallbackSpyDirectoryMock: CallbackSpyDirectory {
     public struct Verification: Sendable {
         fileprivate let __endpoint0: SyncCallbackEndpoint<(String, Int), Int, String, String>
         public func summarize(_ matcher0: Matcher<String>, offset matcher1: Matcher<Int>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<(String, Int)> {
-            __endpoint0.verification(matching: Matcher<(String, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
+            __endpoint0.verification(matching: BlueprintMocking.Matcher<(String, Int)>.matchingFields([("_", matcher0.description), ("offset", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
         }
         fileprivate let __endpoint1: SyncCallbackEndpoint<String, Int, String, String>
         public func transform(id matcher: Matcher<String>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<String> {

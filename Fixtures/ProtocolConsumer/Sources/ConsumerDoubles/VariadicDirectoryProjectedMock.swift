@@ -47,7 +47,7 @@ public final class VariadicDirectoryProjectedMock<ProjectionArgument1: Sendable,
     public struct Verification: Sendable {
         fileprivate let __endpoint0: AsyncThrowingEndpoint<(String, [Int], String), String, VariadicFailure>
         public func names(in matcher0: Matcher<String>, ids matcher1: Matcher<[Int]>, fallback matcher2: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, [Int], String)> {
-            __endpoint0.verification(matching: Matcher<(String, [Int], String)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) && matcher2.matches(input.2) }, phase: phase)
+            __endpoint0.verification(matching: BlueprintMocking.Matcher<(String, [Int], String)>.matchingFields([("in", matcher0.description), ("ids", matcher1.description), ("fallback", matcher2.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) && matcher2.matches(input.2) }, phase: phase)
         }
         fileprivate let __endpoint1: ProjectedSyncEndpoint<[Int], [Int], ProjectionArgument1, ProjectionResult1>
         public var history1: ProjectedInvocationHistory<ProjectionArgument1, ProjectionResult1> {

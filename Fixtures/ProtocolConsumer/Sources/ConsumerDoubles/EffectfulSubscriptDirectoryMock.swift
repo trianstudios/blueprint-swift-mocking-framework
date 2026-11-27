@@ -47,7 +47,7 @@ public final class EffectfulSubscriptDirectoryMock: EffectfulSubscriptDirectory 
     public struct Verification: Sendable {
         fileprivate let __endpoint0: AsyncThrowingEndpoint<(String, Int), String, EffectfulSubscriptFailure>
         public func get_subscript(_ matcher0: Matcher<String>, region matcher1: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, Int)> {
-            __endpoint0.verification(matching: Matcher<(String, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint0.verification(matching: BlueprintMocking.Matcher<(String, Int)>.matchingFields([("_", matcher0.description), ("region", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
         fileprivate let __endpoint1: AsyncEndpoint<Int, Int>
         public func get_subscript(asyncValue matcher: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<Int> {

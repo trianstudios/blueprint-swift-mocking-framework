@@ -51,7 +51,7 @@ public final class WritableSpyDirectoryMock: WritableSpyDirectory {
         }
         fileprivate let __endpoint3: SyncEndpoint<(Int, Int), Void>
         public func set_subscript(slot matcher0: Matcher<Int>, newValue matcher1: Matcher<Int>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<(Int, Int)> {
-            __endpoint3.verification(matching: Matcher<(Int, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
+            __endpoint3.verification(matching: BlueprintMocking.Matcher<(Int, Int)>.matchingFields([("slot", matcher0.description), ("newValue", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
         }
     }
 

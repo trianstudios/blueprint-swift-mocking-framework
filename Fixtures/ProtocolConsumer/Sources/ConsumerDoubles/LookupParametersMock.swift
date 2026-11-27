@@ -28,11 +28,11 @@ public final class LookupParametersMock: LookupParameters {
     public struct Verification: Sendable {
         fileprivate let __endpoint0: SyncEndpoint<(String, String), String>
         public func lookup(namespace matcher0: Matcher<String>, _ matcher1: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, String)> {
-            __endpoint0.verification(matching: Matcher<(String, String)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint0.verification(matching: BlueprintMocking.Matcher<(String, String)>.matchingFields([("namespace", matcher0.description), ("_", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
         fileprivate let __endpoint1: SyncEndpoint<(String, Int), LookupRecord>
         public func lookup(namespace matcher0: Matcher<String>, id matcher1: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, Int)> {
-            __endpoint1.verification(matching: Matcher<(String, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint1.verification(matching: BlueprintMocking.Matcher<(String, Int)>.matchingFields([("namespace", matcher0.description), ("id", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
         fileprivate let __endpoint2: SyncEndpoint<Void, String>
         public func next(phase: CallPhase = .admitted) -> BlueprintMocking.Verification<Void> {

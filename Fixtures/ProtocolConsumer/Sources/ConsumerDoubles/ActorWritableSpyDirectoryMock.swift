@@ -51,7 +51,7 @@ import ConsumerDomain
         }
         fileprivate let __endpoint3: MainActorSyncEndpoint<(String, ActorSpyEntry), Void>
         public func set_subscript(slot matcher0: MainActorMatcher<String>, newValue matcher1: MainActorMatcher<ActorSpyEntry>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.MainActorVerification<(String, ActorSpyEntry)> {
-            __endpoint3.verification(matching: MainActorMatcher<(String, ActorSpyEntry)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
+            __endpoint3.verification(matching: BlueprintMocking.MainActorMatcher<(String, ActorSpyEntry)>.matchingFields([("slot", matcher0.description), ("newValue", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
         }
     }
 

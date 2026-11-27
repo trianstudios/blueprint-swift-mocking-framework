@@ -6,6 +6,15 @@ public extension Matcher where Input: AnyObject {
 }
 
 public extension Matcher {
+    /// Builds a matcher with explicit descriptions from the source fields it tests.
+    /// Supply fields in source order. An unlabeled argument uses its Swift label, "_".
+    static func matchingFields(
+        _ fields: [(label: String, description: String?)],
+        _ predicate: @escaping @Sendable (Input) -> Bool
+    ) -> Self {
+        Self(description: MatcherDescription.fields(fields), predicate)
+    }
+
     /// Matches a typed payload extracted from the input. Returning nil skips the payload matcher.
     /// For an optional payload, return .some(nil) to match the case carrying nil.
     /// Keep the extractor pure, bounded, and nonblocking.
@@ -77,6 +86,15 @@ public extension MainActorMatcher where Input: AnyObject {
 }
 
 public extension MainActorMatcher {
+    /// Builds an actor-local matcher with explicit descriptions from its source fields.
+    /// Supply fields in source order. An unlabeled argument uses its Swift label, "_".
+    static func matchingFields(
+        _ fields: [(label: String, description: String?)],
+        _ predicate: @escaping @MainActor (Input) -> Bool
+    ) -> Self {
+        Self(description: MatcherDescription.fields(fields), predicate)
+    }
+
     /// Extracts and matches a typed payload on the main actor. Returning nil skips the payload matcher.
     /// For an optional payload, return .some(nil) to match the case carrying nil.
     /// Keep the extractor pure, bounded, and nonblocking.
@@ -141,9 +159,17 @@ public extension MainActorMatcher {
 }
 
 enum MatcherDescription {
+    private static let unnamed = "unnamed matcher"
+
+    static func fields(_ fields: [(label: String, description: String?)]) -> String? {
+        guard fields.contains(where: { $0.description != nil }) else { return nil }
+        let operands = fields.map { "\($0.label): \($0.description ?? unnamed)" }.joined(separator: ", ")
+        return "fields(\(operands))"
+    }
+
     static func compose(_ operation: String, _ descriptions: [String?]) -> String? {
         guard descriptions.contains(where: { $0 != nil }) else { return nil }
-        let operands = descriptions.map { $0 ?? "unnamed matcher" }.joined(separator: ", ")
+        let operands = descriptions.map { $0 ?? unnamed }.joined(separator: ", ")
         return "\(operation)(\(operands))"
     }
 

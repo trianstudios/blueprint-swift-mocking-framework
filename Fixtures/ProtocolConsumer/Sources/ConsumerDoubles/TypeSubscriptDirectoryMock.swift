@@ -27,7 +27,7 @@ public final class TypeSubscriptDirectoryMock: TypeSubscriptDirectory {
         }
         fileprivate let __endpoint1: SyncEndpoint<(Int, Int), Void>
         public func set_subscript(_ matcher0: Matcher<Int>, newValue matcher1: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(Int, Int)> {
-            __endpoint1.verification(matching: Matcher<(Int, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint1.verification(matching: BlueprintMocking.Matcher<(Int, Int)>.matchingFields([("_", matcher0.description), ("newValue", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
     }
 
@@ -68,7 +68,7 @@ public final class TypeSubscriptDirectoryMock: TypeSubscriptDirectory {
         }
         fileprivate let __endpoint3: SyncEndpoint<(Int, Int), Void>
         public func set_subscript(_ matcher0: Matcher<Int>, newValue matcher1: Matcher<Int>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(Int, Int)> {
-            __endpoint3.verification(matching: Matcher<(Int, Int)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint3.verification(matching: BlueprintMocking.Matcher<(Int, Int)>.matchingFields([("_", matcher0.description), ("newValue", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
     }
 

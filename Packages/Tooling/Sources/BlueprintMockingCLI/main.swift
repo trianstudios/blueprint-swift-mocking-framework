@@ -334,13 +334,20 @@ struct Member {
         return "\(name)(\(descriptor.joined(separator: ", ")))"
     }
 
-    var matcherExpression: String {
+    func matcherExpression(describingFields: Bool = false) -> String {
         let metadata = metadataParameters
         if metadata.isEmpty { return ".any" }
         if metadata.count == 1 { return matcherName(0) }
         let matches = metadata.indices.map { "\(matcherName($0)).matches(input.\($0))" }
             .joined(separator: " && ")
-        return "\(isolation.prefix)Matcher<\(inputType)> { input in \(matches) }"
+        let matcherType = "\(isolation.prefix)Matcher<\(inputType)>"
+        if describingFields {
+            let fields = metadata.enumerated().map { index, parameter in
+                "(\(String(reflecting: parameter.label)), \(matcherName(index)).description)"
+            }.joined(separator: ", ")
+            return "BlueprintMocking.\(matcherType).matchingFields([\(fields)]) { input in \(matches) }"
+        }
+        return "\(matcherType) { input in \(matches) }"
     }
 }
 
@@ -1131,7 +1138,7 @@ func generate(
     for i in instanceIndices {
         let m = members[i]
         output += "        fileprivate let __setup\(i): \(m.family)Stubbing<\(m.genericArguments)>\n"
-        output += "        public func \(m.descriptorSignature) -> \(m.family)Stub<\(m.genericArguments)> {\n            __setup\(i).matching(\(m.matcherExpression))\n        }\n"
+        output += "        public func \(m.descriptorSignature) -> \(m.family)Stub<\(m.genericArguments)> {\n            __setup\(i).matching(\(m.matcherExpression()))\n        }\n"
     }
     for (i, m) in members.enumerated() {
         guard case .getter(let property) = m.kind, let setter = setterIndices[property] else { continue }
@@ -1228,7 +1235,7 @@ func generate(
         } else {
             let after = m.usesInout ? ", after: after" : ""
             let origin = spy ? ", origin: origin" : ""
-            output += "        public func \(m.verificationSignature(includeOrigin: spy)) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.verificationInputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression)\(after), phase: phase\(origin))\n        }\n"
+            output += "        public func \(m.verificationSignature(includeOrigin: spy)) -> BlueprintMocking.\(isolation.prefix)Verification<\(m.verificationInputType)> {\n            __endpoint\(i).verification(matching: \(m.matcherExpression(describingFields: true))\(after), phase: phase\(origin))\n        }\n"
         }
     }
     output += "    }\n\n    public var verify: Verification {\n        Verification(" +
@@ -1370,13 +1377,13 @@ func generate(
         for i in typeIndices {
             let member = members[i]
             output += "        fileprivate let __setup\(i): SyncStubbing<\(member.genericArguments)>\n"
-            output += "        public func \(member.descriptorSignature) -> SyncStub<\(member.genericArguments)> {\n            __setup\(i).matching(\(member.matcherExpression))\n        }\n"
+            output += "        public func \(member.descriptorSignature) -> SyncStub<\(member.genericArguments)> {\n            __setup\(i).matching(\(member.matcherExpression()))\n        }\n"
         }
         output += "    }\n\n    public struct TypeVerification: Sendable {\n"
         for i in typeIndices {
             let member = members[i]
             output += "        fileprivate let __endpoint\(i): \(endpointType(i))\n"
-            output += "        public func \(member.verificationSignature()) -> BlueprintMocking.Verification<\(member.inputType)> {\n            __endpoint\(i).verification(matching: \(member.matcherExpression), phase: phase)\n        }\n"
+            output += "        public func \(member.verificationSignature()) -> BlueprintMocking.Verification<\(member.inputType)> {\n            __endpoint\(i).verification(matching: \(member.matcherExpression(describingFields: true)), phase: phase)\n        }\n"
         }
         output += "    }\n\n"
         output += """

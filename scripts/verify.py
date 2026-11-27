@@ -1133,6 +1133,8 @@ def main():
     run_swift("consumer-tests", ["test", "--package-path", "Fixtures/ProtocolConsumer"],
         patterns=[r"\b[1-9]\d* tests?\b.*\bpassed\b",
                   r"RUN007_generatedVerificationReportsOnlyExplicitMatcherDescriptions\(\) passed",
+                  r"RUN007_generatedSendableTupleVerificationReportsSourceLabels\(\) passed",
+                  r"RUN007_generatedMainActorTupleVerificationReportsSourceLabels\(\) passed",
                   r"RUN034_detachedMatchingCannotConsumeCurrentSequencePosition\(\) passed",
                   r"GEN007_typedAsyncDescriptorSetupAndVerificationDoNotInvokeWitness\(\) passed",
                   r"RUN009_generatedWinningRulesCaptureOnceThroughReentryAndConcurrency\(\) passed",

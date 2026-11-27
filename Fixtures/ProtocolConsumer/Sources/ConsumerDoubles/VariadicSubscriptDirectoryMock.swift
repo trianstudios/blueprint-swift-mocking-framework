@@ -68,15 +68,15 @@ public final class VariadicSubscriptDirectoryMock: VariadicSubscriptDirectory {
     public struct Verification: Sendable {
         fileprivate let __endpoint0: SyncEndpoint<(String, [Int]), String>
         public func get_subscript(field matcher0: Matcher<String>, _ matcher1: Matcher<[Int]>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, [Int])> {
-            __endpoint0.verification(matching: Matcher<(String, [Int])> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint0.verification(matching: BlueprintMocking.Matcher<(String, [Int])>.matchingFields([("field", matcher0.description), ("_", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
         fileprivate let __endpoint1: SyncEndpoint<(String, [Int], String), Void>
         public func set_subscript(field matcher0: Matcher<String>, _ matcher1: Matcher<[Int]>, newValue matcher2: Matcher<String>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, [Int], String)> {
-            __endpoint1.verification(matching: Matcher<(String, [Int], String)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) && matcher2.matches(input.2) }, phase: phase)
+            __endpoint1.verification(matching: BlueprintMocking.Matcher<(String, [Int], String)>.matchingFields([("field", matcher0.description), ("_", matcher1.description), ("newValue", matcher2.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) && matcher2.matches(input.2) }, phase: phase)
         }
         fileprivate let __endpoint2: AsyncThrowingEndpoint<(String, [Int]), String, VariadicSubscriptFailure>
         public func get_subscript(remote matcher0: Matcher<String>, _ matcher1: Matcher<[Int]>, phase: CallPhase = .admitted) -> BlueprintMocking.Verification<(String, [Int])> {
-            __endpoint2.verification(matching: Matcher<(String, [Int])> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
+            __endpoint2.verification(matching: BlueprintMocking.Matcher<(String, [Int])>.matchingFields([("remote", matcher0.description), ("_", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase)
         }
     }
 

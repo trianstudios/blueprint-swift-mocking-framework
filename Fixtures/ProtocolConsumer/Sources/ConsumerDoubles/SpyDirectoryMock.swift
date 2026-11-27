@@ -98,7 +98,7 @@ public final class SpyDirectoryMock: SpyDirectory {
         }
         fileprivate let __endpoint5: SyncEndpoint<(Int, String), String>
         public func get_subscript(_ matcher0: Matcher<Int>, region matcher1: Matcher<String>, phase: CallPhase = .admitted, origin: CallOrigin? = nil) -> BlueprintMocking.Verification<(Int, String)> {
-            __endpoint5.verification(matching: Matcher<(Int, String)> { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
+            __endpoint5.verification(matching: BlueprintMocking.Matcher<(Int, String)>.matchingFields([("_", matcher0.description), ("region", matcher1.description)]) { input in matcher0.matches(input.0) && matcher1.matches(input.1) }, phase: phase, origin: origin)
         }
     }
 
