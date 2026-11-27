@@ -4,6 +4,7 @@
     "Package.swift",
     "Plugins/BlueprintMockingBuildPlugin/plugin.swift",
     "Sources/BlueprintMockingCLI/AssociatedTypeBindings.swift",
+    "Sources/BlueprintMockingCLI/ImportedInterface.swift",
     "Sources/BlueprintMockingCLI/PluginGeneration.swift",
     "Sources/BlueprintMockingCLI/ProtocolSourceIndex.swift",
     "Sources/BlueprintMockingCLI/SubclassGeneration.swift",

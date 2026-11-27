@@ -1692,6 +1692,15 @@ def main():
                   r"PASS: GEN016 executable replayed a MainActor async typed callback success and failure"])
     modules = Path(run_swift("consumer-bin-path", [
         "build", "--package-path", "Fixtures/ProtocolConsumer", "--show-bin-path"]).strip())
+    run("imported-interface-native-consumer", [
+        sys.executable, "scripts/verify_imported_interface.py", "--tool", tool, "--swiftc", swiftc,
+        "--sdk", sdk, "--sdk-version", sdk_version, "--runtime-modules", modules,
+        "--runtime-library", modules / "BlueprintMocking.o", "--evidence-dir", EVIDENCE / "imported-interface",
+    ], env=swift_environment, timeout=180, patterns=[
+        r"PASS: GEN003 run-independent-binary-consumer",
+        r"PASS: GEN003 reject-wrong-module",
+        r"PASS: GEN003 reject-wrong-target",
+    ])
     run_swift("subclass-swiftpm-consumer", [
         "run", "--package-path", "Fixtures/ProtocolConsumer", "SubclassBootstrapProbe"],
         patterns=[r"PASS: initializer reentry reached the override"])

@@ -125,6 +125,16 @@ Run the checked-in consumer with `swift run --package-path Fixtures/PluginConsum
 
 The source-built plugin shares the consumer’s SwiftPM graph and requires SwiftSyntax exactly `600.0.1`. If your consumer pins a different SwiftSyntax version, run [standalone generation](#standalone-generation) from the authoring checkout and include the emitted Swift in your test target. The standalone script uses the selected Xcode toolchain’s bundled parser, so the consumer can resolve the runtime and its own SwiftSyntax pin independently.
 
+The configured CLI can take one compatible public macOS Swift 6 interface for a direct Sendable protocol with scalar synchronous methods.
+
+```sh
+bash scripts/generate.sh generate --config blueprint-mocking.json --output Generated \
+  --input-set-id a003 --interface InterfaceDomain InterfaceDomain.swiftinterface \
+  --importer-context importer.json
+```
+
+The schema-1 importer context declares compiler identity, target triple, language mode, default actor isolation, feature lists, Objective-C interop and the SDK if supplied. See the [native fixture](scripts/verify_imported_interface.py) for the exact context fields. Use the same flags with `inspect` and `verify-generated`. `inspect` records producer context unavailable from the header. A context mismatch emits `BPM005` and exits 4 before replacing output.
+
 ### Inspect a generation request
 
 Use `inspect` to review a SwiftPM-style request before generating its mock shard and index. Pass the same configuration, source input set and output directory you would give generation.

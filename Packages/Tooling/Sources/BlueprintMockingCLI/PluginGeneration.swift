@@ -76,10 +76,12 @@ private struct BuildGenerationRequest {
     let inputSetID: String
     let sources: [String: [String]]
     let sourceConditions: [String: [String: Bool]]
+    let importedInterface: ImportedInterfaceInput?
 
     init(arguments: ArraySlice<String>, command: String) throws {
         let usage = invalid("usage: blueprint-mocking \(command) --config PATH --output DIRECTORY "
                             + "--input-set-id HEX [--source MODULE FILE]... [--source-condition MODULE FLAG true|false]..."
+                            + " or --interface MODULE FILE --importer-context FILE"
                             + (command == "inspect" ? " [--format json]" : ""))
         var arguments = arguments
         guard arguments.popFirst() == "--config", let configPath = arguments.popFirst(),
@@ -91,6 +93,8 @@ private struct BuildGenerationRequest {
         var sources: [String: [String]] = [:]
         var conditions = ExplicitSourceConditions()
         var seen: Set<String> = []
+        var interface: (module: String, path: String)?
+        var contextPath: String?
         var hasFormat = false
         while let option = arguments.popFirst() {
             if command == "inspect", option == "--format" {
@@ -100,6 +104,18 @@ private struct BuildGenerationRequest {
             }
             if option == "--source-condition" {
                 try conditions.read(from: &arguments)
+                continue
+            }
+            if option == "--interface" {
+                guard interface == nil, let module = arguments.popFirst(), let path = arguments.popFirst() else {
+                    throw usage
+                }
+                interface = (module, path)
+                continue
+            }
+            if option == "--importer-context" {
+                guard contextPath == nil, let value = arguments.popFirst() else { throw usage }
+                contextPath = value
                 continue
             }
             guard option == "--source", let module = arguments.popFirst(), let path = arguments.popFirst() else {
@@ -113,6 +129,17 @@ private struct BuildGenerationRequest {
         self.inputSetID = inputSetID
         self.sources = sources
         self.sourceConditions = conditions.values
+        if let interface {
+            guard let contextPath, sources.isEmpty, conditions.values.isEmpty else {
+                throw IncompatibleImporterContext(path: interface.path,
+                    reason: "One public interface requires --importer-context and cannot share this profile with source inputs")
+            }
+            importedInterface = try ImportedInterfaceInput(module: interface.module, path: interface.path,
+                                                           contextPath: contextPath)
+        } else {
+            guard contextPath == nil else { throw usage }
+            importedInterface = nil
+        }
     }
 }
 
@@ -300,13 +327,20 @@ private struct BuildGenerationPlan {
     init(request: BuildGenerationRequest) throws {
         let loaded = try loadConfiguration(request.config)
         let sorted = loaded.selections.sorted { ($0.module, $0.type) < ($1.module, $1.type) }
-        let sourceIndex = ProtocolSourceIndex(sources: request.sources, conditions: request.sourceConditions)
+        if let interface = request.importedInterface,
+           sorted.isEmpty || sorted.contains(where: { $0.module != interface.module }) {
+            throw IncompatibleImporterContext(path: interface.path,
+                reason: "Select a protocol in the validated interface module '\(interface.module)'")
+        }
+        let sourceIndex = ProtocolSourceIndex(sources: request.sources, conditions: request.sourceConditions,
+                                              importedInterface: request.importedInterface)
         let resolved = try sorted.map { selection in
             let root = try sourceIndex.select(selection.type, in: selection.module, diagnosticFile: request.config.path)
             let mock = try generate(index: sourceIndex, root: root, projections: [],
                                     variadicForwarding: [], subscriptSpecializations: [],
                                     methodSpecializations: selection.genericMethodSpecializations ?? [], spy: false,
-                                    associatedTypeBindings: selection.associatedTypeBindings ?? [])
+                                    associatedTypeBindings: selection.associatedTypeBindings ?? [],
+                                    fromTextualInterface: request.importedInterface != nil)
             let methods = mock.genericMethodSpecializations
             let normalized = BuildConfiguration.Selection(
                 module: selection.module, type: selection.type, kind: selection.kind,
@@ -324,7 +358,10 @@ private struct BuildGenerationPlan {
         let marker = "BlueprintMockingShard_" + fingerprint("\(irSchemaVersion)|\(runtimeContractVersion)\n\(body)")
         let header = "// Generated by Blueprint Mocking. Do not edit.\n"
         let shard = header + body + "\nenum \(marker) {}\n"
-        let index = header + "// SwiftPM input set: \(request.inputSetID)\n"
+        let interfaceStamp = request.importedInterface.map {
+            "// Textual interface and importer context: " + fingerprint($0.text + "\n" + $0.contextText) + "\n"
+        } ?? ""
+        let index = header + "// SwiftPM input set: \(request.inputSetID)\n" + interfaceStamp
             + "enum BlueprintMockingGeneratedIndex { typealias Shard = \(marker) }\n"
             + """
             extension BlueprintMockingGeneratedIndex {
@@ -354,6 +391,7 @@ private struct BuildInspection: Encodable {
         let configuration: String
         let sources: [Input]
         let sourceConditions: [String: [String: Bool]]?
+        let importedInterface: ImportedInterfaceInput.Inspection?
     }
 
     struct Endpoint: Encodable {
@@ -386,11 +424,7 @@ private struct BuildInspection: Encodable {
     let inputs: Inputs
     let declarations: [Declaration]
     let outputOwnership: Ownership
-    let featureGates = [
-        "analysis": "supplied-swift-sources",
-        "compilerContext": "unavailable",
-        "protocolInheritance": "supplied-source-index",
-    ]
+    let featureGates: [String: String]
 
     init(request: BuildGenerationRequest, plan: BuildGenerationPlan) {
         let config = request.config.standardizedFileURL
@@ -408,8 +442,15 @@ private struct BuildInspection: Encodable {
             let paths = Set((request.sources[module] ?? []).map { reportPath(URL(fileURLWithPath: $0)) })
             return paths.sorted().map { Input(module: module, path: $0) }
         }
+        let interface = request.importedInterface.map { $0.inspection(at: reportPath(URL(fileURLWithPath: $0.path))) }
         inputs = Inputs(configuration: reportPath(config), sources: sources,
-                        sourceConditions: request.sourceConditions.isEmpty ? nil : request.sourceConditions)
+                        sourceConditions: request.sourceConditions.isEmpty ? nil : request.sourceConditions,
+                        importedInterface: interface)
+        featureGates = [
+            "analysis": interface == nil ? "supplied-swift-sources" : "supplied-public-swiftinterface",
+            "compilerContext": interface == nil ? "unavailable" : "explicit-importer-context",
+            "protocolInheritance": interface == nil ? "supplied-source-index" : "direct-interface-only",
+        ]
         declarations = plan.selections.map { selection in
             let endpoints = selection.mock.endpointOrigins.map { id, specialization, origin in
                 Endpoint(id: id, specialization: specialization, module: origin.module,
@@ -421,7 +462,7 @@ private struct BuildInspection: Encodable {
                                line: selection.origin.line, generatedType: selection.mock.typeName,
                                endpoints: endpoints)
         }
-        outputOwnership = Ownership(owner: "BlueprintMockingBuildPlugin",
+        outputOwnership = Ownership(owner: interface == nil ? "BlueprintMockingBuildPlugin" : "BlueprintMockingCLI",
                                     files: plan.outputs.map { reportPath($0.url) })
     }
 }

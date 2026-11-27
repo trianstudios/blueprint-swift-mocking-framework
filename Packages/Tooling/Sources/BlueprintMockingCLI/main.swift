@@ -499,7 +499,7 @@ func generate(
     genericProviderSelectors: [String] = [], rethrowsProviderSelectors: [String] = [],
     scopedRuleSelectors: [String] = [], lazyAutoclosureSelectors: [String] = [],
     materializedAutoclosureSelectors: [String] = [],
-    spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = []
+    spy: Bool, associatedTypeBindings: [AssociatedTypeBinding] = [], fromTextualInterface: Bool = false
 ) throws -> GeneratedProtocolMock {
     let input = root.origin.path
     let module = root.origin.module
@@ -561,6 +561,14 @@ func generate(
         try reject(proto, "Concrete associated-type bindings support ordinary witnesses without forwarding, projections or generic specializations")
     }
     let declarations = inheritance.declarations
+    if fromTextualInterface {
+        guard isolation == .sendable, declarations.count == 1, !hasBindings, !specializesGenerics,
+              proto.primaryAssociatedTypeClause == nil else {
+            try reject(proto, "Public interface generation requires a direct Sendable protocol without inherited or generic requirements")
+        }
+        try index.requireUnshadowedQualifier(module, at: proto)
+        try index.requireUnshadowedQualifier("Swift", at: proto)
+    }
     let hasImportedRequirements = declarations.contains { $0.origin.module != module }
     if hasImportedRequirements && (spy || !projections.isEmpty || !variadicForwarding.isEmpty || specializesGenerics) {
         try reject(proto, "Supplied cross-module inheritance supports ordinary witnesses without forwarding, projections or generic specializations")
@@ -608,6 +616,15 @@ func generate(
     }
 
     func importedType(_ type: TypeSyntax) -> String? {
+        if fromTextualInterface {
+            for scalar in ["Bool", "Int", "String"] {
+                let spelling = type.trimmedDescription
+                if spelling == "Swift.\(scalar)" || spelling == "Swift::\(scalar)" {
+                    return "Swift.\(scalar)"
+                }
+            }
+            return nil
+        }
         if let identifier = type.as(IdentifierTypeSyntax.self) {
             return bindings.boundType(for: identifier)
         }
@@ -930,6 +947,9 @@ func generate(
             }
             if imported {
                 guard let type = importedType(parameter.type), unmodified, !isVariadic else {
+                    if fromTextualInterface {
+                        try reject(parameter, "Public interface parameters require unmodified Swift.Bool, Swift.Int or Swift.String")
+                    }
                     try reject(parameter, "Cross-module inherited parameters require an unmodified Swift.Bool, Swift.Int or Swift.String type, or a visible bound associated type")
                 }
                 return Parameter(label: label, type: type)
@@ -1198,6 +1218,14 @@ func generate(
     }
 
     for (declarationID, item) in activeMembers.flatMap({ entry in entry.items.map { (entry.declarationID, $0) } }) {
+        if fromTextualInterface {
+            guard let fn = item.decl.as(FunctionDeclSyntax.self), fn.attributes.isEmpty,
+                  fn.genericParameterClause == nil, fn.genericWhereClause == nil,
+                  fn.signature.effectSpecifiers == nil,
+                  fn.signature.parameterClause.parameters.allSatisfy({ importedType($0.type) != nil }) else {
+                try reject(item, "The public interface profile supports direct synchronous nonthrowing methods with scalar arguments")
+            }
+        }
         if item.decl.is(AssociatedTypeDeclSyntax.self) { continue }
         if hasBindings && !item.decl.is(FunctionDeclSyntax.self) {
             try reject(item, "Concrete associated-type bindings currently support ordinary instance methods")
@@ -1313,7 +1341,12 @@ func generate(
             mockAvailability = mockAvailability.map { max($0, introduction) } ?? introduction
         }
         let outputType: String
-        if imported {
+        if fromTextualInterface, let returnType {
+            guard let scalar = importedType(returnType) else {
+                try reject(returnType, "Public interface results require explicit Swift.Bool, Swift.Int or Swift.String")
+            }
+            outputType = scalar
+        } else if imported {
             try index.requireUnshadowedQualifier("Swift", at: fn)
             guard index.isUnshadowed("Swift", in: module) else {
                 try reject(fn, "Cross-module inherited requirements need an unshadowed Swift module in the selected module")
@@ -1345,7 +1378,7 @@ func generate(
         let lazySelected = lazyAutoclosureSelections.contains(selector)
         let autoclosureMode: CallbackType.Kind? = materializedSelected ? .materializedAutoclosure
             : (lazySelected ? .lazyAutoclosure : nil)
-        let parameters = try parseParameters(declaredParameters, imported: imported,
+        let parameters = try parseParameters(declaredParameters, imported: imported || fromTextualInterface,
                                              autoclosureMode: autoclosureMode)
         let specifiers = fn.signature.effectSpecifiers
         if imported && specifiers?.throwsClause?.type != nil {
@@ -1668,6 +1701,7 @@ func generate(
         let requirements = rethrowsMethods.map { "    " + $0.signature }.joined(separator: "\n")
         behaviorDeclaration += "public protocol \(rethrowsBehaviorName): Swift.Sendable {\n\(requirements)\n}\n\n"
     }
+    let protocolReference = fromTextualInterface ? "\(module).\(selected)" : selected
     var output = """
     // Generated by the Blueprint Mocking prototype. Schema \(GeneratedContract.irSchemaVersion). Do not edit.
     // Source: \(URL(fileURLWithPath: input).lastPathComponent), protocol \(selected).
@@ -1675,7 +1709,7 @@ func generate(
     import BlueprintMocking
     import \(module)
 
-    \(behaviorDeclaration)\(mockAvailability?.annotation ?? "")\(isolation.annotation)public final class \(declaration): \(selected) {
+    \(behaviorDeclaration)\(mockAvailability?.annotation ?? "")\(isolation.annotation)public final class \(declaration): \(protocolReference) {
         private let __schema: \(GeneratedContract.runtimeMarker).Type = \(GeneratedContract.runtimeMarker).self
 
     """
@@ -2289,6 +2323,9 @@ private func run(_ arguments: [String]) throws {
 
 do {
     try run(Array(CommandLine.arguments.dropFirst()))
+} catch let mismatch as IncompatibleImporterContext {
+    FileHandle.standardError.write(Data("\(mismatch)\n".utf8))
+    exit(4)
 } catch let mismatch as GeneratedOutputMismatch {
     FileHandle.standardError.write(Data("\(mismatch)\n".utf8))
     exit(3)

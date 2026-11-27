@@ -92,12 +92,15 @@ final class ProtocolSourceIndex {
     private typealias ModuleDeclarations = [String: [Candidate]]
 
     private let pathsByModule: [String: [String]]
+    private let importedInterface: ImportedInterfaceInput?
     private let conditions: [String: [String: Bool]]
     private var filesByRoot: [SyntaxIdentifier: SourceFile] = [:]
     private var modules: [String: ModuleDeclarations] = [:]
 
-    init(sources: [String: [String]], conditions: [String: [String: Bool]] = [:]) {
-        pathsByModule = sources
+    init(sources: [String: [String]], conditions: [String: [String: Bool]] = [:],
+         importedInterface: ImportedInterfaceInput? = nil) {
+        self.importedInterface = importedInterface
+        pathsByModule = importedInterface.map { [$0.module: [$0.path]] } ?? sources
         self.conditions = conditions
     }
 
@@ -164,21 +167,45 @@ final class ProtocolSourceIndex {
         for path in pathsByModule[module, default: []].sorted() {
             let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
             guard seenPaths.insert(standardized).inserted else { continue }
-            let tree = Parser.parse(source: try String(contentsOfFile: path, encoding: .utf8))
+            let swiftText: String
+            if let supplied = importedInterface, supplied.path == path, supplied.module == module {
+                swiftText = supplied.text
+            } else {
+                guard URL(fileURLWithPath: path).pathExtension != "swiftinterface" else {
+                    throw IncompatibleImporterContext(path: path, reason: "Textual module input requires --interface and --importer-context")
+                }
+                swiftText = try String(contentsOfFile: path, encoding: .utf8)
+            }
+            let tree = Parser.parse(source: swiftText)
             guard !tree.hasError else {
+                if importedInterface != nil {
+                    throw IncompatibleImporterContext(path: path, reason: "The installed SwiftSyntax parser cannot read this interface syntax")
+                }
                 let origin = ProtocolSourceOrigin(module: module, path: path, line: 1, column: 1)
                 throw Self.error(at: origin, "Malformed Swift source. Fix parser errors before generation")
             }
             var file = SourceFile(module: module, path: path, tree: tree,
                                   converter: SourceLocationConverter(fileName: path, tree: tree))
+            var hasComplexInterfaceImport = false
             Self.visitTopLevel(in: tree.statements) { declaration, conditional in
                 let origin = file.origin(of: declaration)
                 if let imported = declaration.as(ImportDeclSyntax.self) {
+                    if importedInterface != nil,
+                       conditional || !imported.attributes.isEmpty || !imported.modifiers.isEmpty ||
+                       imported.importKindSpecifier != nil || imported.path.count != 1 {
+                        hasComplexInterfaceImport = true
+                    }
                     file.imports.record(imported, at: origin, conditional: conditional)
                 } else if let name = Self.typeName(of: declaration) {
                     declarations[name, default: []].append(Candidate(
                         declaration: declaration, origin: origin, isConditional: conditional
                     ))
+                }
+            }
+            if importedInterface != nil {
+                let swiftModules: Set<String> = ["Swift", "_Concurrency", "_StringProcessing", "_SwiftConcurrencyShims"]
+                guard !hasComplexInterfaceImport, file.imports.ordinary.isSubset(of: swiftModules) else {
+                    throw IncompatibleImporterContext(path: path, reason: "The interface imports dependencies outside the core Swift profile")
                 }
             }
             files[file.tree.id] = file

@@ -17,6 +17,7 @@ fi
   "${FLAGS[@]}" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/main.swift" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/AssociatedTypeBindings.swift" \
+  "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/ImportedInterface.swift" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/PluginGeneration.swift" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/ProtocolSourceIndex.swift" \
   "$ROOT/Packages/Tooling/Sources/BlueprintMockingCLI/SubclassGeneration.swift" \
